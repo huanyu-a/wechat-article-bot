@@ -8,7 +8,10 @@ spring:
   quartz:
     job-store-type: jdbc
     jdbc:
-      initialize-schema: always
+      # 由 MySqlTestDatabaseInitializer 在上下文创建前统一重建 Quartz 表：
+      # 若这里再执行一次脚本，会在 Quartz Scheduler 启动期间对同一批表做 DDL，
+      # 偶发 MySQL "Table definition has changed, please retry transaction"（任务创建接口 500）。
+      initialize-schema: never
       schema: classpath:db/quartz/schema-mysql.sql
     properties:
       org.quartz.scheduler.instanceName: WechatArticleSchedulerTest
