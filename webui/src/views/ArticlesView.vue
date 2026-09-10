@@ -22,7 +22,10 @@ onMounted(async()=>{accounts.value=await api('/api/accounts').catch(()=>[]);awai
       <div class="list-head"><span>文章</span><span>来源</span><span>状态</span><span>最后更新</span><span></span></div>
       <button v-for="article in items" :key="article.id" class="article-row" @click="router.push(`/articles/${article.id}`)">
         <div class="article-title-cell"><span class="document-icon"><FileText :size="19" /></span><div><strong>{{article.title}}</strong><p>{{article.digest||article.contentText||'暂无摘要'}}</p></div></div>
-        <span class="source-badge"><Sparkles v-if="article.sourceType!=='MANUAL'" :size="14" />{{article.sourceType}}</span>
+        <div class="article-source-cell">
+          <span class="source-badge"><Sparkles v-if="article.sourceType!=='MANUAL'" :size="14" />{{article.sourceType}}</span>
+          <span v-if="article.layoutEngine==='MARKFLOW'" class="source-badge layout-badge" title="正文由渲染式排版生成，在编辑器里手工改动正文会变成普通 HTML 版式">MARKFLOW</span>
+        </div>
         <div><span class="status-pill" :class="article.workflowStatus.toLowerCase()">{{article.wechatStatus==='NOT_SYNCED'?'本地草稿':article.wechatStatus}}</span></div>
         <time><Clock3 :size="14" />{{fmt(article.updatedAt)}}</time>
         <span class="row-actions"><button class="icon-button danger-ghost" @click.stop="remove(article)"><Trash2 :size="16" /></button><ChevronRight :size="18" /></span>

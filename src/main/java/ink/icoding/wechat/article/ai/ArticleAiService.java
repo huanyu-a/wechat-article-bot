@@ -384,7 +384,8 @@ public class ArticleAiService {
                 original.getAccountId(), document.title(), original.getAuthor(), document.digest(),
                 document.contentHtml(), coverAssetId, coverUrl,
                 original.getSourceUrl(), original.getRevision(),
-                ink.icoding.wechat.article.account.WechatAccountService.parseSkillIds(original.getSkillIds()));
+                ink.icoding.wechat.article.account.WechatAccountService.parseSkillIds(original.getSkillIds()),
+                original.getLayoutEngine(), original.getContentMarkdown());
         return articleService.updateByAi(original.getId(), request,
                 "AI 工具编辑（" + session.toolCalls.get() + " 次工具调用）", session.user.id());
     }

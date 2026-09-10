@@ -94,7 +94,8 @@ public class TaskExecutionService {
             ScheduledArticleTools.Draft draft = workspace.draftState().snapshot();
             ArticleService.ArticleRequest articleRequest = new ArticleService.ArticleRequest(task.getAccountId(),
                     draft.title(), draft.author(), draft.digest(), draft.contentHtml(),
-                    draft.coverAssetId(), null, draft.sourceUrl(), null, null);
+                    draft.coverAssetId(), null, draft.sourceUrl(), null, null,
+                    draft.layoutEngine() == null ? null : draft.layoutEngine().name(), draft.contentMarkdown());
             Article article = articleService.createForTask(articleRequest, task.getCreatedBy());
             run.setArticleId(article.getId());
             run.setGeneratedCount(1);

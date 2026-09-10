@@ -36,6 +36,8 @@ public interface ArticleMapper extends SmartMapper<Article> {
         article.setDigest(changes.getDigest());
         article.setContentHtml(changes.getContentHtml());
         article.setContentText(changes.getContentText());
+        article.setLayoutEngine(changes.getLayoutEngine());
+        article.setContentMarkdown(changes.getContentMarkdown());
         article.setCoverUrl(changes.getCoverUrl());
         article.setCoverAssetId(changes.getCoverAssetId());
         article.setSourceUrl(changes.getSourceUrl());

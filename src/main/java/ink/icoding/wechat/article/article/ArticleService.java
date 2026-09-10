@@ -7,6 +7,7 @@ import ink.icoding.wechat.article.asset.AssetService;
 import ink.icoding.wechat.article.auth.CurrentUserService;
 import ink.icoding.wechat.article.common.BusinessException;
 import ink.icoding.wechat.article.common.PageResult;
+import ink.icoding.wechat.article.skill.LayoutEngine;
 import ink.icoding.wechat.article.wechat.WechatClient;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -82,6 +83,7 @@ public class ArticleService {
         article.setDigest(request.digest());
         article.setContentHtml(clean(request.contentHtml()));
         article.setContentText(Jsoup.parse(article.getContentHtml()).text());
+        applyLayout(request, article);
         article.setCoverAssetId(request.coverAssetId());
         article.setCoverUrl(resolveCover(request.coverAssetId(), request.coverUrl()));
         article.setSourceUrl(request.sourceUrl());
@@ -125,6 +127,8 @@ public class ArticleService {
         article.setDigest(request.digest());
         article.setContentHtml(clean(request.contentHtml()));
         article.setContentText(Jsoup.parse(article.getContentHtml()).text());
+        applyLayout(request, article);
+        reconcileRenderedLayout(existing, article);
         article.setCoverAssetId(request.coverAssetId());
         article.setCoverUrl(resolveCover(request.coverAssetId(), request.coverUrl()));
         article.setSourceUrl(request.sourceUrl());
@@ -154,7 +158,8 @@ public class ArticleService {
         ArticleRequest request = new ArticleRequest(current.getAccountId(), target.getTitle(), current.getAuthor(),
                 target.getDigest(), target.getContentHtml(), current.getCoverAssetId(), current.getCoverUrl(),
                 current.getSourceUrl(), current.getRevision(),
-                ink.icoding.wechat.article.account.WechatAccountService.parseSkillIds(current.getSkillIds()));
+                ink.icoding.wechat.article.account.WechatAccountService.parseSkillIds(current.getSkillIds()),
+                current.getLayoutEngine(), current.getContentMarkdown());
         return update(id, request, "ROLLBACK", "回滚到版本 " + revision);
     }
 
@@ -313,10 +318,52 @@ public class ArticleService {
                 && Objects.equals(left.getAuthor(), right.getAuthor())
                 && Objects.equals(left.getDigest(), right.getDigest())
                 && Objects.equals(left.getContentHtml(), right.getContentHtml())
+                && Objects.equals(left.getLayoutEngine(), right.getLayoutEngine())
+                && Objects.equals(left.getContentMarkdown(), right.getContentMarkdown())
                 && Objects.equals(left.getCoverAssetId(), right.getCoverAssetId())
                 && Objects.equals(left.getCoverUrl(), right.getCoverUrl())
                 && Objects.equals(left.getSourceUrl(), right.getSourceUrl())
                 && Objects.equals(left.getSkillIds(), right.getSkillIds());
+    }
+
+    /**
+     * MARKFLOW 文章在编辑器里是「HTML 所见即所得」：编辑器加载渲染产物后重新序列化，
+     * 正文多出 &lt;p&gt;/&lt;strong&gt;、内联样式被重排、表格被补 colgroup——保存一次就会把公众号版式
+     * 降级成普通 HTML，而渲染产物无法反推回 Markdown。于是分两种情况：
+     * 正文文本未变化（只改标题/摘要）→ 保留原有渲染产物与 Markdown 源文，避免「改个标题就丢版式」；
+     * 正文文本已变化 → 尊重编辑器结果落库，同时丢弃已与正文不符的 Markdown 源文
+     * （留着会让后续重排悄悄覆盖用户刚做的编辑），引擎字段保留为历史留痕。
+     */
+    private void reconcileRenderedLayout(Article existing, Article incoming) {
+        if (!LayoutEngine.MARKFLOW.name().equalsIgnoreCase(
+                existing.getLayoutEngine() == null ? "" : existing.getLayoutEngine())) return;
+        if (!Objects.equals(Jsoup.parse(existing.getContentHtml() == null ? "" : existing.getContentHtml()).text(),
+                Jsoup.parse(incoming.getContentHtml() == null ? "" : incoming.getContentHtml()).text())) {
+            incoming.setContentMarkdown(null);
+            return;
+        }
+        incoming.setContentHtml(existing.getContentHtml());
+        incoming.setContentText(existing.getContentText());
+        incoming.setContentMarkdown(existing.getContentMarkdown());
+        incoming.setLayoutEngine(existing.getLayoutEngine());
+    }
+
+    /**
+     * 落库排版元数据。MARKFLOW 文章必须同时留存 Markdown 源文：编辑器只编辑渲染产物 HTML，
+     * 覆盖后无法反推回 Markdown；没有源文就只能放弃重排或降级成普通 HTML（方案 5.10.4）。
+     * 引擎一旦为 MARKFLOW，后续普通保存（请求不带引擎字段）不得把它抹回 PROMPT。
+     */
+    private void applyLayout(ArticleRequest request, Article article) {
+        boolean markflow = LayoutEngine.MARKFLOW.name().equalsIgnoreCase(
+                request.layoutEngine() == null ? "" : request.layoutEngine().trim());
+        String markdown = request.contentMarkdown();
+        if (!markflow && (markdown == null || markdown.isBlank())) {
+            article.setLayoutEngine(LayoutEngine.PROMPT.name());
+            article.setContentMarkdown(null);
+            return;
+        }
+        article.setLayoutEngine(LayoutEngine.MARKFLOW.name());
+        article.setContentMarkdown(markdown);
     }
 
     private String resolveCover(Long assetId, String coverUrl) {
@@ -364,7 +411,7 @@ public class ArticleService {
 
     public record ArticleRequest(Long accountId, String title, String author, String digest, String contentHtml,
                                  Long coverAssetId, String coverUrl, String sourceUrl, Integer revision,
-                                 java.util.List<Long> skillIds) {}
+                                 java.util.List<Long> skillIds, String layoutEngine, String contentMarkdown) {}
     public record PublishStatus(int code, String message, Article article) {}
     public record WechatProgress(String stage, String message, int percent) {}
 

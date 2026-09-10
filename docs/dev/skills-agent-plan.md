@@ -1041,3 +1041,45 @@ POST {base_url}/__markflow_render          → {markdown, accent, dark} → {ok,
     本轮其余深挖（DelegateTools 预算超限引导文本、AgentInvoker 双重检查、AuditInterceptor 覆盖面）
     无新缺陷。
     **终态门禁：139 例全绿（`./.mvn/mvn-local.sh test`，BUILD SUCCESS，1m19s）；compose 校验通过。**
+
+  - **2026-09-10 十四轮深度自检（真实令牌端到端验收 + 渲染产物走查 + 版式持久化缺陷）**：
+    本轮按「真实令牌走通渲染链路并人工走查渲染产物」执行，走查过程本身发现并修复了一处此前无人察觉的 P0 级数据缺陷。
+    ① **真实渲染令牌端到端验收（补齐第②项长期只在「代码/桩」层验证的空白）**：令牌取自
+    `~/.zcode/secrets/markflow-render-token`（48 字符），经产品自身 API 写入渲染配置
+    （`PUT /api/settings/render` → `hasToken:true`、`tokenMasked:"••••••••299f"`、`enabled:true`），
+    `POST /api/settings/render/test` 返回「连接正常，语法指令 6815 字符」。随后驱动完整定时智能体链路
+    （任务「E2E 渲染式排版验收」，skill=MarkFlow 精排版式，SINGLE，LOCAL_DRAFT）对真实渲染服务产出文章：
+    两次运行均 SUCCESS，产物 6585 字符全内联样式 HTML，主题色 `#0984e3` 已下发，
+    `> [TIP]` 转为 `<section>` 提示框，Markdown 表格转为 `<table><thead>/<tbody>` 且带边框与斑马纹，
+    无字面量 `:::` 残留。**同时验证了两条此前只在单测里声称成立的契约**：
+    图片 URL 绝对化（渲染产物为 `http://localhost:8081/uploads/e2e-sample.png`，无相对 `src="/uploads/` 残留）；
+    digest 缺省时由渲染服务 `meta.summary` 自动回填。
+    ② **走查发现的 P0 缺陷：MARKFLOW 文章没有留存渲染源（本轮核心修复）**。编辑器只认识渲染产物 HTML，
+    加载后会重新序列化——实测「只改标题」触发自动保存，正文被改写为编辑器 HTML
+    （`<span>/<em>` → `<strong>/<p>`、内联样式重排、表格补 `colgroup`），渲染产物 24 处主题色
+    `#0984e3` 变为 `rgb(9, 132, 227)` 且丢失 `<thead>` 语义，**改个标题就把公众号版式降级成了普通 HTML**；
+    更严重的是文章表**从未保存 layout_engine 与 Markdown 源文**（`Draft` 里携带的 `contentMarkdown`/
+    `layoutEngine` 在 `TaskExecutionService` 落库时被丢弃），渲染产物一旦被覆盖即无法重排，也无从判断某篇文章
+    该不该走渲染。修复：`article` 表新增 `layout_engine` / `content_markdown` 两列；`ArticleRequest` 携带引擎与
+    Markdown；`ArticleService.applyLayout()` 落库引擎与源文（请求不带引擎时不得把 MARKFLOW 抹回 PROMPT）；
+    定时与编辑器 AI 两条交付路径均带上引擎与源文；`updateContent` 同步写这两列。
+    ③ **配套的版式保真策略**：新增 `ArticleService.reconcileRenderedLayout()`——MARKFLOW 文章保存时比较
+    正文**纯文本**：文本未变（只改标题/摘要等元数据）则保留库中原有渲染产物与 Markdown 源文，正文确实被改动时
+    按编辑器结果落库并**清空已与正文不符的 Markdown 源文**（留着会让后续重排悄悄覆盖用户刚做的编辑）。
+    实测复验：改标题后 `contentHtml` 仍为 6585 字符原渲染产物、`layoutEngine=MARKFLOW`、Markdown 源文保留。
+    ④ **渲染器语法实测纠偏**：语言直取线上 `guide` 逐项探测后发现，`markflow-typeset` 技能与内置
+    `MarkFlow 精排版式` 技能正文中「步骤用 :::steps / 提示用 :::tip / :::warning」的说法与渲染器实际能力不符——
+    `:::steps` 与 `:::compare` 有效（`:::steps` 渲染为编号圆点步骤流、`:::compare` 渲染为对比网格，均正确），
+    但 `:::tip` / `:::warning` **不被识别**（退回普通段落，丢提示框样式）；提示框的正确写法是引用块加标记
+    `> [TIP] 内容` / `> [WARNING] 内容`（实测转为绿/橙底 + 左侧色条）+ 图标。已修正技能种子文案与
+    `render_markflow` 工具描述（改为「以系统提示中的实时语法指令为准」并给出实测结论），重启后 Seeder
+    已将修正同步进库。
+    ⑤ **可见性补强**：MARKFLOW 文章此前在文章列表与其他文章无任何区别，用户不知道编辑正文会改版式。
+    列表来源列新增 MARKFLOW 徽标（title 提示「在编辑器里手工改动正文会变成普通 HTML 版式」）。
+    ⑥ **验收与回归**：新增 `MarkFlowArticleLayoutPersistenceTests`(3)——引擎与 Markdown 源文随文章落库、
+    只改标题不覆盖渲染产物、正文改动时落库新正文并丢弃过期 Markdown。**全量 142 例全绿**，`npm run build` 零报错；
+    用真实浏览器复验标题保存后版式保持不变。
+    ⑦ **本轮遗留（已记录，未在代码层解决）**：`MarkFlowRenderService` 未使用 MarkFlow 的 `preview` 字段，
+    渲染产物入库后丢失 KaTeX 的 `aria-hidden` 与上游配套 CSS（实测正文中 `<style>` 会被 Jsoup 清洗剥离，
+    数学公式在公众号侧需上游内联样式兜底）；`article.content_markdown` 目前是「留存可重排」的事实依据，
+    但尚无「用 Markdown 重新渲染覆盖正文」的产品入口，重排能力待后续按需开放。

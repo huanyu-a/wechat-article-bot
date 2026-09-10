@@ -26,6 +26,15 @@ public class Article extends PO {
     private String contentHtml;
     @TableField(length = 65535)
     private String contentText;
+    /**
+     * 排版引擎（PROMPT / MARKFLOW）。MARKFLOW 文章的正文由渲染服务生成，
+     * 渲染产物无法反推回 Markdown，故必须留存引擎与 Markdown 源文（见 contentMarkdown）。
+     */
+    @TableField(length = 20)
+    private String layoutEngine;
+    /** MARKFLOW 文章的 Markdown 源文：渲染产物被覆盖后仍可重排，也是版式保真的唯一依据。 */
+    @TableField(length = 65535)
+    private String contentMarkdown;
     @TableField(length = 500)
     private String coverUrl;
     private Long coverAssetId;
