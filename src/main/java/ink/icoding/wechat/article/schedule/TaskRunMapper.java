@@ -17,6 +17,8 @@ public interface TaskRunMapper extends SmartMapper<TaskRun> {
         run.setGeneratedCount(changes.getGeneratedCount());
         run.setArticleId(changes.getArticleId());
         run.setToolCallCount(changes.getToolCallCount());
+        run.setMode(changes.getMode());
+        run.setStagesSummary(changes.getStagesSummary());
         run.setMessage(changes.getMessage());
         run.setExecutionLog(changes.getExecutionLog());
         run.setFinishedAt(LocalDateTime.now());

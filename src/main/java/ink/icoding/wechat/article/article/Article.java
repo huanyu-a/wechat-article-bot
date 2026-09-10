@@ -32,6 +32,9 @@ public class Article extends PO {
     @TableField(length = 1000)
     private String sourceUrl;
     private String sourceType;
+    /** 文章级创作技能 id 的 JSON 数组字符串（编辑器 AI 对话用，最高优先级），skills-agent-plan 4.5。 */
+    @TableField(length = 2000)
+    private String skillIds;
     private String businessStatus;
     private String workflowStatus;
     private String wechatStatus;

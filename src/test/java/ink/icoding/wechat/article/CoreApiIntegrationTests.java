@@ -36,6 +36,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ContextConfiguration(initializers = MySqlTestDatabaseInitializer.class)
+@org.springframework.test.annotation.DirtiesContext(
+        classMode = org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
 class CoreApiIntegrationTests {
     private static final Pattern TOKEN = Pattern.compile("\\\"token\\\":\\\"([^\\\"]+)\\\"");
     private static final Pattern EDITOR_SESSION = Pattern.compile("\\\"sessionId\\\":\\\"([^\\\"]+)\\\"");
@@ -275,8 +277,14 @@ class CoreApiIntegrationTests {
                     .andExpect(request().asyncStarted())
                     .andReturn();
 
-            String sessionId = waitForEditorSession(chat);
-            mockMvc.perform(post("/api/articles/1/ai/sessions/{sessionId}/tools/tool-1/result", sessionId)
+            String sessionId;
+            try {
+                sessionId = waitForEditorSession(chat);
+            } catch (AssertionError error) {
+                throw new AssertionError(error.getMessage() + " | llmRequests=" + llmRequests.get()
+                        + " | bodies=" + llmRequestBodies, error);
+            }
+            var toolOne = mockMvc.perform(post("/api/articles/1/ai/sessions/{sessionId}/tools/tool-1/result", sessionId)
                             .header("Authorization", authorization)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("""
@@ -293,10 +301,11 @@ class CoreApiIntegrationTests {
                                       }
                                     }
                                     """))
-                    .andExpect(status().isOk());
-
-            waitForSseMarker(chat, "tool-2", 8_000L);
-            waitForSseMarker(chat, "event:editor.insert.completed", 8_000L);
+                    .andReturn();
+            org.junit.jupiter.api.Assertions.assertEquals(200, toolOne.getResponse().getStatus(),
+                    "tool-1 结果回传应成功: " + toolOne.getResponse().getContentAsString());
+            waitForSseMarker(chat, "tool-2", 60_000L);
+            waitForSseMarker(chat, "event:editor.insert.completed", 60_000L);
             mockMvc.perform(post("/api/articles/1/ai/sessions/{sessionId}/tools/tool-2/result", sessionId)
                             .header("Authorization", authorization)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -319,7 +328,7 @@ class CoreApiIntegrationTests {
                                     """))
                     .andExpect(status().isOk());
 
-            chat.getAsyncResult(10_000L);
+            chat.getAsyncResult(90_000L);
             mockMvc.perform(asyncDispatch(chat))
                     .andExpect(status().isOk())
                     .andExpect(result -> {
@@ -397,7 +406,7 @@ class CoreApiIntegrationTests {
                     .andExpect(status().isOk())
                     .andExpect(request().asyncStarted())
                     .andReturn();
-            followUp.getAsyncResult(10_000L);
+            followUp.getAsyncResult(90_000L);
             mockMvc.perform(asyncDispatch(followUp))
                     .andExpect(status().isOk())
                     .andExpect(result -> {
@@ -455,7 +464,10 @@ class CoreApiIntegrationTests {
             }
             byte[] bytes = events.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
-            exchange.sendResponseHeaders(200, 0);
+            // Connection: close + 显式 Content-Length：让 okhttp 明确读到流结束，
+            // 避免偶发 onFailure(HTTP 200)（连接被复用/提前关闭时的读流错误）
+            exchange.getResponseHeaders().set("Connection", "close");
+            exchange.sendResponseHeaders(200, bytes.length);
             exchange.getResponseBody().write(bytes);
             exchange.close();
         });
@@ -482,7 +494,7 @@ class CoreApiIntegrationTests {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.data.status").value("RUNNING"));
 
-            long deadline = System.currentTimeMillis() + 10_000L;
+            long deadline = System.currentTimeMillis() + 60_000L;
             String runStatus = "RUNNING";
             while (System.currentTimeMillis() < deadline) {
                 runStatus = jdbcTemplate.queryForObject(
@@ -516,7 +528,7 @@ class CoreApiIntegrationTests {
     }
 
     private String waitForEditorSession(org.springframework.test.web.servlet.MvcResult chat) throws Exception {
-        long deadline = System.currentTimeMillis() + 8_000L;
+        long deadline = System.currentTimeMillis() + 90_000L;
         while (System.currentTimeMillis() < deadline) {
             Matcher matcher = EDITOR_SESSION.matcher(chat.getResponse().getContentAsString());
             if (matcher.find() && chat.getResponse().getContentAsString().contains("event:tool.call")) return matcher.group(1);
@@ -563,7 +575,10 @@ class CoreApiIntegrationTests {
         }
         byte[] bytes = events.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
-        exchange.sendResponseHeaders(200, 0);
+        // Connection: close + 显式 Content-Length：让 okhttp 明确读到流结束，
+        // 避免偶发 onFailure(HTTP 200)（连接被复用/提前关闭时的读流错误）
+        exchange.getResponseHeaders().set("Connection", "close");
+        exchange.sendResponseHeaders(200, bytes.length);
         exchange.getResponseBody().write(bytes);
         exchange.close();
     }

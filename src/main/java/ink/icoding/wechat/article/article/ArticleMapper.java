@@ -39,6 +39,9 @@ public interface ArticleMapper extends SmartMapper<Article> {
         article.setCoverUrl(changes.getCoverUrl());
         article.setCoverAssetId(changes.getCoverAssetId());
         article.setSourceUrl(changes.getSourceUrl());
+        // 直接赋值而非 `if (changes.getSkillIds() != null)` 守卫：解绑全部技能时值为 null，
+        // 守卫会让「清空绑定」被静默忽略（用户取消勾选后保存，绑定仍在）。
+        article.setSkillIds(changes.getSkillIds());
         article.setWorkflowStatus("EDITING");
         article.setRevision(expectedRevision + 1);
         article.setUpdatedAt(LocalDateTime.now());

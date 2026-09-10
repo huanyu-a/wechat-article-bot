@@ -3,6 +3,7 @@ target/
 .env
 deploy/env/*.env
 data/
+logs/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/

@@ -14,6 +14,8 @@ import java.util.Set;
 @Service
 public class ScheduleTaskService {
     private static final Set<String> OUTPUT_MODES = Set.of("LOCAL_DRAFT", "WECHAT_DRAFT", "AUTO_PUBLISH");
+    private static final Set<String> EXECUTION_MODES = Set.of("SINGLE", "PIPELINE", "COORDINATOR");
+    private static final Set<String> STAGE_KEYS = Set.of("research", "writing", "illustration", "review");
     private final ScheduleTaskMapper mapper;
     private final TaskRunMapper runMapper;
     private final QuartzTaskManager quartz;
@@ -99,6 +101,11 @@ public class ScheduleTaskService {
         }
         task.setAiPrompt(request.aiPrompt().trim());
         task.setOutputMode(request.outputMode() == null ? "LOCAL_DRAFT" : request.outputMode());
+        task.setSkillIds(normalizeSkillIds(request.skillIds()));
+        task.setExecutionMode(normalizeExecutionMode(request.executionMode()));
+        task.setStageAgents(normalizeStageAgents(request.stageAgents()));
+        task.setMaxRevisionRounds(request.maxRevisionRounds() == null
+                ? 2 : Math.max(0, Math.min(5, request.maxRevisionRounds())));
         if (!OUTPUT_MODES.contains(task.getOutputMode())) throw new BusinessException("不支持的任务输出方式");
         if (!"LOCAL_DRAFT".equals(task.getOutputMode()) && task.getAccountId() == null) {
             throw new BusinessException("同步微信的任务必须选择目标公众号");
@@ -109,5 +116,47 @@ public class ScheduleTaskService {
 
     public record TaskRequest(@NotBlank String name, Long accountId, Long coverAssetId, @NotBlank String cronExpression,
                               String timezone, @NotBlank String aiPrompt,
-                              String outputMode, Boolean enabled) {}
+                              String outputMode, java.util.List<Long> skillIds, Boolean enabled,
+                              String executionMode, java.util.Map<String, Long> stageAgents,
+                              Integer maxRevisionRounds) {}
+
+    /** skill_ids 列表归一为逗号分隔字符串；空白归一为 null。 */
+    static String normalizeSkillIds(java.util.List<Long> skillIds) {
+        return ink.icoding.wechat.article.account.WechatAccountService.skillIdsOrNull(skillIds);
+    }
+
+    /** 执行模式白名单：null/空 → SINGLE（存量兼容默认值）。 */
+    static String normalizeExecutionMode(String mode) {
+        if (mode == null || mode.isBlank()) return "SINGLE";
+        String value = mode.strip().toUpperCase();
+        if (!EXECUTION_MODES.contains(value)) throw new BusinessException("不支持的执行模式：" + mode);
+        return value;
+    }
+
+    /** 阶段编排归一为 JSON 字符串；空 map → null（用内置默认）。 */
+    static String normalizeStageAgents(java.util.Map<String, Long> stageAgents) {
+        if (stageAgents == null || stageAgents.isEmpty()) return null;
+        java.util.Map<String, Long> cleaned = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<String, Long> entry : stageAgents.entrySet()) {
+            String stage = entry.getKey() == null ? null : entry.getKey().strip().toLowerCase();
+            if (!STAGE_KEYS.contains(stage)) throw new BusinessException("不支持的阶段：" + entry.getKey());
+            cleaned.put(stage, entry.getValue());
+        }
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(cleaned);
+        } catch (Exception exception) {
+            throw new BusinessException("阶段编排序列化失败");
+        }
+    }
+
+    /** 解析 stage_agents JSON 字符串 → Map；空/非法返回空 map。 */
+    public static java.util.Map<String, Long> parseStageAgents(String json) {
+        if (json == null || json.isBlank()) return java.util.Map.of();
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().readValue(json,
+                    new com.fasterxml.jackson.core.type.TypeReference<java.util.LinkedHashMap<String, Long>>() {});
+        } catch (Exception exception) {
+            return java.util.Map.of();
+        }
+    }
 }

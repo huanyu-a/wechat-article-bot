@@ -22,11 +22,14 @@ public class LlmConfigService {
     private final LlmConfigMapper mapper;
     private final CryptoService cryptoService;
     private final CurrentUserService currentUserService;
+    private final ink.icoding.wechat.article.agent.LlmProfileService llmProfileService;
 
-    public LlmConfigService(LlmConfigMapper mapper, CryptoService cryptoService, CurrentUserService currentUserService) {
+    public LlmConfigService(LlmConfigMapper mapper, CryptoService cryptoService, CurrentUserService currentUserService,
+                            ink.icoding.wechat.article.agent.LlmProfileService llmProfileService) {
         this.mapper = mapper;
         this.cryptoService = cryptoService;
         this.currentUserService = currentUserService;
+        this.llmProfileService = llmProfileService;
     }
 
     public ConfigView get() {
@@ -62,10 +65,29 @@ public class LlmConfigService {
         config.setUpdatedBy(currentUserService.required().id());
         config.setUpdatedAt(LocalDateTime.now());
         mapper.updateById(config);
+        // 存量 API 兼容映射（方案 4.3）：LLM 字段同步到默认模型档案，图片三件套留在 llm_config
+        llmProfileService.syncDefaultFromConfig(config.getProvider(), normalizeBaseUrl(config.getBaseUrl()),
+                config.getModelName(), config.getApiKeyEncrypted(), config.getTemperature(),
+                config.getMaxTokens(), config.getEnabled());
         return view(config);
     }
 
     public RuntimeConfig runtime() {
+        // 第②期：优先读默认模型档案（方案 4.3 —— 签名不变，存量调用点零改动）。
+        // 口径与 view() 保持一致：档案存在即以档案为准（含「存在但未启用/无 key」→ 返回不可用），
+        // 只有档案表为空（未迁移部署）才回落 llm_config，避免设置页显示 A 而运行时用 B。
+        ink.icoding.wechat.article.agent.LlmProfileService.RuntimeProfile profile =
+                llmProfileService.runtime(llmProfileService.defaultProfile());
+        if (profile != null) {
+            LlmConfig config = required();
+            String imageApiKey = config.getImageApiKeyEncrypted() == null
+                    ? profile.apiKey() : cryptoService.decrypt(config.getImageApiKeyEncrypted());
+            return new RuntimeConfig(profile.available(), profile.provider(), profile.baseUrl(),
+                    profile.modelName(), profile.apiKey(), profile.temperature(), profile.maxTokens(),
+                    blankToNull(config.getImageBaseUrl()) == null ? profile.baseUrl()
+                            : normalizeBaseUrl(config.getImageBaseUrl()),
+                    blankToNull(config.getImageModelName()), imageApiKey);
+        }
         LlmConfig config = required();
         String apiKey = config.getApiKeyEncrypted() == null ? null : cryptoService.decrypt(config.getApiKeyEncrypted());
         String imageApiKey = config.getImageApiKeyEncrypted() == null
@@ -96,6 +118,17 @@ public class LlmConfigService {
     }
 
     private ConfigView view(LlmConfig config) {
+        // 存量 GET /api/settings/llm 兼容映射：默认档案存在时以其值回显（方案 4.3）
+        ink.icoding.wechat.article.agent.LlmProfileService.RuntimeProfile profile =
+                llmProfileService.runtime(llmProfileService.defaultProfile());
+        if (profile != null) {
+            return new ConfigView(profile.provider(), profile.baseUrl(), profile.modelName(),
+                    profile.apiKey() != null, profile.apiKey() == null ? "未配置" : "••••••••••••",
+                    profile.enabled(), profile.temperature(), profile.maxTokens(), config.getUpdatedAt(),
+                    config.getImageBaseUrl(), config.getImageModelName(),
+                    config.getImageApiKeyEncrypted() != null,
+                    config.getImageApiKeyEncrypted() == null ? "复用 LLM API Key" : mask(config.getImageApiKeyEncrypted()));
+        }
         return new ConfigView(config.getProvider(), normalizeBaseUrl(config.getBaseUrl()), config.getModelName(),
                 config.getApiKeyEncrypted() != null, mask(config.getApiKeyEncrypted()), config.getEnabled(),
                 config.getTemperature(), config.getMaxTokens(), config.getUpdatedAt(),

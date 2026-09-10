@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "check:imports": "node scripts/check-shared-imports.mjs",
+    "prebuild": "node scripts/check-shared-imports.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },

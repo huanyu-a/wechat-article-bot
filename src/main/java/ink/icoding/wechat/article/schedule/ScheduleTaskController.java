@@ -11,11 +11,19 @@ import java.util.List;
 @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')")
 public class ScheduleTaskController {
     private final ScheduleTaskService service;
+    private final ScheduledExecutionRouter router;
 
-    public ScheduleTaskController(ScheduleTaskService service) { this.service = service; }
+    public ScheduleTaskController(ScheduleTaskService service, ScheduledExecutionRouter router) {
+        this.service = service;
+        this.router = router;
+    }
 
     @GetMapping
     public ApiResponse<List<ScheduleTask>> list() { return ApiResponse.ok(service.list()); }
+
+    /** 执行模式清单（前端单选卡片用），路径须在 /{id} 之前声明。 */
+    @GetMapping("/execution-modes")
+    public ApiResponse<List<java.util.Map<String, String>>> executionModes() { return ApiResponse.ok(router.modes()); }
 
     @GetMapping("/{id}")
     public ApiResponse<ScheduleTask> get(@PathVariable Long id) { return ApiResponse.ok(service.required(id)); }

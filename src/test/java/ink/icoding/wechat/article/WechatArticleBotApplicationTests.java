@@ -27,6 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 @SpringBootTest
 @AutoConfigureMockMvc
 @ContextConfiguration(initializers = MySqlTestDatabaseInitializer.class)
+@org.springframework.test.annotation.DirtiesContext(
+        classMode = org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
 class WechatArticleBotApplicationTests {
     @Autowired
     private ArticleMediaTools mediaTools;

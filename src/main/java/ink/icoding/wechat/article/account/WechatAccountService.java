@@ -12,6 +12,8 @@ import java.time.LocalDateTime;
 
 @Service
 public class WechatAccountService {
+    private static final java.util.Set<String> ACCOUNT_TYPES = java.util.Set.of("SERVICE", "SUBSCRIPTION");
+    private static final java.util.Set<String> STATUSES = java.util.Set.of("ACTIVE", "DISABLED");
     private final WechatAccountMapper mapper;
     private final CryptoService cryptoService;
     private final WechatClient wechatClient;
@@ -38,7 +40,9 @@ public class WechatAccountService {
         WechatAccount account = new WechatAccount();
         apply(account, request);
         account.setAppSecretEncrypted(cryptoService.encrypt(request.appSecret().trim()));
-        account.setStatus("ACTIVE");
+        // 未显式传状态时默认启用；显式传入的值（已过白名单校验）必须被尊重，
+        // 否则接口对 status 的语义是「收下但忽略」，与 UI/文档不一致。
+        if (account.getStatus() == null) account.setStatus("ACTIVE");
         account.setConnectionStatus("UNCHECKED");
         account.setCapabilities("DRAFT,PUBLISH,MATERIAL,FOLLOWER");
         account.setCreatedAt(LocalDateTime.now());
@@ -79,28 +83,58 @@ public class WechatAccountService {
         account.setName(request.name().trim());
         account.setAppId(request.appId().trim());
         account.setOriginalId(request.originalId());
-        account.setAccountType(request.accountType() == null ? "SERVICE" : request.accountType());
+        String accountType = request.accountType() == null ? "SERVICE" : request.accountType().strip();
+        if (!ACCOUNT_TYPES.contains(accountType)) {
+            throw new BusinessException("不支持的账号类型：" + request.accountType());
+        }
+        account.setAccountType(accountType);
         account.setVerified(Boolean.TRUE.equals(request.verified()));
         account.setAvatarUrl(request.avatarUrl());
         account.setDefaultAuthor(request.defaultAuthor());
         account.setDefaultStyle(request.defaultStyle());
-        if (request.status() != null) account.setStatus(request.status());
+        account.setSkillIds(skillIdsOrNull(request.skillIds()));
+        if (request.status() != null && !request.status().isBlank()) {
+            String status = request.status().strip();
+            // status 参与 WechatClient 的「公众号已停用」判断，任意值会静默停用账号，必须白名单校验
+            if (!STATUSES.contains(status)) throw new BusinessException("不支持的公众号状态：" + request.status());
+            account.setStatus(status);
+        }
+    }
+
+    public static String skillIdsOrNull(java.util.List<Long> skillIds) {
+        if (skillIds == null || skillIds.isEmpty()) return null;
+        String joined = skillIds.stream().filter(java.util.Objects::nonNull).map(String::valueOf)
+                .reduce((a, b) -> a + "," + b).orElse("");
+        return joined.isBlank() ? null : joined;
     }
 
     private AccountView view(WechatAccount account) {
         return new AccountView(account.getId(), account.getName(), account.getAppId(), account.getOriginalId(),
                 account.getAccountType(), account.getVerified(), account.getAvatarUrl(), account.getDefaultAuthor(),
-                account.getDefaultStyle(), account.getStatus(), account.getConnectionStatus(), account.getCapabilities(),
+                account.getDefaultStyle(), parseSkillIds(account.getSkillIds()), account.getStatus(),
+                account.getConnectionStatus(), account.getCapabilities(),
                 account.getTokenExpiresAt(), account.getLastCheckedAt(), account.getCreatedAt(), account.getUpdatedAt());
+    }
+
+    /** DB 逗号分隔字符串 → List&lt;Long&gt;（脏数据容错：非法段静默丢弃）。 */
+    public static java.util.List<Long> parseSkillIds(String skillIds) {
+        if (skillIds == null || skillIds.isBlank()) return java.util.List.of();
+        java.util.List<Long> result = new java.util.ArrayList<>();
+        for (String part : skillIds.split(",")) {
+            try {
+                result.add(Long.valueOf(part.strip()));
+            } catch (NumberFormatException ignored) {}
+        }
+        return result;
     }
 
     public record AccountRequest(@NotBlank String name, @NotBlank String appId, String appSecret, String originalId,
                                  String accountType, Boolean verified, String avatarUrl, String defaultAuthor,
-                                 String defaultStyle, String status) {}
+                                 String defaultStyle, java.util.List<Long> skillIds, String status) {}
 
     public record AccountView(Long id, String name, String appId, String originalId, String accountType,
                               Boolean verified, String avatarUrl, String defaultAuthor, String defaultStyle,
-                              String status, String connectionStatus, String capabilities,
+                              java.util.List<Long> skillIds, String status, String connectionStatus, String capabilities,
                               java.time.LocalDateTime tokenExpiresAt, java.time.LocalDateTime lastCheckedAt,
                               java.time.LocalDateTime createdAt, java.time.LocalDateTime updatedAt) {}
 }

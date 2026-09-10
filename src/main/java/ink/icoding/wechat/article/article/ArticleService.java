@@ -8,7 +8,6 @@ import ink.icoding.wechat.article.auth.CurrentUserService;
 import ink.icoding.wechat.article.common.BusinessException;
 import ink.icoding.wechat.article.common.PageResult;
 import ink.icoding.wechat.article.wechat.WechatClient;
-import jakarta.validation.constraints.NotBlank;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -87,6 +86,7 @@ public class ArticleService {
         article.setCoverUrl(resolveCover(request.coverAssetId(), request.coverUrl()));
         article.setSourceUrl(request.sourceUrl());
         article.setSourceType(sourceType == null ? "MANUAL" : sourceType);
+        article.setSkillIds(WechatAccountService.skillIdsOrNull(request.skillIds()));
         article.setBusinessStatus("DRAFT");
         article.setWorkflowStatus("EDITING");
         article.setWechatStatus("NOT_SYNCED");
@@ -128,6 +128,7 @@ public class ArticleService {
         article.setCoverAssetId(request.coverAssetId());
         article.setCoverUrl(resolveCover(request.coverAssetId(), request.coverUrl()));
         article.setSourceUrl(request.sourceUrl());
+        article.setSkillIds(WechatAccountService.skillIdsOrNull(request.skillIds()));
         if (sameEditableContent(existing, article)) {
             return existing;
         }
@@ -152,7 +153,8 @@ public class ArticleService {
         if (target == null) throw new BusinessException("指定版本不存在");
         ArticleRequest request = new ArticleRequest(current.getAccountId(), target.getTitle(), current.getAuthor(),
                 target.getDigest(), target.getContentHtml(), current.getCoverAssetId(), current.getCoverUrl(),
-                current.getSourceUrl(), current.getRevision());
+                current.getSourceUrl(), current.getRevision(),
+                ink.icoding.wechat.article.account.WechatAccountService.parseSkillIds(current.getSkillIds()));
         return update(id, request, "ROLLBACK", "回滚到版本 " + revision);
     }
 
@@ -313,7 +315,8 @@ public class ArticleService {
                 && Objects.equals(left.getContentHtml(), right.getContentHtml())
                 && Objects.equals(left.getCoverAssetId(), right.getCoverAssetId())
                 && Objects.equals(left.getCoverUrl(), right.getCoverUrl())
-                && Objects.equals(left.getSourceUrl(), right.getSourceUrl());
+                && Objects.equals(left.getSourceUrl(), right.getSourceUrl())
+                && Objects.equals(left.getSkillIds(), right.getSkillIds());
     }
 
     private String resolveCover(Long assetId, String coverUrl) {
@@ -333,8 +336,8 @@ public class ArticleService {
         }
         matcher.appendTail(prepared);
         Safelist safelist = Safelist.relaxed()
-                .addTags("section", "figure", "figcaption", "hr")
-                .addAttributes(":all", "style", "class", "data-id")
+                .addTags("section", "figure", "figcaption", "hr", "div")
+                .addAttributes(":all", "style", "class", "data-id", "data-render-id")
                 .addAttributes("img", "width", "height")
                 .addProtocols("img", "src", "http", "https");
         String cleaned = Jsoup.clean(prepared.toString(), "", safelist,
@@ -360,7 +363,8 @@ public class ArticleService {
     }
 
     public record ArticleRequest(Long accountId, String title, String author, String digest, String contentHtml,
-                                 Long coverAssetId, String coverUrl, String sourceUrl, Integer revision) {}
+                                 Long coverAssetId, String coverUrl, String sourceUrl, Integer revision,
+                                 java.util.List<Long> skillIds) {}
     public record PublishStatus(int code, String message, Article article) {}
     public record WechatProgress(String stage, String message, int percent) {}
 

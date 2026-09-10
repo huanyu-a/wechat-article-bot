@@ -25,6 +25,17 @@ public class ScheduleTask extends PO {
     @TableField(length = 65535)
     private String aiPrompt;
     private String outputMode;
+    /** 任务级创作技能 id 的 JSON 数组字符串（如 "[1,3]"），skills-agent-plan 4.5。 */
+    @TableField(length = 2000)
+    private String skillIds;
+    /** 执行模式：SINGLE（默认，存量兼容）/ PIPELINE / COORDINATOR，skills-agent-plan 4.5。 */
+    @TableField(length = 30)
+    private String executionMode;
+    /** 阶段编排：{"research":1,"writing":2,"illustration":3,"review":4} → agent_definition id；null=内置默认，0=跳过（仅配图/审核可跳过）。 */
+    @TableField(length = 2000)
+    private String stageAgents;
+    /** 审核不通过的返工上限（默认 2）。 */
+    private Integer maxRevisionRounds;
     private Boolean enabled;
     private LocalDateTime lastRunAt;
     private LocalDateTime nextRunAt;

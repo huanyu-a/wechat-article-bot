@@ -1,4 +1,7 @@
 #!/usr/bin/env sh
+# title: 公众号 Bot 镜像发布
+# desc: 构建并推送多平台 Docker 镜像到指定 registry（用法: publish-image.sh <repo> <version> [platforms]）。
+
 set -eu
 
 if [ "$#" -lt 2 ]; then

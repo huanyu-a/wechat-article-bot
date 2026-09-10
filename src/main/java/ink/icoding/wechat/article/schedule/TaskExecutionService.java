@@ -18,14 +18,20 @@ public class TaskExecutionService {
     private final TaskRunMapper runMapper;
     private final ArticleAiService aiService;
     private final ArticleService articleService;
+    private final ScheduledExecutionRouter router;
+    private final ink.icoding.wechat.article.skill.MarkFlowRenderService markFlowRenderService;
     private final Map<Long, Object> taskLocks = new ConcurrentHashMap<>();
 
     public TaskExecutionService(ScheduleTaskMapper mapper, TaskRunMapper runMapper,
-                                ArticleAiService aiService, ArticleService articleService) {
+                                ArticleAiService aiService, ArticleService articleService,
+                                ScheduledExecutionRouter router,
+                                ink.icoding.wechat.article.skill.MarkFlowRenderService markFlowRenderService) {
         this.mapper = mapper;
         this.runMapper = runMapper;
         this.aiService = aiService;
         this.articleService = articleService;
+        this.router = router;
+        this.markFlowRenderService = markFlowRenderService;
     }
 
     /** Starts a manual execution without keeping the HTTP request open for the entire agent run. */
@@ -66,15 +72,30 @@ public class TaskExecutionService {
     }
 
     private TaskRun executeRun(ScheduleTask task, TaskRun run) {
+        String mode = task.getExecutionMode() == null || task.getExecutionMode().isBlank()
+                ? "SINGLE" : task.getExecutionMode();
+        run.setMode(mode);
         try {
-            ArticleAiService.ScheduledAgentResult result = aiService.runScheduledAgent(
-                    new ArticleAiService.ScheduledAgentRequest(task.getAccountId(), task.getCreatedBy(),
-                            task.getCoverAssetId(), task.getTimezone(), task.getOutputMode(), task.getAiPrompt()));
-            ScheduledArticleTools.Draft draft = result.draft();
-            ArticleService.ArticleRequest request = new ArticleService.ArticleRequest(task.getAccountId(),
+            ArticleAiService.ScheduledAgentRequest request = new ArticleAiService.ScheduledAgentRequest(
+                    task.getAccountId(), task.getCreatedBy(), task.getCoverAssetId(), task.getTimezone(),
+                    task.getOutputMode(), task.getAiPrompt(),
+                    ArticleAiService.parseSkillIds(task.getSkillIds()),
+                    ScheduleTaskService.parseStageAgents(task.getStageAgents()),
+                    task.getMaxRevisionRounds());
+            ScheduledExecutionStrategy strategy = router.strategy(mode);
+            // SINGLE 由 ArticleAiService 内部自建工作区状态（adopt 回填），无需提前解析引擎
+            TaskWorkspace workspace = TaskWorkspace.create(task.getCoverAssetId(),
+                    "SINGLE".equals(mode) ? null : resolveLayoutEngine(request));
+            ArticleAiService.ScheduledAgentResult result = strategy.execute(request, workspace);
+            run.setStagesSummary(workspaceSummary(workspace));
+            // MARKFLOW 延迟渲染：交付前统一渲染一次（skills-agent-plan 5.10.4）。
+            // SINGLE 链路已在 runScheduledAgent 内渲染（rendered=true 时幂等跳过），此处覆盖 PIPELINE/COORDINATOR。
+            workspace.draftState().renderBeforeDelivery(markFlowRenderService);
+            ScheduledArticleTools.Draft draft = workspace.draftState().snapshot();
+            ArticleService.ArticleRequest articleRequest = new ArticleService.ArticleRequest(task.getAccountId(),
                     draft.title(), draft.author(), draft.digest(), draft.contentHtml(),
-                    draft.coverAssetId(), null, draft.sourceUrl(), null);
-            Article article = articleService.createForTask(request, task.getCreatedBy());
+                    draft.coverAssetId(), null, draft.sourceUrl(), null, null);
+            Article article = articleService.createForTask(articleRequest, task.getCreatedBy());
             run.setArticleId(article.getId());
             run.setGeneratedCount(1);
             run.setToolCallCount(result.toolCalls());
@@ -94,6 +115,26 @@ public class TaskExecutionService {
             mapper.touchRun(task.getId());
         }
         return runMapper.selectById(run.getId());
+    }
+
+    /** 工作区摘要（best-effort）：写入 task_run.stages_summary。 */
+    private String workspaceSummary(TaskWorkspace workspace) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(workspace.summary());
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    /**
+     * 排版引擎解析（SINGLE 走 ArticleAiService 内部组装，其余执行器需要提前知道引擎以构造工作区）。
+     * 不吞异常：MARKFLOW 技能绑定但渲染服务不可用时必须让任务以明确错误失败，
+     * 而不是静默回落 PROMPT（静默换引擎会产出完全不同的版式，违背用户预期，方案 5.10.2）。
+     */
+    private ink.icoding.wechat.article.skill.LayoutEngine resolveLayoutEngine(
+            ArticleAiService.ScheduledAgentRequest request) {
+        return aiService.resolveLayoutEngine(request);
     }
 
     private String trimMessage(String value) {

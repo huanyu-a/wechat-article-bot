@@ -21,9 +21,14 @@ public final class ArticleEditorTools {
     }
 
     public static List<Tool> all(BrowserExecutor executor) {
+        return all(executor, ink.icoding.wechat.article.skill.LayoutEngine.PROMPT);
+    }
+
+    /** 引擎感知（skills-agent-plan 5.10.4）：MARKFLOW 下跳过纯段落校验（渲染区段含列表/组件属预期）。 */
+    public static List<Tool> all(BrowserExecutor executor, ink.icoding.wechat.article.skill.LayoutEngine engine) {
         return List.of(new ReadArticleTool(executor), new ReadBlocksTool(executor),
-                new DeleteBlocksTool(executor), new InsertBlocksTool(executor),
-                new ReplaceBlocksTool(executor), new UpdateMetadataTool(executor),
+                new DeleteBlocksTool(executor), new InsertBlocksTool(executor, engine),
+                new ReplaceBlocksTool(executor, engine), new UpdateMetadataTool(executor),
                 new UpdateCoverTool(executor));
     }
 
@@ -89,10 +94,17 @@ public final class ArticleEditorTools {
     @ToolInfo(name = "insert_blocks", description = "在指定逻辑行之前或之后插入一个或多个完整HTML内容块。blocks中的每项必须是完整的p、h2、h3、blockquote、hr或figure元素。创作正文时禁止使用列表和表格。")
     public static class InsertBlocksTool implements Tool<InsertBlocksParam> {
         private final BrowserExecutor executor;
-        public InsertBlocksTool(BrowserExecutor executor) { this.executor = executor; }
+        private final ink.icoding.wechat.article.skill.LayoutEngine engine;
+        public InsertBlocksTool(BrowserExecutor executor) {
+            this(executor, ink.icoding.wechat.article.skill.LayoutEngine.PROMPT);
+        }
+        public InsertBlocksTool(BrowserExecutor executor, ink.icoding.wechat.article.skill.LayoutEngine engine) {
+            this.executor = executor;
+            this.engine = engine == null ? ink.icoding.wechat.article.skill.LayoutEngine.PROMPT : engine;
+        }
         @Override
         public String execute(InsertBlocksParam param) {
-            requireParagraphProse(param.getBlocks());
+            requireParagraphProse(param.getBlocks(), engine);
             return executeInBrowser(executor, "insert_blocks", param);
         }
     }
@@ -112,10 +124,17 @@ public final class ArticleEditorTools {
     @ToolInfo(name = "replace_blocks", description = "原子替换连续逻辑行，适合改写已有段落。blocks中的每项必须是完整HTML内容块，创作正文时禁止使用列表和表格。")
     public static class ReplaceBlocksTool implements Tool<ReplaceBlocksParam> {
         private final BrowserExecutor executor;
-        public ReplaceBlocksTool(BrowserExecutor executor) { this.executor = executor; }
+        private final ink.icoding.wechat.article.skill.LayoutEngine engine;
+        public ReplaceBlocksTool(BrowserExecutor executor) {
+            this(executor, ink.icoding.wechat.article.skill.LayoutEngine.PROMPT);
+        }
+        public ReplaceBlocksTool(BrowserExecutor executor, ink.icoding.wechat.article.skill.LayoutEngine engine) {
+            this.executor = executor;
+            this.engine = engine == null ? ink.icoding.wechat.article.skill.LayoutEngine.PROMPT : engine;
+        }
         @Override
         public String execute(ReplaceBlocksParam param) {
-            requireParagraphProse(param.getBlocks());
+            requireParagraphProse(param.getBlocks(), engine);
             return executeInBrowser(executor, "replace_blocks", param);
         }
     }
@@ -182,8 +201,9 @@ public final class ArticleEditorTools {
         }
     }
 
-    private static void requireParagraphProse(String[] blocks) {
+    private static void requireParagraphProse(String[] blocks,
+                                              ink.icoding.wechat.article.skill.LayoutEngine engine) {
         if (blocks == null) return;
-        ArticleContentPolicy.requireParagraphProse(String.join("", blocks));
+        ArticleContentPolicy.requireParagraphProse(String.join("", blocks), engine);
     }
 }

@@ -21,6 +21,12 @@ public class TaskRun extends PO {
     private Integer generatedCount;
     private Long articleId;
     private Integer toolCallCount;
+    /** 本次运行实际使用的执行模式（SINGLE/PIPELINE/COORDINATOR）。 */
+    @TableField(length = 30)
+    private String mode;
+    /** 各阶段 best-effort 摘要：[{stage,agentName,toolCalls,durationMs,status}]。 */
+    @TableField(length = 65535)
+    private String stagesSummary;
     @TableField(length = 65535)
     private String message;
     @TableField(length = 65535)

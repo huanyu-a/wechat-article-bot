@@ -11,6 +11,8 @@ import { BackgroundColor, Color, FontSize, LineHeight, TextStyle } from '@tiptap
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { api, stream, uploadAsset } from '../api'
+import { parseSkillIds } from '../utils/skills'
+import SkillPicker from '../components/SkillPicker.vue'
 import {
   Figure, FigureCaption, ParagraphStyle, paragraphStyleTypes, PreservedInlineStyle,
   StyledDiv, StyledInlineDiv, StyledSection,
@@ -29,6 +31,8 @@ const toolCalls=ref([]), agentSessionId=ref(''), chatMessages=ref(), chatAttachm
 const assetPickerOpen=ref(false), assetPickerTarget=ref('inline'), assetPickerItems=ref([]), assetPickerLoading=ref(false), assetPickerError=ref(''), inlineImageInput=ref()
 const wechatOperation=reactive({visible:false,status:'idle',type:'',title:'',message:'',percent:0})
 const wechatSteps=ref([])
+const articleSkillIds=ref([])
+const skillNames=ref({})
 const wechatBusy=computed(()=>wechatOperation.status==='running')
 const interactionBusy=computed(()=>aiBusy.value||wechatBusy.value)
 const selectedTextColor=ref('#333333')
@@ -68,15 +72,16 @@ watch([
   ()=>article.value?.title,()=>article.value?.digest,()=>article.value?.author,
   ()=>article.value?.accountId,()=>article.value?.sourceUrl,()=>article.value?.coverAssetId,
 ],markDirty,{flush:'sync'})
+watch(articleSkillIds,()=>{if(ready.value&&!applyingServerArticle)markDirty()},{flush:'sync'})
 watch(interactionBusy,(busy)=>editor.value?.setEditable(!busy),{flush:'post'})
-function applyServerArticle(updated,replaceContent=false){applyingServerArticle=true;article.value={...article.value,...updated};if(replaceContent)editor.value.commands.setContent(updated.contentHtml||'<p></p>',false);applyingServerArticle=false}
-async function load(){try{const [a,acc,msg]=await Promise.all([api(`/api/articles/${route.params.id}`),api('/api/accounts'),api(`/api/articles/${route.params.id}/ai/messages`)]);article.value=a;accounts.value=acc;messages.value=msg;await nextTick();editor.value.commands.setContent(a.contentHtml||'<p></p>',false);ready.value=true;savedAt.value=formatClock(a.updatedAt)}catch(e){error.value=e.message}}
+function applyServerArticle(updated,replaceContent=false){applyingServerArticle=true;article.value={...article.value,...updated};articleSkillIds.value=parseSkillIds(updated.skillIds);if(replaceContent)editor.value.commands.setContent(updated.contentHtml||'<p></p>',false);applyingServerArticle=false}
+async function load(){try{const [a,acc,msg]=await Promise.all([api(`/api/articles/${route.params.id}`),api('/api/accounts'),api(`/api/articles/${route.params.id}/ai/messages`)]);article.value=a;accounts.value=acc;messages.value=msg;articleSkillIds.value=parseSkillIds(a.skillIds);try{const skills=await api('/api/skills');skillNames.value=Object.fromEntries(skills.map(s=>[Number(s.id),s.name]))}catch{}await nextTick();editor.value.commands.setContent(a.contentHtml||'<p></p>',false);ready.value=true;savedAt.value=formatClock(a.updatedAt)}catch(e){error.value=e.message}}
 async function save(showError=true){
   clearTimeout(saveTimer)
   if(savePromise){try{return await savePromise}catch(e){if(showError){error.value=e.message;throw e}return null}}
   if(!article.value||!dirty.value)return article.value
   const sequence=editSequence
-  const payload={...article.value,contentHtml:editor.value.getHTML(),revision:article.value.revision}
+  const payload={...article.value,skillIds:articleSkillIds.value,contentHtml:editor.value.getHTML(),revision:article.value.revision}
   saving.value=true
   savePromise=(async()=>{
     const updated=await api(`/api/articles/${article.value.id}`,{method:'PUT',body:JSON.stringify(payload)})
@@ -151,7 +156,7 @@ function validateLines(start,end){const count=editor.value.state.doc.childCount;
 function rangePositions(start,end){const {first,last}=validateLines(start,end);const doc=editor.value.state.doc;let from=0,to=0;for(let index=0;index<last;index++){to+=doc.child(index).nodeSize;if(index<first-1)from=to}return {from,to,insertIndex:first-1}}
 function deleteLogicalLines(start,end){const range=rangePositions(start,end);editor.value.commands.deleteRange({from:range.from,to:range.to});return range.insertIndex}
 function insertAtBlockIndex(index,contentHtml){const doc=editor.value.state.doc;const safeIndex=Math.max(0,Math.min(index,doc.childCount));let position=0;for(let i=0;i<safeIndex;i++)position+=doc.child(i).nodeSize;editor.value.commands.insertContentAt(position,contentHtml,{updateSelection:false})}
-function toolLabel(name){return {read_article:'读取当前文章',read_blocks:'读取指定内容',delete_blocks:'删除内容块',insert_blocks:'插入新内容',replace_blocks:'改写内容块',update_metadata:'更新标题与摘要',update_cover:'设置文章封面',search_web:'搜索网页',browse_webpage:'浏览网页',search_web_images:'搜索网络图片',list_image_assets:'检索素材库',import_web_image:'导入网络图片',generate_image:'AI 生成图片',edit_image:'AI 编辑图片'}[name]||name}
+function toolLabel(name){return {read_article:'读取当前文章',read_blocks:'读取指定内容',delete_blocks:'删除内容块',insert_blocks:'插入新内容',replace_blocks:'改写内容块',update_metadata:'更新标题与摘要',update_cover:'设置文章封面',search_web:'搜索网页',browse_webpage:'浏览网页',search_web_images:'搜索网络图片',list_image_assets:'检索素材库',import_web_image:'导入网络图片',generate_image:'AI 生成图片',edit_image:'AI 编辑图片',delegate_research:'委托调研员调研',render_markflow:'MarkFlow 渲染排版'}[name]||name}
 const immediateEditorTools=new Set(['read_article','read_blocks','delete_blocks','update_metadata','update_cover'])
 const streamingEditorTools=new Set(['insert_blocks','replace_blocks'])
 function scrollChat(){nextTick(()=>{if(chatMessages.value)chatMessages.value.scrollTop=chatMessages.value.scrollHeight})}
@@ -252,6 +257,9 @@ function insertTable(){editor.value.chain().focus().insertTable({rows:3,cols:3,w
 function clearFormatting(){
   editor.value.chain().focus().unsetColor().unsetBackgroundColor().unsetFontSize().unsetLineHeight().unsetTextAlign().unsetParagraphStyle(paragraphStyleAttributeNames).clearNodes().unsetAllMarks().run()
 }
+function skillName(id){return skillNames.value[Number(id)]||`技能 #${id}`}
+const selectedSkillNames=computed(()=>articleSkillIds.value.map(skillName))
+function onSkillPickerChange(ids){articleSkillIds.value=ids;error.value='';markDirty()}
 function formatClock(v){return v?new Date(v).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}):''}
 onMounted(load);onBeforeUnmount(()=>{clearTimeout(saveTimer);clearTimeout(wechatHideTimer);editor.value?.destroy()})
 </script>
@@ -319,6 +327,13 @@ onMounted(load);onBeforeUnmount(()=>{clearTimeout(saveTimer);clearTimeout(wechat
       <aside class="ai-panel" v-show="chatOpen">
         <header><div><span class="ai-avatar"><Sparkles :size="17" /></span><div><strong>墨舟智能体</strong><small><i></i> 在线协作</small></div></div><button class="icon-button" @click="chatOpen=false"><PanelRightClose :size="18" /></button></header>
         <div class="ai-context"><Bot :size="15" /><span>{{aiBusy?`智能体正在编辑文章第 ${article.revision} 版`:`智能体上下文：文章第 ${article.revision} 版`}}</span><Check :size="14" /></div>
+        <div class="ai-skills-row">
+          <div class="ai-skills-chips">
+            <span v-if="selectedSkillNames.length" v-for="(name,index) in selectedSkillNames" :key="`${name}-${index}`" class="skill-tag mini" :title="name">{{ name }}</span>
+            <span v-else class="ai-skills-empty">未选择创作技能，沿用默认写作方式</span>
+          </div>
+          <SkillPicker v-model="articleSkillIds" scene="EDITOR" enabled-only :max-visible="2" placeholder="+ 创作技能" @change="onSkillPickerChange" />
+        </div>
         <div ref="chatMessages" class="chat-messages">
           <div v-if="!messages.length" class="ai-welcome"><span><Sparkles /></span><strong>想从哪里开始？</strong><p>告诉我主题、目标读者和想要的语气。我会直接在左侧文章中完成修改。</p><button @click="instruction='帮我检查文章结构并给出优化建议'">检查文章结构</button><button @click="instruction='把这篇文章改得更适合微信公众号阅读'">优化微信排版</button></div>
           <template v-for="(item,index) in messages" :key="item.callId||item.id||index">

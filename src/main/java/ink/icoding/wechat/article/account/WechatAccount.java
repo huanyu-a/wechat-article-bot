@@ -25,6 +25,9 @@ public class WechatAccount extends PO {
     private String avatarUrl;
     private String defaultAuthor;
     private String defaultStyle;
+    /** 账号默认创作技能 id 的 JSON 数组字符串，skills-agent-plan 4.5。 */
+    @TableField(length = 2000)
+    private String skillIds;
     private String status;
     private String connectionStatus;
     @TableField(length = 65535)
