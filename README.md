@@ -19,6 +19,9 @@ Publishing a strong WeChat article takes much more than generating a block of te
 Mozhou brings that entire lifecycle into a self-hosted AI content operations studio:
 
 - **An editor-aware AI agent** — the agent reads the current document, targets logical blocks, streams insertions and replacements, and updates metadata or covers through explicit tools.
+- **Reusable creation skills** — capture your writing style, layout template, image taste, and fact-checking rules as dimension-tagged skills, then bind them to an article, a task, or an account.
+- **Configurable agents and model profiles** — edit each built-in agent's persona and tool set, and route it to a dedicated model profile, without touching the built-in tool protocol.
+- **Multi-agent scheduled creation** — run a fixed pipeline (research → write → illustrate → review, with bounded rework) or let a chief agent delegate autonomously, all sharing one task workspace.
 - **One workflow from idea to WeChat** — manage accounts, articles, assets, drafts, publishing states, and followers without jumping between disconnected tools.
 - **Autonomous scheduled creation** — describe a recurring assignment in natural language and let the agent research, browse, verify, write, illustrate, and deliver it on schedule.
 - **Human control and traceability** — automatic saving, optimistic locking, revision snapshots, rollback, role-based access, execution history, and audit logs keep automation accountable.
@@ -29,6 +32,10 @@ Mozhou brings that entire lifecycle into a self-hosted AI content operations stu
 | Capability | What you get |
 | --- | --- |
 | Multiple Official Accounts | Centralized AppID/AppSecret, account type, default author and writing style, connection tests, and access-token caching. |
+| Creation skills | 12 dimensions (audience, topic, writing, language, title, opening, ending, digest, image, layout, fact-check, other) with built-in seeds, per-article/task/account binding, and a prompt-preview endpoint. |
+| Layout engines | Instruction-based inline-HTML layout, or MarkFlow rendering (Markdown → styled HTML) with a live syntax guide, theme selection, and image-URL absolutization. |
+| Agents and model profiles | Seven built-in agents (editor, scheduled creator, researcher, writer, illustrator, reviewer, chief) with editable personas, tool-group selection, per-agent skills, and dedicated model profiles. |
+| Execution modes | Single agent, fixed pipeline with bounded rework, or a coordinating chief that delegates research/writing/illustration/review under a code-enforced budget. |
 | AI collaborative editor | Tiptap rich-text editing, autosave, mobile preview, and Agent4j Tool Calling that edits the live document instead of returning a detached draft. |
 | Assets and images | Local asset library, web-image import, AI image generation/editing, cover management, and automatic WeChat content-image upload. |
 | WeChat drafts and publishing | Create or update drafts, submit publishing jobs, refresh publishing results, and watch slow operations through real-time SSE progress. |
@@ -52,6 +59,13 @@ Mozhou brings that entire lifecycle into a self-hosted AI content operations stu
 <p align="center">
   <img src="docs/images/accounts.png" alt="Official Account management" width="49%">
   <img src="docs/images/articles.png" alt="Article management" width="49%">
+</p>
+
+### Skill library and agent definitions: codify how you write
+
+<p align="center">
+  <img src="docs/images/skills.png" alt="Skill library" width="49%">
+  <img src="docs/images/agents.png" alt="Agent definitions" width="49%">
 </p>
 
 ### Let autonomous agents deliver on schedule
@@ -162,7 +176,18 @@ Open **System Settings → LLM Service** and configure:
 
 ![LLM configuration](docs/images/settings.png)
 
-### Step 3: connect a WeChat Official Account
+### Step 3: configure the MarkFlow render service (optional)
+
+Open **System Settings → Layout Render Service** to connect the MarkFlow rendering service (required by MARKFLOW layout skills):
+
+1. **Base URL** — the render service root; defaults to `https://www.bx9y.com.cn`.
+2. **Render token** — enter it on the settings page, or inject it with the `MARKFLOW_RENDER_TOKEN` environment variable (the environment variable wins, which suits Docker deployments).
+3. **Site Base URL** — the public address of this application. It rewrites `/uploads/` relative image paths into absolute URLs the render service can fetch; without it, images from this site may break in rendered output.
+4. Click **Test Connection** after saving. Skip this section entirely if you only use instruction-based layout skills.
+
+> When the render service is on the public internet, the deployment container must have outbound access; if an HTTP proxy is required, the application must configure it explicitly (the Java HttpClient ignores proxy environment variables).
+
+### Step 4: connect a WeChat Official Account
 
 Open **Official Accounts → Add Official Account** and enter the name, account type, AppID, AppSecret, original ID, default author, and preferred writing style. Save it, then select **Test Connection**.
 
@@ -174,7 +199,7 @@ Before testing, make sure:
 - The server's outbound IP is present in the WeChat Official Platform allowlist.
 - The server time and timezone are correct and it can reach the WeChat APIs.
 
-### Step 4: produce the first article
+### Step 5: produce the first article
 
 1. Upload a cover and content images in **Assets**, or upload them from the editor.
 2. Create an article, then select its target Official Account and cover.
@@ -182,7 +207,7 @@ Before testing, make sure:
 4. Use **Preview**, then **Sync Draft**. A cover is required before WeChat draft synchronization.
 5. Review the result in WeChat and let a user with publishing permission submit it.
 
-### Step 5: create a scheduled content agent
+### Step 6: create a scheduled content agent
 
 Open **Scheduled Tasks → New Task**, select a timezone and schedule, then describe in natural language:
 
@@ -222,6 +247,7 @@ The production override enables a read-only root filesystem, drops Linux capabil
 | `MYSQL_USERNAME` / `MYSQL_PASSWORD` | Application database account | Use a dedicated least-privilege account. |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Bootstrap administrator | Used for initialization; change the password after first login. |
 | `APP_SECRET_KEY` | Master key for stored credentials | Use a random value of at least 32 characters and preserve it permanently. |
+| `MARKFLOW_RENDER_TOKEN` | MarkFlow render service token (takes priority over the stored value) | Keep as secret as `APP_SECRET_KEY`; only needed when render-based layout is enabled. |
 | `TOKEN_TTL_HOURS` | Back-office login lifetime | Set according to your organization's security policy. |
 | `STORAGE_PATH` | Image asset directory | Mount persistent storage and back it up regularly. |
 | `JAVA_TOOL_OPTIONS` | JVM memory, encoding, and timezone | Tune `MaxRAMPercentage` for the container limit. |
