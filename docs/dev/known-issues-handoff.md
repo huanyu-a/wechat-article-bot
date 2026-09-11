@@ -1,7 +1,7 @@
 # 交接文档：已知缺陷与未实现清单
 
 - 生成时间：2026-09-11（本轮实施收尾后，并已合并并行会话 `sess_457cd5ec` 的只读现场证据）
-- 适用代码：当前工作树（**全部改动未提交**，见第四节）
+- 适用代码：commit `5f88ca5`（2026-09-11 已推送到 `huanyu-a/wechat-article-bot` 的 `main`，提交状态见第四节）
 - 一句话：**已修的缺陷不再需要重查（第二节给了索引与证据）；真正还欠的是第三节那 13 项——3 项卡在上游（agent4j / 网关），10 项是本仓库的缺口或架构限制。最先该修的是 I8（编辑器会话无硬超时）。**
 
 ## 〇、怎么读这份文档
@@ -208,11 +208,13 @@
 3. **结论要核对结构，不能只看有没有样式**（D13 的教训）：量 DOM 结构、元素尺寸、computed style，必要时用 CDP。
 4. **内联样式类改动用「声明计数 diff」**来量化，而不是截图目测。
 
-### 4.3 当前工作树状态
-- **本轮所有改动均未提交**（用户明确要求：未获授权不做 git 提交）。涉及后端 12 个文件、前端 4 个文件、测试 8 个文件，新增 6 个类与 6 个测试类。
+### 4.3 当前提交状态
+- **全部改动已提交并推送**：commit `5f88ca5`（2026-09-11），推送到 `huanyu-a/wechat-article-bot` 的 `main`。该提交含 63 个文件（22 新增 / 41 修改）——除本轮四期修复外，也把此前多轮未提交的改动（ToolCallArgumentGuard、StaleRunPolicy/Reaper、DelegateTools 整轮预算、articles/agents 资源可往返等）一并纳入，因为它们是同一批未提交的工作树状态。
+- 本轮修复涉及后端 12 个文件、前端 4 个文件、测试 8 个文件，新增 6 个类与 6 个测试类。
 - 新增主类：`common/InFlightGate`、`schedule/StageTimeoutException`、`schedule/AgentRunner.ProgressListener`、`schedule/TaskExecutionService.RunCompletion`、`schedule/TaskRunMapper.formatTimestamp`、`asset/AssetService.truncateDescription`。
 - 新增测试：`common/InFlightGateTest`、`schedule/AgentInvokerTest`、`schedule/TaskRunCompletionTest`、`schedule/TaskRunMapperTimestampTest`、`asset/AssetDescriptionPersistenceTests`，并扩充 `PipelineExecutorTest` / `StageTimeoutTest` / `StaleRunPolicyTest` / `AssetServicePathTests`。
 - 验收用临时脚本与夹具已清理（`target/live_*.py`、UI 夹具 run#37 已删）。
+- 目标仓库是 **public** 的 fork，提交前做过密钥扫描：`.env`、`data/`、`logs/` 均在 `.gitignore` 中；手写文档里出现过的网关密钥值片段已在提交前从记录中剔除（只保留解密手法，不含密钥值）。
 
 ---
 

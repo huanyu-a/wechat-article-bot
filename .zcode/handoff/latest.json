@@ -32,12 +32,17 @@
         "name": "merge-hygiene",
         "result": "pass",
         "detail": "合并 sess_457cd5ec 文档时做了三项卫生检查：①grep 确认合并后的文档不含原文里解密出的 secret/API Key 明文（原文写了密钥值片段，本次只保留手法描述并加告警，密钥值不落任何文档）；②标题层级自检（〇/一…八顺序连续、3.4 与 5.x/6.x 无重号、第七/八节已顺延）；③未删改对方的 docs/dev/agent-session-timeout-handoff.md（17:42 仍在被其编辑，非本会话产物）"
+      },
+      {
+        "name": "push-hygiene",
+        "result": "pass",
+        "detail": "推送到公开仓库前的检查：①密钥扫描（local-dev-secret-key/sk-XNilb/32位hex/gho_ 等模式）——仅命中 .env.example/deploy/*.env.example/README 的占位符，无真实密钥；②提交前把我在记录里写下的密钥值片段改为不含值的表述；③git check-ignore 确认 .env、data/、logs/ 被忽略且未被暂存；④无 >1MB 大文件；⑤确认 origin 是上游 onlyGuo/wechat-article-bot、新增独立 remote huanyu 指向用户仓库，未向上游推送；⑥推送后 git ls-remote 校验远端 HEAD == 本地 HEAD 5f88ca5；⑦gh api 确认 5 份 docs/dev 文档已在远端"
       }
     ],
     "gate_passed": true
   },
   "next": [
-    "用户未授权 git 提交：全部改动（源码 + 本轮文档）仍留在工作区，需用户明确指示才提交/推送",
+    "全部改动已提交并推送：commit 5f88ca5 → huanyu-a/wechat-article-bot 的 main（用户明确要求「全部推送到我的仓库，连交接文档」）。提交含 63 个文件（22 新增/41 修改），把此前多轮未提交的改动一并纳入。注意 origin 指向上游 onlyGuo/wechat-article-bot，本次新增 remote huanyu 指向用户仓库，未向上游推送",
     "文档给出的建议顺序：①I8 编辑器链路加硬超时（P0，复用 StageTimeout，成本最低）②I2 实例身份（task_run.instance_id/心跳）+ I1 全局配额（Redis）一起做 ③I4 重新渲染入口 ④I7 补一次 COORDINATOR 全绿实跑 ⑤U1/U3 对外提诉求 ⑥I9/I10/I3/I5/I6 按痛点排",
     "本文件 .zcode/handoff/latest.json 为并行 ZCode 会话共享的单文件，其他会话写入前请先读；本次覆盖的是本项目实施记录，未发现其他会话的新记录；另注意并行会话的现场证据文档 docs/dev/agent-session-timeout-handoff.md（只读采集，未与本次编辑冲突）",
     "验收在开发库留下 run#34–#39 的真实记录（#37 为已删除的 UI 夹具），未清理，勿误判为线上脏数据"
