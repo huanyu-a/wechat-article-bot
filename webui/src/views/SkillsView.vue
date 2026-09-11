@@ -211,32 +211,46 @@ onMounted(load)
               <div class="skill-engine-options">
                 <label v-for="option in engineOptions" :key="option.value" class="skill-engine-option" :class="{ active: form.engine === option.value }">
                   <input v-model="form.engine" type="radio" :value="option.value" name="engine">
-                  <strong>{{ option.label }}</strong><small>{{ option.desc }}</small>
+                  <span class="skill-engine-copy"><strong>{{ option.label }}</strong><small>{{ option.desc }}</small></span>
                 </label>
               </div>
               <template v-if="form.engine === 'MARKFLOW'">
                 <div class="skill-accent-block">
-                  <span class="skill-accent-title">主题色模式</span>
-                  <div class="skill-accent-modes">
-                    <label :class="{ active: form.engineConfig.accentMode === 'AUTO' }"><input v-model="form.engineConfig.accentMode" type="radio" value="AUTO" name="accentMode">AUTO · AI 按内容自选主题色</label>
-                    <label :class="{ active: form.engineConfig.accentMode === 'FIXED' }"><input v-model="form.engineConfig.accentMode" type="radio" value="FIXED" name="accentMode">FIXED · 固定主题色</label>
+                  <div class="skill-accent-head">
+                    <span class="skill-accent-title">主题色模式</span>
+                    <p class="skill-accent-hint">{{ form.engineConfig.accentMode === 'FIXED'
+                      ? '所有文章统一套用下方配色，AI 不再自行选择主题色。'
+                      : 'AI 会根据文章内容在翡翠绿 / 科技蓝 / 深藏蓝 / 商务红 / 活力橙 / 玫红 / 纯黑之中自动选择主题色。' }}</p>
                   </div>
-                  <template v-if="form.engineConfig.accentMode === 'FIXED'">
+                  <div class="skill-accent-modes" role="radiogroup" aria-label="主题色模式">
+                    <label class="skill-accent-mode" :class="{ active: form.engineConfig.accentMode === 'AUTO' }">
+                      <input v-model="form.engineConfig.accentMode" type="radio" value="AUTO" name="accentMode">
+                      <span class="skill-accent-copy"><strong>AUTO<i class="skill-accent-tag">推荐</i></strong><small>AI 按内容自选主题色</small></span>
+                    </label>
+                    <label class="skill-accent-mode" :class="{ active: form.engineConfig.accentMode === 'FIXED' }">
+                      <input v-model="form.engineConfig.accentMode" type="radio" value="FIXED" name="accentMode">
+                      <span class="skill-accent-copy"><strong>FIXED</strong><small>固定使用同一套主题色</small></span>
+                    </label>
+                  </div>
+                  <div v-if="form.engineConfig.accentMode === 'FIXED'" class="skill-accent-fixed">
                     <div class="skill-color-row">
                       <span class="skill-color-name">主题色 accent</span>
                       <input type="color" :value="accentInput" @input="form.engineConfig.accent = $event.target.value">
                       <input class="skill-color-hex" v-model="form.engineConfig.accent" :class="{ invalid: accentInvalid }" maxlength="7" placeholder="#27ae60">
+                      <span class="skill-swatch-pair" aria-hidden="true"><i :style="{ background: accentInput }"></i><i :style="{ background: darkInput }"></i></span>
+                    </div>
+                    <div class="skill-color-row">
                       <span class="skill-color-name">深色 dark</span>
                       <input type="color" :value="darkInput" @input="form.engineConfig.dark = $event.target.value">
                       <input class="skill-color-hex" v-model="form.engineConfig.dark" :class="{ invalid: darkInvalid }" maxlength="7" placeholder="#1e8449">
+                      <span class="skill-color-name muted">正文标题与强调色</span>
                     </div>
                     <div class="skill-preset-row">
                       <button v-for="preset in accentPresets" :key="preset.name" type="button" class="skill-preset-chip" :class="{ active: hexColor(form.engineConfig.accent) === preset.accent && hexColor(form.engineConfig.dark) === preset.dark }" @click="applyPreset(preset)">
                         <i :style="{ background: preset.accent }"></i>{{ preset.name }}
                       </button>
                     </div>
-                  </template>
-                  <p v-else class="skill-accent-hint">AI 会根据文章内容在翡翠绿 / 科技蓝 / 深藏蓝 / 商务红 / 活力橙 / 玫红 / 纯黑之中自动选择主题色。</p>
+                  </div>
                 </div>
               </template>
             </div>

@@ -24,7 +24,7 @@ public class SingleAgentExecutor extends ScheduledExecutionStrategy {
     @Override
     public ArticleAiService.ScheduledAgentResult execute(ArticleAiService.ScheduledAgentRequest request,
                                                          TaskWorkspace workspace) throws Exception {
-        ArticleAiService.ScheduledAgentResult result = aiService.runScheduledAgent(request);
+        ArticleAiService.ScheduledAgentResult result = aiService.runScheduledAgent(request, workspace);
         // 让调用方拿到同一份草稿状态（runScheduledAgent 内部自建 DraftState，这里把快照同步回工作区）
         ScheduledArticleTools.Draft draft = result.draft();
         workspace.draftState().adopt(draft);

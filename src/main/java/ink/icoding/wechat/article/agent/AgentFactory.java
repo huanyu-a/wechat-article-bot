@@ -196,6 +196,7 @@ public class AgentFactory {
             case "OPENAI_COMPATIBLE" -> ModelType.OpenAI;
             default -> throw new BusinessException("不支持的 LLM 服务类型：" + provider);
         };
-        return LLMModel.create(modelType, baseUrl, modelName, apiKey);
+        // 回放守卫：上游网关会拒绝历史里非法 JSON 的 tool_call.arguments（空参数工具调用是常见触发点）
+        return ToolCallArgumentGuard.wrap(LLMModel.create(modelType, baseUrl, modelName, apiKey));
     }
 }

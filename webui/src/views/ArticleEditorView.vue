@@ -15,7 +15,7 @@ import { parseSkillIds } from '../utils/skills'
 import SkillPicker from '../components/SkillPicker.vue'
 import {
   Figure, FigureCaption, ParagraphStyle, paragraphStyleTypes, PreservedInlineStyle,
-  StyledDiv, StyledInlineDiv, StyledSection,
+  PreservedMarkStyle, PreservedRenderId, PreservedTableStyle, StyledDiv, StyledInlineDiv, StyledSection,
 } from '../editorExtensions'
 import '../article-agent.css'
 import {
@@ -60,6 +60,9 @@ const editor=useEditor({
     ParagraphStyle,
     TextAlign.configure({types:['heading','paragraph','blockquote','styledSection','styledDiv','styledInlineDiv','figure','figureCaption']}),
     PreservedInlineStyle,
+    PreservedMarkStyle,
+    PreservedTableStyle,
+    PreservedRenderId,
   ],
   content:'<p></p>',
   editorProps:{attributes:{class:'article-prose'}},

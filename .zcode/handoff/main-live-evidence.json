@@ -1,0 +1,68 @@
+{
+  "_note": "本文件为旁路记录，**不覆盖** .zcode/handoff/latest.json——后者由会话 sess_8e9a49cf 于 2026-09-11T17:20 写入（第①②③④期实施记录），本会话刻意不覆盖以免丢失。读者请两份都读。",
+  "agent": "main",
+  "session": "sess_457cd5ec-953e-4b17-9e53-bdfd8190a5fd",
+  "timestamp": "2026-09-11T17:35:00",
+  "status": "completed",
+  "summary": "产出交接文档 docs/dev/agent-session-timeout-handoff.md（活体现场证据 + 实施进展 + 剩余缺口），并在 docs/dev/agent-session-timeout-plan.md 顶部加了指向它的指针。本轮唯一新增的一手证据：在用户报告的运行 #33 仍在跑时（16:14:08，JVM PID 24700）抓到活体线程栈——「agent-stage调研」#121 已存活 1589.90s，阻塞在 LLMResult.get(LLMResult.java:77)（agent4j 等模型响应）；「ForkJoinPool.commonPool-worker-5」#117 停在 StageTimeout.await(StageTimeout.java:58)，编排栈为 PipelineExecutor.runStage:154 → execute:70（第①步「调研」）；整份 dump（455 行/43 线程）里 OkHttp 读线程数为 0，证明流已被掐断且无人回调，future 不会完成。#33 最终结论：15:47:38.125 启动 → 16:17:38.565 失败（正好 1800s），MODE=PIPELINE，TOOL_CALL_COUNT=26，EXECUTION_LOG 仅一行「【调研】启动智能体：调研员」，MESSAGE=智能体会话超时（1800 秒未结束）。**更正我此前一处口头结论**：曾说 #33「卡在第一次 LLM 调用」不准确——它已完成约 26 轮工具调用（TaskWorkspace.addToolCalls 语义已核实），是之后某次调用停滞耗尽阶段预算；#29 才是首个调用就卡。同一根因两种命中点，说明停滞与「第几次调用」无关。日志割裂的解释：PipelineExecutor.runStage 只在 runWithLimit 正常返回后才合并阶段日志，抛异常则整批丢失，而 TOOL_CALL_COUNT 走 onToolCalls 实时回调得以幸存（此缺口已被交接会话的 AgentRunner.ProgressListener 补上）。同一 dump 还发现**第二个泄漏**：ForkJoinPool.commonPool-worker-3 自约 14:55 起阻塞在 LLMResult.get 达 78.8 分钟，栈顶为 ArticleAiService.chat 编辑器链路（executeWithAgentSession:281 / execute:218 持锁），该链路完全不经过 StageTimeout——无超时、不自愈、不留痕，直到 16:28 重启才消失；当时共 2 条线程阻塞在 LLMResult.get，即 2 个网关名额被白占。**核实交接会话的实施进展**（read-only 核对，非重复实现）：第①期 InFlightGate 已落地（源码 15:26:22 / class 16:10:04，默认 limit=4、acquire-timeout=60，接入 TaskExecutionService:136 与 ArticleAiService:220）；第②期 stage-timeout-seconds 1800→300 且 stale-run-hours 同步 12→3；第④期卡点诊断与实时日志已生效；#33 跑在闸门之前的实例上（当时 dump 中 InFlightGate 出现 0 次）。**实施后的新症状**：#35/#36/#38 三次 SINGLE 均在 300 秒准时失败，卡点字段显示「收到模型输出 0–2 字符」后停滞、各 1 次工具调用——停滞仍在，只是止损变快，可恢复性未解决。#39（COORDINATOR）5 秒即失败于「并发额度等待超时（上限 1，已等待 5 秒）」，与默认 4/60 不符，判断为测试用环境变量覆盖；留档要点是闸门本身工作正常（初稿曾推断「一次 COORDINATOR 天然占 ≥2 名额」并据此认为 4 偏紧，**该推断已撤回**：闸门只在 TaskExecutionService:136 运行级与 ArticleAiService:220 编辑器会话两处取牌，AgentRunner/AgentInvoker 内无 inFlightGate 引用，嵌套子智能体不重复占位，#39 失败只因 limit=1 时先到的 #38 占住了唯一名额）。#36 另暴露 browse_webpage 工具失败 HTTP 403/404，与 SSE 停滞无关，建议单列。**仍未解决的最大缺口（本轮新增结论）**：编辑器链路没有硬超时护栏，而它现在会取 InFlightGate 名额、名额在 finishSession（ArticleAiService.java:576-578）释放，finishSession 只在 execute 走到末尾时被调用——流一停滞则 execute 永不返回、名额永不释放，等于把「停滞即泄漏一个名额」从定时链路搬到了编辑器链路。当前状态（17:27，已标时刻）：应用已重启为 PID 41352，无任何线程阻塞在 LLMResult.get，无 RUNNING 运行，网关探测 4/4 正常（0.64–2.40 秒）——属间歇性发作而非常态故障。全程只读：未改源码、未重启服务、未改数据库；解密出的 API Key 临时文件已删除。",
+  "artifacts": [
+    "docs/dev/agent-session-timeout-handoff.md（本轮新增）",
+    "docs/dev/agent-session-timeout-plan.md（仅在顶部加了一行指向上述文档的指针）",
+    "活体线程栈：agent-stage调研 #121 @ LLMResult.get(LLMResult.java:77)；commonPool-worker-5 #117 @ StageTimeout.await；commonPool-worker-3 #67 @ ArticleAiService.chat（78.8 分钟泄漏）",
+    "TASK_RUN#33（15:47:38→16:17:38，1800s，PIPELINE，26 次工具调用，日志仅 1 行）",
+    "TASK_RUN#35/#36/#38（300s 准时失败，卡点=收到模型输出 0–2 字符；#36 含 browse_webpage 403/404）",
+    "TASK_RUN#39（并发额度等待超时，上限 1 / 已等待 5 秒）"
+  ],
+  "quality": {
+    "checks": [
+      {
+        "name": "code-change",
+        "result": "skip",
+        "detail": "本轮为只读采集 + 文档；未改源码、未跑编译与测试、未重启服务，系刻意避让并行会话 sess_8e9a49cf（当时它正占用 8081、Maven，并在同一批文件上迭代）"
+      },
+      {
+        "name": "live-thread-dump",
+        "result": "pass",
+        "detail": "16:14:08 对在跑的 JVM(24700) jstack：agent-stage调研 存活 1589.90s 停在 LLMResult.get(LLMResult.java:77)；编排线程停在 StageTimeout.await(StageTimeout.java:58) / PipelineExecutor.execute:70；dump 中 OkHttp 读线程数为 0"
+      },
+      {
+        "name": "gateway-probe",
+        "result": "pass",
+        "detail": "17:27 复测网关 4/4 正常（0.64–2.40s，均收到 [DONE]）；此前 8 次同样请求曾 1 次 >40s 完全无响应——确认为间歇性"
+      },
+      {
+        "name": "counter-semantics",
+        "result": "pass",
+        "detail": "核实 TaskWorkspace.addToolCalls/toolCallCount 为真实工具调用累加，故 #33 的 26 次可信，据此更正了「卡在第一次调用」的口头结论"
+      },
+      {
+        "name": "gap-verification",
+        "result": "pass",
+        "detail": "grep 确认 StageTimeout.await 仅被 AgentInvoker:191 调用（定时三链路），ArticleAiService 中 timeout 相关为 0；名额释放点 finishSession 只在 execute 末尾被调用"
+      }
+    ],
+    "gate_passed": true
+  },
+  "next": [
+    "先读 docs/dev/agent-session-timeout-handoff.md（现场证据与最新进展），再读 agent-session-timeout-plan.md（方案/风险/实施记录）",
+    "最高优先：给编辑器链路（ArticleAiService.chat → CompletableFuture.runAsync → execute → finishSession）加硬超时护栏，否则停滞即永久占用一个 InFlightGate 名额。可直接复用 StageTimeout；注意门槛应覆盖「等待浏览器侧工具完成（completeTool）」的合法时长，并确保超时路径也走 finishSession 释放 Lease",
+    "次高优先：停滞可恢复——阶段级有界重试（同阶段最多 1 次、必须重建 AgentClient）；并复核 DelegateTools.runSubAgent 把子智能体超时转引导文本后主编能否正常收尾",
+    "闸门策略产品决策：默认 max-in-flight=4 对「一次 COORDINATOR 占 ≥2 名额」偏紧（#39 在 limit=1/等待 5s 下连一个都起不来）；需在排队更久/直接拒绝/调大上限之间定夺，且上限不得超过网关的 6",
+    "独立问题单列：browse_webpage 网页请求失败 HTTP 403/404（#36）",
+    "长期：向 agent4j 索取 readTimeout 与 cancel/close（唯一根治「停滞即泄漏名额」的路径）；与网关方沟通提高 max=6",
+    "观测缺口提醒：TASK_RUN 的 MODE/EXECUTION_LOG 只在收尾落库（RUNNING 行永远 MODE=NULL、日志空、TOOL_CALL_COUNT=0）；运行中要看进度只能 jstack 抓线程栈"
+  ],
+  "read_files": [
+    "docs/dev/agent-session-timeout-plan.md",
+    "src/main/java/ink/icoding/wechat/article/schedule/StageTimeout.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/AgentInvoker.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/AgentRunner.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/TaskExecutionService.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/PipelineExecutor.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/TaskWorkspace.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/TaskRunMapper.java",
+    "src/main/java/ink/icoding/wechat/article/ai/ArticleAiService.java",
+    "src/main/java/ink/icoding/wechat/article/common/InFlightGate.java",
+    "src/main/resources/application.yaml"
+  ]
+}

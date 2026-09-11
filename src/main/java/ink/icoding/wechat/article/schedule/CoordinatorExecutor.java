@@ -9,8 +9,6 @@ import ink.icoding.wechat.article.agent.AgentFactory;
 import ink.icoding.wechat.article.skill.SkillContext;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -37,7 +35,8 @@ public class CoordinatorExecutor extends ScheduledExecutionStrategy {
     @Override
     public ArticleAiService.ScheduledAgentResult execute(ArticleAiService.ScheduledAgentRequest request,
                                                          TaskWorkspace workspace) throws Exception {
-        List<String> executionLog = Collections.synchronizedList(new ArrayList<>());
+        // 日志写在工作区上（不是局部变量）：阶段失败时局部变量随异常丢弃，运行历史就只剩一行错误
+        List<String> executionLog = workspace.executionLog();
         int maxRounds = request.maxRevisionRounds() == null ? 2 : Math.max(0, request.maxRevisionRounds());
 
         // 整轮共用同一个媒体去重器：chief 与所有子智能体重复请求同一张图/同一次生图只执行一次
@@ -49,8 +48,14 @@ public class CoordinatorExecutor extends ScheduledExecutionStrategy {
             AgentClient subAgent = agentFactory.build(code, stage, context, workspace, request.accountId(),
                     request.userId(), null, mediaMutations);
             executionLog.add(logPrefix + "启动子智能体：" + subAgent.getName());
-            return runner.runWithLimit(subAgent, command, null, logPrefix,
-                    DelegateTools.MAX_SUB_AGENT_TOOL_CALLS);
+            // 子智能体的日志由 DelegateTools 事后统一落盘（见 runSubAgent），这里只实时上报工具计数，
+            // 避免同一行日志记两次。
+            AgentRunner.Outcome outcome = runner.runWithLimit(subAgent, command, null, logPrefix,
+                    DelegateTools.MAX_SUB_AGENT_TOOL_CALLS,
+                    AgentRunner.ProgressListener.toolCallsOnly(workspace::addToolCalls));
+            // 子智能体的工具失败也要计入运行级失败数（终态判定见 TaskWorkspace.toolFailureCount）
+            workspace.addToolFailures(outcome.toolFailures());
+            return outcome;
         };
 
         List<Tool> delegateTools = DelegateTools.create(workspace, maxRounds,
@@ -78,10 +83,11 @@ public class CoordinatorExecutor extends ScheduledExecutionStrategy {
                 request.outputMode(), PipelineExecutor.deliveryRequirement(request), maxRounds,
                 request.instruction());
 
-        // chief 同样受工具调用上限约束：读草稿 + ≤8 次委托，超出即中止（防失控）
+        // chief 同样受工具调用上限约束：读草稿 + ≤8 次委托，超出即中止（防失控）。
+        // 日志实时汇入工作区：chief 停滞/超时时本次尝试的局部日志会随异常丢弃，只有实时上报的留得住。
         AgentRunner.Outcome outcome = runner.runWithLimit(chief, command, null, "【协调】",
-                DelegateTools.MAX_CHIEF_TOOL_CALLS);
-        executionLog.addAll(List.of(outcome.executionLog().isBlank() ? new String[0] : outcome.executionLog().split("\n")));
+                DelegateTools.MAX_CHIEF_TOOL_CALLS, workspace.progressListener());
+        workspace.addToolFailures(outcome.toolFailures());
 
         if (!workspace.draftState().isSaved()) {
             throw new IllegalStateException("智能体没有通过 save_article_draft 提交文章");

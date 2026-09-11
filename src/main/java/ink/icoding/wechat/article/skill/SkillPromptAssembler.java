@@ -18,6 +18,7 @@ import java.util.Map;
  * 1. 收集 enabled skill，按 agent &lt; account &lt; task &lt; article 优先级并集去重；
  * 2. 按维度分组注入（维度顺序按 3.3 白名单表，LAYOUT 排最后）；
  * 3. LAYOUT 维度单注入：仅优先级最高一枚生效，其余记入 ignoredLayoutSkills 丢弃（防双引擎指令混用）；
+ * 3b. 其余维度多注入：同维度多枚按绑定顺序并列注入并 WARN（风格冲突属绑定侧决策，不在注入时静默取舍）；
  * 4. LAYOUT 保底：无任何生效 LAYOUT skill 时注入内置 default_layout（DB 不可用回落代码常量）；
  * 5. 生效引擎 = 排序最前 LAYOUT skill 的 engine（无 LAYOUT skill → PROMPT）；
  * 6. EDITOR 场景过滤 MARKFLOW 技能（render_markflow 第④期才交付）；
@@ -90,6 +91,19 @@ public class SkillPromptAssembler {
         for (int i = 1; i < layouts.size(); i++) {
             ignored.add(layouts.get(i));
         }
+
+        // 除 LAYOUT 外的维度允许同维度多枚共存，按绑定顺序并列注入。
+        // 同维度多枚可能互相冲突（典型：两个【图片风格】给出互斥的审美取向，如「纪实摄影」+「扁平插画」），
+        // 这里只告警、不改行为——LAYOUT 之所以单注入是因为它直接决定用哪个排版引擎（双引擎指令必然打架），
+        // 而风格类冲突「首个生效、其余丢弃」会让用户看不见地丢掉一半绑定，比冲突本身更糟。
+        // 真要加强约束应在绑定处校验（skills-agent-plan 十七轮 ⑧b 记为产品决策，未单方面收紧）。
+        grouped.forEach((dimension, skills) -> {
+            if (skills.size() > 1) {
+                log.warn("同一维度的多枚技能将并列注入【{}】：{}，内容可能相互冲突，请确认这是预期绑定",
+                        DIMENSION_LABELS.getOrDefault(dimension, dimension),
+                        skills.stream().map(Skill::getName).toList());
+            }
+        });
 
         StringBuilder prompt = new StringBuilder();
         for (String dimension : SkillDimensions.INJECTION_ORDER) {

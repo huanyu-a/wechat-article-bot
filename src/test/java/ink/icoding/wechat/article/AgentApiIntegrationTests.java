@@ -380,6 +380,9 @@ class AgentApiIntegrationTests {
     /**
      * 智能体默认技能绑定的往返与清空（前端 AgentsView 的 SkillPicker）：
      * agent.skillIds 同样是「逗号分隔字符串」持久化，需保证写读一致且能清空。
+     *
+     * <p>同时守住响应契约：tool_keys / skill_ids 在库里是字符串编码（JSON 数组 / 逗号分隔），
+     * 但读接口必须还原成数组，否则 GET 的产物无法回填 PUT（资源不可往返）。
      */
     @Test
     void agentSkillIdsRoundTripAndClear() throws Exception {
@@ -392,16 +395,38 @@ class AgentApiIntegrationTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"code":"skill_bind_agent","name":"技能绑定智能体","stage":"WRITING",
-                                 "persona":"人设","toolKeys":["DRAFT_READ"],"skillIds":[%d],"enabled":true}
+                                 "persona":"人设","toolKeys":["DRAFT_READ","DRAFT_WRITE"],"skillIds":[%d],"enabled":true}
                                 """.formatted(skillId)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.skillIds").value(String.valueOf(skillId)));
+                .andExpect(jsonPath("$.data.skillIds[0]").value(skillId))
+                .andExpect(jsonPath("$.data.toolKeys[0]").value("DRAFT_READ"))
+                .andExpect(jsonPath("$.data.toolKeys[1]").value("DRAFT_WRITE"));
 
         Long agentId = jdbcTemplate.queryForObject(
                 "SELECT ID FROM AGENT_DEFINITION WHERE CODE = 'skill_bind_agent'", Long.class);
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT SKILL_IDS FROM AGENT_DEFINITION WHERE ID = " + agentId, String.class))
                 .isEqualTo(String.valueOf(skillId));
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT TOOL_KEYS FROM AGENT_DEFINITION WHERE ID = " + agentId, String.class))
+                .isEqualTo("[\"DRAFT_READ\",\"DRAFT_WRITE\"]");
+
+        // 读接口形状与写接口一致：GET 出来的数组能原样回填 PUT
+        mockMvc.perform(get("/api/agents/" + agentId).header("Authorization", admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.skillIds[0]").value(skillId))
+                .andExpect(jsonPath("$.data.toolKeys[0]").value("DRAFT_READ"));
+
+        // 用 GET 的产物形状回写（只改 enabled），必须仍是 200
+        mockMvc.perform(put("/api/agents/" + agentId)
+                        .header("Authorization", admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"code":"skill_bind_agent","name":"技能绑定智能体","stage":"WRITING",
+                                 "persona":"人设","toolKeys":["DRAFT_READ"],"skillIds":[%d],"enabled":false}
+                                """.formatted(skillId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.skillIds[0]").value(skillId));
 
         mockMvc.perform(put("/api/agents/" + agentId)
                         .header("Authorization", admin)
@@ -433,15 +458,30 @@ class AgentApiIntegrationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.executionMode").value("PIPELINE"))
                 .andExpect(jsonPath("$.data.maxRevisionRounds").value(3))
+                .andExpect(jsonPath("$.data.stageAgents.research").value(0))
+                .andExpect(jsonPath("$.data.skillIds").isArray())
                 .andReturn().getResponse().getContentAsString();
         Long taskId = Long.valueOf(created.replaceAll("(?s).*\"id\":(\\d+).*", "$1"));
-        assertThat(created).contains("\"stageAgents\"");
 
-        // 读回：stageAgents 为 JSON 字符串
-        mockMvc.perform(get("/api/tasks/" + taskId).header("Authorization", admin))
+        // 读回：stage_agents 以结构化对象出参（库里是 JSON 字符串）
+        String fetched = mockMvc.perform(get("/api/tasks/" + taskId).header("Authorization", admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.executionMode").value("PIPELINE"))
-                .andExpect(jsonPath("$.data.maxRevisionRounds").value(3));
+                .andExpect(jsonPath("$.data.maxRevisionRounds").value(3))
+                .andExpect(jsonPath("$.data.stageAgents.research").value(0))
+                .andExpect(jsonPath("$.data.stageAgents.review").value(1))
+                .andReturn().getResponse().getContentAsString();
+
+        // 读接口形状必须与写接口一致：GET 的产物原样回填 PUT（修复前 skill_ids 是逗号串、
+        // stage_agents 是 JSON 字符串，PUT 直接报 JSON parse error，资源不可往返）
+        String roundTrip = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(fetched).path("data").toString();
+        mockMvc.perform(put("/api/tasks/" + taskId)
+                        .header("Authorization", admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(roundTrip))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.stageAgents.writing").value(1));
 
         // 非法执行模式拒绝
         mockMvc.perform(post("/api/tasks")

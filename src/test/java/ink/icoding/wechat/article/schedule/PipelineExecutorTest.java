@@ -262,6 +262,60 @@ class PipelineExecutorTest {
     }
 
     @Test
+    void stageFailureKeepsPartialExecutionLogInWorkspace() {
+        TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
+        StubRunner runner = new StubRunner(workspace, code -> null); // 写作阶段不存草稿 → 阶段失败
+
+        assertThatThrownBy(() -> executor(runner).execute(request(Map.of("illustration", 0L, "review", 0L), 2),
+                workspace))
+                .isInstanceOf(IllegalStateException.class);
+
+        // 日志若留在执行器局部变量里会随异常丢弃，运行历史只剩一行错误、看不出失败在哪个阶段；
+        // 失败路径必须能从工作区取到已产生的日志（TaskExecutionService 据此落库）
+        assertThat(workspace.executionLogText()).contains("【调研】").contains("【写作】");
+    }
+
+    @Test
+    void runnerFailureKeepsTheStalledStageLogInWorkspace() {
+        // 事故现场：阶段因为 SSE 停滞/硬超时抛异常。若日志只在运行器返回后才整体追加，
+        // 这一次尝试的日志会随异常一起丢掉——运行历史里 EXECUTION_LOG 为空，看不出卡在哪一步。
+        TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
+        AgentRunner stalled = new AgentRunner() {
+            @Override
+            public Outcome run(AgentClient agent, String command, List<MemoryMultipartFile> attachments) {
+                return run(agent, command, attachments, null);
+            }
+
+            @Override
+            public Outcome run(AgentClient agent, String command, List<MemoryMultipartFile> attachments,
+                               String logPrefix) {
+                throw new StageTimeoutException("智能体会话超时（300 秒未结束）");
+            }
+
+            @Override
+            public Outcome runWithLimit(AgentClient agent, String command, List<MemoryMultipartFile> attachments,
+                                        String logPrefix, int maxToolCalls, ProgressListener progress) {
+                // 会话在停滞前已经调用过工具并产生了日志：这些必须已经落到工作区
+                progress.toolCallCounted(1);
+                progress.logLine("【调研】调用工具：search_web");
+                throw new StageTimeoutException("智能体会话超时（300 秒未结束）");
+            }
+        };
+        PipelineExecutor executor = new PipelineExecutor(null, null, stalled);
+        executor.setStageAgentBuilder((code, stage, request, ws) -> {
+            AgentClient agent = new AgentClient();
+            agent.setName(code);
+            return agent;
+        });
+
+        assertThatThrownBy(() -> executor.execute(request(Map.of("illustration", 0L, "review", 0L), 2), workspace))
+                .isInstanceOf(StageTimeoutException.class);
+
+        assertThat(workspace.executionLogText()).contains("【调研】调用工具：search_web");
+        assertThat(workspace.toolCallCount()).isEqualTo(1);
+    }
+
+    @Test
     void imageIssuesTriggerIllustrationRerun() throws Exception {
         TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
         List<Integer> reviewCalls = new ArrayList<>();

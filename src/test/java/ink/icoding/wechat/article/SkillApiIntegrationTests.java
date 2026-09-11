@@ -82,11 +82,21 @@ class SkillApiIntegrationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.name=='默认公众号版式')]").exists())
                 .andExpect(jsonPath("$.data[?(@.name=='MarkFlow 精排版式')]").exists())
-                .andExpect(jsonPath("$.data[?(@.name=='事实核查基线')]").exists());
+                .andExpect(jsonPath("$.data[?(@.name=='事实核查基线')]").exists())
+                // 图片风格维度（IMAGE）自带三种预设：无预设时该维度形同虚设
+                .andExpect(jsonPath("$.data[?(@.name=='纪实摄影风')]").exists())
+                .andExpect(jsonPath("$.data[?(@.name=='扁平插画风')]").exists())
+                .andExpect(jsonPath("$.data[?(@.name=='柔和 3D 渲染风')]").exists());
 
         Long builtin = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM SKILL WHERE IS_BUILTIN = 1", Long.class);
-        assertThat(builtin).isEqualTo(7L);
+        // 从种子清单推导而非写死数字：新增内置技能时用例自动跟随，不必手工改断言
+        assertThat(builtin).isEqualTo((long) ink.icoding.wechat.article.skill.SkillSeeder.seeds().size());
+
+        // 图片风格预设必须落在 IMAGE 维度（维度白名单校验通过且可被 prompt 组装注入）
+        Long imageBuiltin = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM SKILL WHERE IS_BUILTIN = 1 AND DIMENSION = 'IMAGE'", Long.class);
+        assertThat(imageBuiltin).isEqualTo(3L);
 
         // 内置技能不可删除
         Long id = jdbcTemplate.queryForObject(
@@ -252,8 +262,8 @@ class SkillApiIntegrationTests {
 
     /**
      * 文章级 Skill 绑定往返（前端 ArticleEditorView 依赖）：
-     * 文章 GET 返回的是实体（skillIds 为逗号分隔字符串），PUT 接收数组——
-     * 若任一侧形态错位，编辑器的技能选择会在加载后清空、下次保存时丢失绑定。
+     * 落库是逗号分隔字符串，而**接口两侧都必须是数组**——读取侧曾直接返回实体（字符串），
+     * 调用方把 GET 结果原样 PUT 回来就会被 Jackson 以「不能把 String 反序列化成 ArrayList&lt;Long&gt;」拒绝。
      */
     @Test
     void articleSkillIdsRoundTrip() throws Exception {
@@ -276,10 +286,11 @@ class SkillApiIntegrationTests {
                 "SELECT SKILL_IDS FROM ARTICLE WHERE ID = " + articleId, String.class);
         assertThat(stored).isEqualTo(String.valueOf(layoutId));
 
-        // 读取返回同一形态（前端 parseSkillIds 两种都能解析）
+        // 读取返回**数组**形态（与写入侧同形）
         mockMvc.perform(get("/api/articles/" + articleId).header("Authorization", admin))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.skillIds").value(String.valueOf(layoutId)));
+                .andExpect(jsonPath("$.data.skillIds").isArray())
+                .andExpect(jsonPath("$.data.skillIds[0]").value(layoutId));
 
         // 更新为另一组绑定并回读
         Long writingId = jdbcTemplate.queryForObject(
@@ -292,6 +303,22 @@ class SkillApiIntegrationTests {
                                  "skillIds":[%d]}
                                 """.formatted(writingId)))
                 .andExpect(status().isOk());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT SKILL_IDS FROM ARTICLE WHERE ID = " + articleId, String.class))
+                .isEqualTo(String.valueOf(writingId));
+
+        // 真·往返：把 GET 到的 data 原样 PUT 回去（修复前这里因 skillIds 是字符串而 400）
+        String fetched = mockMvc.perform(get("/api/articles/" + articleId).header("Authorization", admin))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String roundTrip = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(fetched).path("data").toString();
+        mockMvc.perform(put("/api/articles/" + articleId)
+                        .header("Authorization", admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(roundTrip))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.skillIds[0]").value(writingId));
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT SKILL_IDS FROM ARTICLE WHERE ID = " + articleId, String.class))
                 .isEqualTo(String.valueOf(writingId));
@@ -340,6 +367,8 @@ class SkillApiIntegrationTests {
         Long layoutId = jdbcTemplate.queryForObject(
                 "SELECT ID FROM SKILL WHERE BUILTIN_KEY = 'minimal_layout'", Long.class);
 
+        // 必须断言被预览技能自身的正文在场：只断言「排版模板」会被内置保底版式蒙混过关
+        // （这正是 preview 把 skillIds 放进 SCHEDULED 不生效的 articleSkillIds 槽位时漏掉的回归）
         mockMvc.perform(post("/api/skills/preview")
                         .header("Authorization", admin)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -348,6 +377,26 @@ class SkillApiIntegrationTests {
                                 """.formatted(layoutId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.engine").value("PROMPT"))
-                .andExpect(jsonPath("$.data.prompt").value(org.hamcrest.Matchers.containsString("排版模板")));
+                .andExpect(jsonPath("$.data.prompt").value(org.hamcrest.Matchers.containsString("排版模板")))
+                .andExpect(jsonPath("$.data.prompt").value(org.hamcrest.Matchers.containsString("极简黑白版式")))
+                .andExpect(jsonPath("$.data.prompt").value(
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("公众号正文视觉模板"))));
+    }
+
+    @Test
+    void previewInjectsImageStyleSkill() throws Exception {
+        String admin = adminToken();
+        Long imageId = jdbcTemplate.queryForObject(
+                "SELECT ID FROM SKILL WHERE BUILTIN_KEY = 'photo_documentary'", Long.class);
+
+        mockMvc.perform(post("/api/skills/preview")
+                        .header("Authorization", admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"skillIds":[%d],"scene":"SCHEDULED"}
+                                """.formatted(imageId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.prompt").value(org.hamcrest.Matchers.containsString("【图片风格】")))
+                .andExpect(jsonPath("$.data.prompt").value(org.hamcrest.Matchers.containsString("纪实摄影风格")));
     }
 }

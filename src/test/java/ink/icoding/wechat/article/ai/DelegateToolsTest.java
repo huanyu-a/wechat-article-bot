@@ -54,6 +54,43 @@ class DelegateToolsTest {
         assertThat(invoked).hasSize(DelegateTools.MAX_DELEGATIONS);
     }
 
+    /**
+     * 整轮工具调用预算（P2-7）：逐项额度（chief 48 / 每次委托 24 / 至多 8 次）叠加上界达 240 次，
+     * 比 SINGLE 的 40 次高一个量级，必须有一道整轮总闸——否则「每次委托都跑满 24 次」这种组合
+     * 无人值守时没人拦得住。
+     */
+    @Test
+    void totalToolCallBudgetStopsFurtherDelegations() {
+        TaskWorkspace workspace = TaskWorkspace.create(null, LayoutEngine.PROMPT);
+        List<String> invoked = new ArrayList<>();
+        // 每次委托跑满单次上限 24 次：5 次即达整轮上限（120），第 6 次必须被拒绝
+        DelegateTools.SubAgentRunner heavy = (code, stage, command, logPrefix) -> {
+            invoked.add(code);
+            return new AgentRunner.Outcome("完成", DelegateTools.MAX_SUB_AGENT_TOOL_CALLS, "stub");
+        };
+        List<ink.icoding.llm.core.tool.Tool> tools =
+                DelegateTools.create(workspace, 2, (code, stage) -> heavy, new ArrayList<>());
+        @SuppressWarnings("unchecked")
+        ink.icoding.llm.core.tool.Tool<DelegateTools.DelegateResearchParam> research =
+                (ink.icoding.llm.core.tool.Tool<DelegateTools.DelegateResearchParam>) tools.get(0);
+
+        DelegateTools.DelegateResearchParam param = new DelegateTools.DelegateResearchParam();
+        param.setInstruction("调研 AI 行业");
+        int accepted = 0;
+        String last = null;
+        for (int i = 0; i < DelegateTools.MAX_DELEGATIONS; i++) {
+            last = research.execute(param);
+            if (!"完成".equals(last)) break;
+            accepted++;
+        }
+
+        assertThat(accepted)
+                .as("整轮上限必须先于委托次数上限生效（24 次/委托 → 5 次即 120）")
+                .isEqualTo(DelegateTools.MAX_TOTAL_TOOL_CALLS / DelegateTools.MAX_SUB_AGENT_TOOL_CALLS);
+        assertThat(last).contains("工具调用总量已达上限");
+        assertThat(invoked).hasSize(accepted);
+    }
+
     @Test
     void writingDelegationCountsRevisionAndEnforcesMaxRounds() {
         TaskWorkspace workspace = TaskWorkspace.create(null, LayoutEngine.PROMPT);

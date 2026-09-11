@@ -1,0 +1,54 @@
+{
+  "agent": "main",
+  "timestamp": "2026-09-11T17:50:00",
+  "status": "completed",
+  "summary": "按用户「将bug与未实现的写成交接文档」产出 docs/dev/known-issues-handoff.md：把本轮（agent-session-timeout-plan 第①②③④期）与近几轮自检中散落在各方案文档里的缺陷与未实现项收敛成一份可交接清单。文档分五节——②已修缺陷索引 D1–D13（每条给症状/量化证据/修复轮次/关键文件，明确「命中即回归、不是新缺陷」）；并单列「已核实不属于遗留」的 5 条（站点 Base URL 与渲染前 URL 绝对化、digest 用 render meta.summary、账号 defaultStyle 接线、/preview 30次每分每用户限流、delegate_research 已有会话级 3 次+端点 20 次每分双重约束），避免接手方重复排查；③仍然未实现——上游依赖 U1 agent4j 2.3.3 无 readTimeout/cancel（停滞后流不关闭，重试可能与下次运行重叠产生重复付费副作用）、U2 temperature/maxTokens 只存不用（LLM.create 仅 4 参，UI 已标注）、U3 网关并发 max=6；本仓库缺口 I1 进程内信号量与 taskLocks 均为 JVM 本地、多实例合计可超配额、I2 孤儿运行是纯时间阈值（3h）而非属主存活判定、I3 MarkFlow preview 字段未用致 KaTeX 配套 CSS 与 aria-hidden 丢失、I4 无「用留存 Markdown 重新渲染覆盖正文」入口、I5 同维度多 IMAGE 技能并列注入有意不改（产品决策）、I6 COORDINATOR 子智能体停滞时局部日志与计数缺失、I7 TUN 代理致 COORDINATOR 无全绿实跑、I8（P0，最高优先）编辑器 AI 对话链路无硬超时——CompletableFuture.runAsync 起 execute() → executeWithAgentSession 直接 result.execute()/result.get()，完全不经过 StageTimeout，停滞即永久占住一个 InFlightGate 名额并且 TASK_RUN 里没有任何记录（现场线程栈抓到 worker-3 已挂 4730 秒/79 分钟，该 dump 里共 2 条线程阻塞在 LLMResult.get 即 2 个网关名额被白占）、I9 browse_webpage 403/404 被计为工具失败、I10 RUNNING 行无进度可读（MODE 恒 NULL、EXECUTION_LOG 空、TOOL_CALL_COUNT=0，运行期间只能 jstack）。另新增 3.4 节对齐并行会话（sess 现场证据文档 docs/dev/agent-session-timeout-handoff.md，16:14–17:30 只读采集）：其「剩余工作」7 项中第 4（工具失败记 SUCCESS）与第 5（时间戳混源）本份已列为已修 D5/D4（它写作时跑的是补丁前实例，故以本份为准），第 1 项即 I8、第 6 项即 U1、第 7 项即 I9、第 2 项定时链路已做（编辑器随 I8）；并更正它的一个推断——「一次 COORDINATOR 运行天然占 ≥2 个名额」不成立，闸门只在 TaskExecutionService.java:136（运行级，一次运行一个）与 ArticleAiService.java:220（编辑器会话）两处取名额，AgentRunner.runWithLimit 不取，嵌套子智能体在同一运行内不重复占位，run#39 在 limit=1 下失败只是先到的 run#38 占住了唯一名额，故默认 4 够用、不必按「占 2」上调（上限也不得超过网关 6）；随后按用户「把 sess_457cd5ec 的文档也合并进来」把该会话 handoff 的实体内容整体并入本份：新增第五节「现场证据与根因」（根因四条 + 已排除项：reasoning_content 处理正常、TLS 证书 8-11→11-9 有效、与请求体大小无关、调研员是受害者；run#33 完整结论含「不是卡在第一次调用，而是完成约 26 轮工具调用后才卡」的更正；16:14:08 PID 24700 的 455 行/43 线程活体栈，含编辑器 worker-3 已挂 4730s、栈里 OkHttp 读线程为 0；InFlightGate 源码 15:26/class 16:10 但实例 14:33 启动故 #33 跑在闸门之前；#35/#36/#38 均在 300 秒止损且卡点显示模型只吐 0–2 字符；17:27 现场空闲健康=间歇性发作）与第六节「可复用的现场诊断手法」（jstack 判读要点、用 class mtime 判运行实例版本、网关劣化探测与样本数据、直查开发库、RUNNING 行无进度的观测缺口），原第五/六节顺延为第七/八节；3.4 改为「对并行会话剩余工作的逐条核销」；U1 补入它提出的两项待确认（agent4j 流式解析是否忽略 reasoning_content、读层补 readTimeout/心跳/兜底 onFailure 并让 runSubAgent 内外超时可在报错里区分）；第八节补「继续采样把间歇性量化」一条。合并时**有意剔除原文里解密出的 API Key 与 secret 明文**，6.3 节只保留手法并加了「不要把 key 写进文档或提交」的告警。原 handoff 文件保留未删——该会话 17:42 仍在编辑它，且非本会话产物，删改会打断对方。④工程约束与验收方式（mvn-local.sh、测试库串行禁并行、不能用 grep 搜日志中文、测量须可反证、结论须核对结构）与工作树状态；⑤文档地图与按性价比排序的下一步（建议 I2+I1 一起做）。本轮只新增文档，未改任何源码，故未重跑测试——第四节引用的 205 例全绿门禁沿用同一工作树状态下本轮实施时的结果。",
+  "artifacts": [
+    "docs/dev/known-issues-handoff.md（新增；本轮唯一产物，2026-09-11 17:36 建立、17:50 前后合并 sess_457cd5ec 的现场证据为第五/六节，共 355 行）"
+  ],
+  "quality": {
+    "checks": [
+      {
+        "name": "test",
+        "result": "skip",
+        "detail": "本轮无代码改动（仅新增一份 Markdown 文档），未重跑测试；205 例全绿为同一工作树状态下本轮实施时的门禁结果"
+      },
+      {
+        "name": "compile",
+        "result": "skip",
+        "detail": "同上，无源码改动"
+      },
+      {
+        "name": "fact-check",
+        "result": "pass",
+        "detail": "文档中每一条事实都回到代码/文档核对：AssetService.java:119 的 /uploads/ 相对路径、RenderConfig.siteBaseUrl + MarkFlowRenderService.absoluteImageUrls（确认 Base URL 缺口已闭合，不再列为遗留）、ScheduledArticleTools.java:140 用 result.summary() 兜底 digest、SkillPromptAssembler 规则 8 注入 defaultStyle、SkillController.PREVIEW_MAX_PER_MINUTE=30 与 ArticleAiController.CHAT_MAX_PER_MINUTE=20、MAX_EDITOR_DELEGATE_CALLS=3、InFlightGate DEFAULT_LIMIT=4/ACQUIRE=60、AgentInvoker MAX_RATE_LIMIT_RETRIES=3/MAX_STALL_RETRIES=1、Asset.DESCRIPTION_MAX_LENGTH=500、DelegateTools MAX_TOTAL_TOOL_CALLS=120/MAX_CHIEF=48/MAX_SUB_AGENT=24"
+      },
+      {
+        "name": "gap-verification",
+        "result": "pass",
+        "detail": "对并行会话新提出的缺口做独立核实后才写入：grep 确认 StageTimeout 只被 AgentInvoker 使用（schedule 链路），ArticleAiService.executeWithAgentSession 在 280 行附近直接 result.execute()/result.get()，编辑器链路确无硬超时 → I8 成立；grep 确认 InFlightGate 只有 TaskExecutionService.java:136 与 ArticleAiService.java:220 两个取名额点、AgentRunner.runWithLimit 不取名额 → 并行会话「COORDINATOR 天然占 2 名额」的推断被证伪，已在文档 3.4 更正（对方 17:40 亦已自行更正）"
+      },
+      {
+        "name": "merge-hygiene",
+        "result": "pass",
+        "detail": "合并 sess_457cd5ec 文档时做了三项卫生检查：①grep 确认合并后的文档不含原文里解密出的 secret/API Key 明文（原文写了密钥值片段，本次只保留手法描述并加告警，密钥值不落任何文档）；②标题层级自检（〇/一…八顺序连续、3.4 与 5.x/6.x 无重号、第七/八节已顺延）；③未删改对方的 docs/dev/agent-session-timeout-handoff.md（17:42 仍在被其编辑，非本会话产物）"
+      }
+    ],
+    "gate_passed": true
+  },
+  "next": [
+    "用户未授权 git 提交：全部改动（源码 + 本轮文档）仍留在工作区，需用户明确指示才提交/推送",
+    "文档给出的建议顺序：①I8 编辑器链路加硬超时（P0，复用 StageTimeout，成本最低）②I2 实例身份（task_run.instance_id/心跳）+ I1 全局配额（Redis）一起做 ③I4 重新渲染入口 ④I7 补一次 COORDINATOR 全绿实跑 ⑤U1/U3 对外提诉求 ⑥I9/I10/I3/I5/I6 按痛点排",
+    "本文件 .zcode/handoff/latest.json 为并行 ZCode 会话共享的单文件，其他会话写入前请先读；本次覆盖的是本项目实施记录，未发现其他会话的新记录；另注意并行会话的现场证据文档 docs/dev/agent-session-timeout-handoff.md（只读采集，未与本次编辑冲突）",
+    "验收在开发库留下 run#34–#39 的真实记录（#37 为已删除的 UI 夹具），未清理，勿误判为线上脏数据"
+  ],
+  "read_files": [
+    "docs/dev/agent-session-timeout-plan.md",
+    "docs/dev/skills-agent-plan.md",
+    "docs/dev/skills-agent-plan-review.md",
+    "src/main/java/ink/icoding/wechat/article/skill/MarkFlowRenderService.java",
+    "src/main/java/ink/icoding/wechat/article/asset/{Asset,AssetService}.java",
+    "src/main/java/ink/icoding/wechat/article/ai/{ArticleAiService,ArticleMediaTools,DelegateTools,ScheduledArticleTools}.java",
+    "src/main/java/ink/icoding/wechat/article/{schedule/AgentInvoker,schedule/AgentRunner,common/InFlightGate,common/RateLimiter}.java"
+  ]
+}

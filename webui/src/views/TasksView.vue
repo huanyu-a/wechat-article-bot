@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
-import { Plus, Bot, Play, Clock3, MoreHorizontal, X, CheckCircle2, AlertCircle, Trash2, LoaderCircle, FileText, Layers, Network } from 'lucide-vue-next'
+import { Plus, Bot, Play, Clock3, MoreHorizontal, X, CheckCircle2, AlertCircle, AlertTriangle, Trash2, LoaderCircle, FileText, Layers, Network } from 'lucide-vue-next'
 import CronBuilder from '../components/CronBuilder.vue'
 import { parseSkillIds } from '../utils/skills'
 import SkillPicker from '../components/SkillPicker.vue'
@@ -26,6 +26,11 @@ const MODE_FALLBACK={SINGLE:'单智能体',PIPELINE:'流水线',COORDINATOR:'协
 const modeIcon=key=>MODE_ICONS[key]||Bot
 const modeDesc=key=>MODE_DESC[key]||''
 function modeLabel(key){if(!key)return MODE_FALLBACK.SINGLE;const found=executionModes.value.find(mode=>mode.key===key);return found?found.name:(MODE_FALLBACK[key]||key)}
+
+/** 运行状态显示名。SUCCESS_WITH_WARNINGS = 跑完了但有工具失败（典型是配图没进文章），
+ *  必须与纯粹的 SUCCESS 有可见区别，否则「交付物缺图」会被看成完全成功。 */
+const STATUS_LABELS={SUCCESS:'成功',SUCCESS_WITH_WARNINGS:'成功（有警告）',FAILED:'失败',RUNNING:'执行中'}
+function statusLabel(key){return STATUS_LABELS[key]||key||''}
 
 /** 四个阶段固定 key（后端 stage_agents 仅接受这四个），stage 用于过滤智能体列表 */
 const STAGE_FIELDS=[
@@ -224,10 +229,11 @@ onBeforeUnmount(stopRunPolling)
         <div class="run-list">
           <div v-for="run in runs" :key="run.id">
             <CheckCircle2 v-if="run.status==='SUCCESS'" class="success-text" />
+            <AlertTriangle v-else-if="run.status==='SUCCESS_WITH_WARNINGS'" class="warn-text" />
             <LoaderCircle v-else-if="run.status==='RUNNING'" class="spin" />
             <AlertCircle v-else class="danger-text" />
             <div>
-              <strong>{{run.status}} · {{run.triggerType}}<span v-if="run.mode" class="mode-badge" :class="`mode-${run.mode.toLowerCase()}`">{{modeLabel(run.mode)}}</span></strong>
+              <strong>{{statusLabel(run.status)}} · {{run.triggerType}}<span v-if="run.mode" class="mode-badge" :class="`mode-${run.mode.toLowerCase()}`">{{modeLabel(run.mode)}}</span></strong>
               <p>{{run.message||'智能体正在执行研究与创作…'}}</p>
               <small>工具调用 {{run.toolCallCount||0}} 次<span v-if="run.articleId"> · 文章 #{{run.articleId}}</span></small>
               <div v-if="run.stageChips.length" class="run-stage-chips"><span v-for="chip in run.stageChips" :key="chip">{{chip}}</span></div>

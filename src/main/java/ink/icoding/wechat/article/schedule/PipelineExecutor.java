@@ -11,8 +11,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -63,7 +61,8 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
     @Override
     public ArticleAiService.ScheduledAgentResult execute(ArticleAiService.ScheduledAgentRequest request,
                                                          TaskWorkspace workspace) throws Exception {
-        List<String> executionLog = Collections.synchronizedList(new ArrayList<>());
+        // 日志写在工作区上（不是局部变量）：阶段失败时局部变量随异常丢弃，运行历史就只剩一行错误
+        List<String> executionLog = workspace.executionLog();
         int toolCalls = 0;
 
         // ① 调研
@@ -150,10 +149,13 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
                                          String command, String logPrefix, List<String> executionLog) {
         AgentClient agent = buildAgent(code, fallbackStage, request, workspace);
         executionLog.add(logPrefix + "启动智能体：" + agent.getName());
-        // 每个阶段同样受工具调用上限约束（方案 5.5 预算护栏；超限中止并让任务以明确错误失败）
+        // 每个阶段同样受工具调用上限约束（方案 5.5 预算护栏；超限中止并让任务以明确错误失败）。
+        // 计数与日志都经 progressListener 实时汇入工作区：阶段因停滞/超时失败时，
+        // 本次尝试的局部日志会随异常丢弃，只有实时上报的那份留得住（运行历史据此定位卡点）。
         AgentRunner.Outcome outcome = runner.runWithLimit(agent, command, null, logPrefix,
-                DelegateTools.MAX_SUB_AGENT_TOOL_CALLS);
-        executionLog.addAll(splitLines(outcome.executionLog()));
+                DelegateTools.MAX_SUB_AGENT_TOOL_CALLS, workspace.progressListener());
+        // 阶段内的工具失败计入运行级失败数：流水线即使跑完，也不该把「配图失败」记成干净的成功
+        workspace.addToolFailures(outcome.toolFailures());
         return outcome;
     }
 
@@ -161,11 +163,6 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
     AgentClient buildAgent(String code, String fallbackStage,
                            ArticleAiService.ScheduledAgentRequest request, TaskWorkspace workspace) {
         return stageAgentBuilder.build(code, fallbackStage, request, workspace);
-    }
-
-    private static List<String> splitLines(String text) {
-        if (text == null || text.isBlank()) return List.of();
-        return List.of(text.split("\n"));
     }
 
     private void requireDraftSaved(TaskWorkspace workspace, String stage) {

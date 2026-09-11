@@ -8,11 +8,14 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -110,6 +113,57 @@ class AssetServicePathTests {
 
         verify(wechatClient).uploadThumb(3L, storageDirectory.resolve("new-cover.png"));
         verify(mapper).updateWechatMedia(12L, 3L, "new-media-id");
+    }
+
+    @Test
+    void truncatesOverlongDescriptionInsteadOfLosingTheImage() {
+        // 事故现场：生图工具给出超长描述 → Data too long for column 'DESCRIPTION' → 整条 insert 失败
+        // → 图片没进素材库，文章缺图但运行仍记 SUCCESS。描述只是元数据，宁可截断也不丢图片。
+        AssetMapper mapper = mock(AssetMapper.class);
+        AtomicReference<Asset> inserted = new AtomicReference<>();
+        doAnswer(invocation -> {
+            Asset asset = invocation.getArgument(0);
+            asset.setId(21L);
+            inserted.set(asset);
+            return 1;
+        }).when(mapper).insert(any(Asset.class));
+        when(mapper.findById(21L)).thenAnswer(invocation -> inserted.get());
+
+        String description = "描".repeat(Asset.DESCRIPTION_MAX_LENGTH + 1000);
+        Asset saved = service(mapper).saveImage(3L, "long.png", "image/png", pngBytes(),
+                "GENERATED", null, description, 1L);
+
+        assertEquals(Asset.DESCRIPTION_MAX_LENGTH, saved.getDescription().length());
+        assertEquals("描".repeat(Asset.DESCRIPTION_MAX_LENGTH), saved.getDescription());
+    }
+
+    @Test
+    void keepsDescriptionWithinTheDeclaredColumnLengthUntouched() {
+        AssetMapper mapper = mock(AssetMapper.class);
+        AtomicReference<Asset> inserted = new AtomicReference<>();
+        doAnswer(invocation -> {
+            Asset asset = invocation.getArgument(0);
+            asset.setId(22L);
+            inserted.set(asset);
+            return 1;
+        }).when(mapper).insert(any(Asset.class));
+        when(mapper.findById(22L)).thenAnswer(invocation -> inserted.get());
+
+        // 恰好等于列长的描述是合法的，不能被动过（边界：<= 才放行）
+        String description = "描".repeat(Asset.DESCRIPTION_MAX_LENGTH);
+        Asset saved = service(mapper).saveImage(3L, "exact.png", "image/png", pngBytes(),
+                "GENERATED", null, description, 1L);
+
+        assertEquals(description, saved.getDescription());
+    }
+
+    private static byte[] pngBytes() {
+        byte[] bytes = new byte[64];
+        bytes[0] = (byte) 0x89;
+        bytes[1] = 'P';
+        bytes[2] = 'N';
+        bytes[3] = 'G';
+        return bytes;
     }
 
     private AssetService service(AssetMapper mapper) {

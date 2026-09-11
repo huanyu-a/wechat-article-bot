@@ -31,6 +31,76 @@ public abstract class AgentRunner {
         return run(agent, command, attachments, logPrefix);
     }
 
-    public record Outcome(String reply, int toolCalls, String executionLog) {
+    /**
+     * 带上限与进度上报的运行：每次计入工具调用、每产生一行执行日志都**实时**回调，
+     * 使调用方在会话抛异常（超限中止 / SSE 断流 / 阶段超时）时也能留住已完成的部分——
+     * 包括「卡在哪一步」的那几行日志。若等会话返回再整体取 {@link Outcome#executionLog()}，
+     * 停滞/超时的那一次尝试会被整段丢弃，运行历史就只剩一行错误。
+     *
+     * <p>默认实现委托给 5 参版本并在结束时一次性上报——替身实现只需覆盖 5 参版本；
+     * 真实实现（AgentInvoker）覆盖本方法逐次上报。
+     */
+    public Outcome runWithLimit(AgentClient agent, String command, List<MemoryMultipartFile> attachments,
+                                String logPrefix, int maxToolCalls, ProgressListener progress) {
+        Outcome outcome = runWithLimit(agent, command, attachments, logPrefix, maxToolCalls);
+        if (progress == null) return outcome;
+        progress.toolCallCounted(outcome.toolCalls());
+        for (String line : splitLines(outcome.executionLog())) progress.logLine(line);
+        return outcome;
+    }
+
+    static List<String> splitLines(String text) {
+        if (text == null || text.isBlank()) return List.of();
+        return List.of(text.split("\n"));
+    }
+
+    /**
+     * 会话进度回调：调用方把「工具调用计数」与「执行日志」都落到持久化位置（{@link TaskWorkspace}），
+     * 因此这两类信息在**失败路径**上同样可见。
+     */
+    public interface ProgressListener {
+        /** 每计入一次工具调用回调一次（{@code delta} 通常为 1）。 */
+        void toolCallCounted(int delta);
+
+        /** 每产生一行执行日志回调一次（已含阶段前缀）。 */
+        void logLine(String line);
+
+        /**
+         * 只上报工具调用计数、忽略日志的监听器：用于日志由调用方事后统一追加的场景
+         * （例如 COORDINATOR 的子智能体，其日志经 {@code DelegateTools} 落盘），避免重复记。
+         */
+        static ProgressListener toolCallsOnly(java.util.function.IntConsumer sink) {
+            return new ProgressListener() {
+                @Override
+                public void toolCallCounted(int delta) {
+                    if (sink != null) sink.accept(delta);
+                }
+
+                @Override
+                public void logLine(String line) {
+                    // 有意忽略：日志由调用方统一追加
+                }
+            };
+        }
+    }
+
+    /**
+     * 一次会话的产出。
+     *
+     * @param reply        助手最终回复
+     * @param toolCalls    工具调用次数
+     * @param executionLog 阶段日志（含每次调用与每次失败）
+     * @param toolFailures 工具失败次数。用于终态判定：整体成功但配图/落库类工具失败时，
+     *                     运行不能再记成纯粹的 SUCCESS——那会让「交付物缺图」看起来像成功。
+     */
+    public record Outcome(String reply, int toolCalls, String executionLog, int toolFailures) {
+        /** 三参构造（多数替身与不关心失败数的调用方使用）：失败数默认 0。 */
+        public Outcome(String reply, int toolCalls, String executionLog) {
+            this(reply, toolCalls, executionLog, 0);
+        }
+
+        public boolean hasToolFailures() {
+            return toolFailures > 0;
+        }
     }
 }

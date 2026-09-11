@@ -105,6 +105,21 @@ class SkillPromptAssemblerTest {
                 .containsExactly("任务排版", "账号排版");
     }
 
+    /**
+     * 同维度多枚（LAYOUT 之外）并列注入而不是「首个生效、其余丢弃」：
+     * 风格类冲突属绑定侧决策，注入时静默取舍会让用户看不见地丢掉一半绑定
+     * （skills-agent-plan 十七轮 ⑧b：只加 WARN 告警，不在注入层收紧）。
+     */
+    @Test
+    void sameDimensionSkillsOtherThanLayoutAreAllInjected() {
+        when(skillMapper.findByIds(anyList())).thenReturn(List.of(
+                skill(11L, "纪实摄影", "IMAGE", "纪实摄影风格内容"),
+                skill(12L, "扁平插画", "IMAGE", "扁平插画风格内容")));
+        SkillPromptResult result = assembler.assemble(scheduledContext(List.of(11L, 12L)));
+
+        assertThat(result.prompt()).contains("纪实摄影风格内容").contains("扁平插画风格内容");
+    }
+
     @Test
     void fallsBackToDefaultLayoutWhenNoLayoutSkill() {
         when(skillMapper.findByIds(anyList())).thenReturn(List.of(
@@ -238,12 +253,15 @@ class SkillPromptAssemblerTest {
                 skill(1L, "排版", "LAYOUT", "版式内容"),
                 skill(2L, "核查", "FACT_CHECK", "核查内容"),
                 skill(3L, "其他", "OTHER", "其他内容"),
-                skill(4L, "读者", "AUDIENCE", "读者内容")));
-        SkillPromptResult result = assembler.assemble(scheduledContext(List.of(1L, 2L, 3L, 4L)));
+                skill(4L, "读者", "AUDIENCE", "读者内容"),
+                skill(5L, "配图风格", "IMAGE", "图片风格内容")));
+        SkillPromptResult result = assembler.assemble(scheduledContext(List.of(1L, 2L, 3L, 4L, 5L)));
         String prompt = result.prompt();
-        assertThat(prompt.indexOf("【目标读者】")).isLessThan(prompt.indexOf("【事实核查】"));
+        assertThat(prompt.indexOf("【目标读者】")).isLessThan(prompt.indexOf("【图片风格】"));
+        assertThat(prompt.indexOf("【图片风格】")).isLessThan(prompt.indexOf("【事实核查】"));
         assertThat(prompt.indexOf("【事实核查】")).isLessThan(prompt.indexOf("【其他】"));
         assertThat(prompt.indexOf("【其他】")).isLessThan(prompt.indexOf("【排版模板】"));
+        assertThat(prompt).contains("图片风格内容");
         assertThat(prompt).endsWith("\n");
     }
 

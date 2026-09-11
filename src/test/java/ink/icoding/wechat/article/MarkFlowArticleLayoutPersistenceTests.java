@@ -43,6 +43,9 @@ class MarkFlowArticleLayoutPersistenceTests {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
     private String adminToken() throws Exception {
         String body = mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -142,5 +145,120 @@ class MarkFlowArticleLayoutPersistenceTests {
         String stored = mockMvc.perform(get("/api/articles/" + id).header("Authorization", authorization))
                 .andReturn().getResponse().getContentAsString();
         assertThat(stored).contains("已编辑");
+    }
+
+    /**
+     * 按新的 Markdown 重新渲染后覆盖正文时，必须留存这份新 Markdown 作为产物的源文。
+     * 与上一条的区别只在提交的 Markdown 是否与库中一致——手动编辑/AI 局部编辑总是原样回传旧值，
+     * 因此「不同」是重排提交的可判定信号；若一律丢弃，重排一次就再也无法二次调整。
+     */
+    @Test
+    void markdownRerenderKeepsNewMarkdownSource() throws Exception {
+        String authorization = adminToken();
+        String id = createMarkflowArticle(authorization);
+        String rerendered = RENDERED.replace("正文第一段。", "正文第一段（重排后）。");
+        String newMarkdown = "正文第一段（重排后）。";
+
+        mockMvc.perform(put("/api/articles/" + id)
+                        .header("Authorization", authorization)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(articleJson("MarkFlow 排版持久化验收", 1, rerendered, newMarkdown, "MARKFLOW")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.contentHtml").value(org.hamcrest.Matchers.containsString("重排后")))
+                .andExpect(jsonPath("$.data.contentMarkdown").value(newMarkdown))
+                .andExpect(jsonPath("$.data.layoutEngine").value("MARKFLOW"));
+    }
+
+    /**
+     * 回滚必须恢复目标版本的**完整状态**（回归保护）：此前只取标题/摘要/正文，
+     * 作者、来源 URL、排版引擎与 Markdown 源文都保留当前值——回滚结果并不是那个版本的样子；
+     * 更关键的是 article_revision 根本没有引擎/Markdown 两列，回滚后 MARKFLOW 文章连源文都拿不回来。
+     */
+    @Test
+    void rollbackRestoresAuthorSourceUrlAndMarkdownSource() throws Exception {
+        String authorization = adminToken();
+        String v2Markdown = "正文第一段（第二版）。";
+        String v2Html = RENDERED.replace("正文第一段。", "正文第一段（第二版）。");
+        String created = mockMvc.perform(post("/api/articles")
+                        .header("Authorization", authorization)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"回滚验收","author":"第一版作者","digest":"第一版摘要",
+                                 "contentHtml":%s,"layoutEngine":"MARKFLOW","contentMarkdown":%s,
+                                 "sourceUrl":"https://example.com/v1"}
+                                """.formatted(json(RENDERED), json(MARKDOWN))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String id = idOf(created);
+
+        // 第二版：作者、来源、正文与源文全部改掉（revision 1 → 2）
+        mockMvc.perform(put("/api/articles/" + id)
+                        .header("Authorization", authorization)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"回滚验收（第二版）","author":"第二版作者","digest":"第二版摘要",
+                                 "contentHtml":%s,"revision":1,"layoutEngine":"MARKFLOW",
+                                 "contentMarkdown":%s,"sourceUrl":"https://example.com/v2"}
+                                """.formatted(json(v2Html), json(v2Markdown))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.author").value("第二版作者"));
+
+        // 回滚到第一版：标题/作者/来源/正文/引擎/Markdown 都必须回到第一版
+        mockMvc.perform(post("/api/articles/" + id + "/revisions/1/rollback")
+                        .header("Authorization", authorization))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.title").value("回滚验收"))
+                .andExpect(jsonPath("$.data.author").value("第一版作者"))
+                .andExpect(jsonPath("$.data.sourceUrl").value("https://example.com/v1"))
+                .andExpect(jsonPath("$.data.contentHtml").value(RENDERED))
+                .andExpect(jsonPath("$.data.layoutEngine").value("MARKFLOW"))
+                .andExpect(jsonPath("$.data.contentMarkdown").value(MARKDOWN));
+    }
+
+    /**
+     * 升级前落库的旧版本没有 author/source_url/layout_engine/content_markdown 四列（值为 null）：
+     * 回滚到这类版本时保留当前值，而不是把字段抹成 null——「恢复不了」不应表现为「丢数据」。
+     */
+    @Test
+    void rollbackToLegacyRevisionKeepsCurrentValuesInsteadOfNullingThem() throws Exception {
+        String authorization = adminToken();
+        String created = mockMvc.perform(post("/api/articles")
+                        .header("Authorization", authorization)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"旧版本回滚验收","author":"现任作者","digest":"现任摘要",
+                                 "contentHtml":"<p>当前正文。</p>","sourceUrl":"https://example.com/current"}
+                                """))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String id = idOf(created);
+
+        // 直接造一条「升级前形态」的版本行：四个新列全为 NULL
+        jdbcTemplate.update("""
+                INSERT INTO ARTICLE_REVISION (ARTICLE_ID, REVISION, TITLE, DIGEST, CONTENT_HTML,
+                                              CHANGE_SOURCE, CHANGE_SUMMARY, CREATED_BY, CREATED_AT)
+                VALUES (?, 99, '升级前标题', '升级前摘要', '<p>升级前正文。</p>', 'MANUAL', '升级前快照', 1, NOW())
+                """, Long.valueOf(id));
+
+        mockMvc.perform(post("/api/articles/" + id + "/revisions/99/rollback")
+                        .header("Authorization", authorization))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.title").value("升级前标题"))
+                .andExpect(jsonPath("$.data.contentHtml").value("<p>升级前正文。</p>"))
+                // 旧快照没有这些字段 → 保留当前值
+                .andExpect(jsonPath("$.data.author").value("现任作者"))
+                .andExpect(jsonPath("$.data.sourceUrl").value("https://example.com/current"))
+                .andExpect(jsonPath("$.data.layoutEngine").value("PROMPT"));
+    }
+
+    private static String json(String value) throws Exception {
+        return com.fasterxml.jackson.databind.json.JsonMapper.builder().build()
+                .writeValueAsString(value);
+    }
+
+    private static String idOf(String responseBody) {
+        Matcher matcher = Pattern.compile("\\\"id\\\":(\\d+)").matcher(responseBody);
+        if (!matcher.find()) throw new AssertionError("响应中缺少 id：" + responseBody);
+        return matcher.group(1);
     }
 }

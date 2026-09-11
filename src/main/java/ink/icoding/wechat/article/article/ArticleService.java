@@ -150,17 +150,35 @@ public class ArticleService {
         return revisionMapper.findRevisions(id);
     }
 
+    /**
+     * 回滚到指定版本：恢复该版本快照里的**全部可编辑状态**——标题、摘要、正文、作者、来源 URL、
+     * 排版引擎与 Markdown 源文（此前只取标题/摘要/正文，作者与来源 URL 保留当前值，
+     * 且 article_revision 没有引擎/Markdown 两列，回滚后 MARKFLOW 文章拿不回源文，属「部分合并回滚」）。
+     *
+     * <p>边界：封面（coverAssetId/coverUrl）与技能绑定不随版本回滚——它们是当前编辑决策与共享素材，
+     * 不是某次正文修订的一部分；账号与并发版本号同理取自当前行。
+     *
+     * <p>升级前落库的旧版本没有 author/sourceUrl/layoutEngine/contentMarkdown 四列（值为 null），
+     * 此时保留当前值而不是把字段抹成 null——「恢复不了」不应表现为「丢失数据」。
+     */
     @Transactional
     public Article rollback(Long id, Integer revision) {
         Article current = required(id);
         ArticleRevision target = revisionMapper.findRevision(id, revision);
         if (target == null) throw new BusinessException("指定版本不存在");
-        ArticleRequest request = new ArticleRequest(current.getAccountId(), target.getTitle(), current.getAuthor(),
-                target.getDigest(), target.getContentHtml(), current.getCoverAssetId(), current.getCoverUrl(),
-                current.getSourceUrl(), current.getRevision(),
+        ArticleRequest request = new ArticleRequest(current.getAccountId(), target.getTitle(),
+                restoreOr(target.getAuthor(), current.getAuthor()), target.getDigest(), target.getContentHtml(),
+                current.getCoverAssetId(), current.getCoverUrl(),
+                restoreOr(target.getSourceUrl(), current.getSourceUrl()), current.getRevision(),
                 ink.icoding.wechat.article.account.WechatAccountService.parseSkillIds(current.getSkillIds()),
-                current.getLayoutEngine(), current.getContentMarkdown());
+                restoreOr(target.getLayoutEngine(), current.getLayoutEngine()),
+                restoreOr(target.getContentMarkdown(), current.getContentMarkdown()));
         return update(id, request, "ROLLBACK", "回滚到版本 " + revision);
+    }
+
+    /** 目标版本有记录则用目标值；为 null（升级前的旧版本快照）时保留当前值。 */
+    private static String restoreOr(String fromRevision, String current) {
+        return fromRevision != null ? fromRevision : current;
     }
 
     /*
@@ -303,8 +321,12 @@ public class ArticleService {
         revision.setArticleId(article.getId());
         revision.setRevision(article.getRevision());
         revision.setTitle(article.getTitle());
+        revision.setAuthor(article.getAuthor());
         revision.setDigest(article.getDigest());
         revision.setContentHtml(article.getContentHtml());
+        revision.setSourceUrl(article.getSourceUrl());
+        revision.setLayoutEngine(article.getLayoutEngine());
+        revision.setContentMarkdown(article.getContentMarkdown());
         revision.setChangeSource(source);
         revision.setChangeSummary(summary);
         revision.setCreatedBy(userId);
@@ -333,13 +355,19 @@ public class ArticleService {
      * 正文文本未变化（只改标题/摘要）→ 保留原有渲染产物与 Markdown 源文，避免「改个标题就丢版式」；
      * 正文文本已变化 → 尊重编辑器结果落库，同时丢弃已与正文不符的 Markdown 源文
      * （留着会让后续重排悄悄覆盖用户刚做的编辑），引擎字段保留为历史留痕。
+     * 例外见「重排提交」判定：调用方显式提交了一份与库中不同的 Markdown，那它才是新产物的源文。
      */
     private void reconcileRenderedLayout(Article existing, Article incoming) {
         if (!LayoutEngine.MARKFLOW.name().equalsIgnoreCase(
                 existing.getLayoutEngine() == null ? "" : existing.getLayoutEngine())) return;
         if (!Objects.equals(Jsoup.parse(existing.getContentHtml() == null ? "" : existing.getContentHtml()).text(),
                 Jsoup.parse(incoming.getContentHtml() == null ? "" : incoming.getContentHtml()).text())) {
-            incoming.setContentMarkdown(null);
+            // 「重排提交」判定：手动编辑（前端回显 article 原值）与 AI 局部编辑（save_article_draft 传原文）
+            // 都会把库中已有的 Markdown 原样回传，只有「按新 Markdown 重新渲染后覆盖正文」
+            // 才会带来一份不同的 Markdown——此时必须留存，否则重排一次就丢掉源文、再也无法二次调整。
+            if (Objects.equals(existing.getContentMarkdown(), incoming.getContentMarkdown())) {
+                incoming.setContentMarkdown(null);
+            }
             return;
         }
         incoming.setContentHtml(existing.getContentHtml());

@@ -117,6 +117,7 @@ public class ArticleAiService {
     private final ScheduledAgentFactory scheduledAgentFactory;
     private final ink.icoding.wechat.article.agent.AgentDefinitionMapper agentDefinitionMapper;
     private final ink.icoding.wechat.article.schedule.AgentRunner agentRunner;
+    private final ink.icoding.wechat.article.common.InFlightGate inFlightGate;
     private final Map<String, EditorSession> sessions = new ConcurrentHashMap<>();
     private final Map<Long, Object> articleSessionLocks = new ConcurrentHashMap<>();
     private final ScheduledExecutorService heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(task -> {
@@ -134,7 +135,8 @@ public class ArticleAiService {
                             ink.icoding.wechat.article.agent.AgentFactory agentFactory,
                             ScheduledAgentFactory scheduledAgentFactory,
                             ink.icoding.wechat.article.agent.AgentDefinitionMapper agentDefinitionMapper,
-                            ink.icoding.wechat.article.schedule.AgentRunner agentRunner) {
+                            ink.icoding.wechat.article.schedule.AgentRunner agentRunner,
+                            ink.icoding.wechat.article.common.InFlightGate inFlightGate) {
         this.messageMapper = messageMapper;
         this.agentSessionMapper = agentSessionMapper;
         this.articleService = articleService;
@@ -149,6 +151,7 @@ public class ArticleAiService {
         this.scheduledAgentFactory = scheduledAgentFactory;
         this.agentDefinitionMapper = agentDefinitionMapper;
         this.agentRunner = agentRunner;
+        this.inFlightGate = inFlightGate;
     }
 
     public List<AiMessage> messages(Long articleId) {
@@ -210,6 +213,18 @@ public class ArticleAiService {
     private void execute(EditorSession session, String instruction) {
         Object lock = articleSessionLocks.computeIfAbsent(session.article.getId(), ignored -> new Object());
         synchronized (lock) {
+            // 编辑器链路同样占用 LLM 并发名额：闸门共用一个池，编辑会话不会把定时链路的名额挤掉，
+            // 反之亦然（两边合计始终不超过上限）。名额在 finishSession 统一释放——该方法是成功与
+            // 失败路径共同的收尾点（含 finally），提前返回分支（如 LLM 未启用）也走它。
+            // 代价：会话在等待浏览器侧工具完成（completeTool）期间仍持着名额，属保守占用。
+            session.llmLease = inFlightGate.acquire("编辑器会话 " + session.id);
+            if (session.llmLease == null) {
+                session.send("error", Map.of("message", "LLM 并发额度等待超时（上限 " + inFlightGate.limit()
+                        + "，已等待 " + inFlightGate.acquireTimeoutSeconds()
+                        + " 秒）：同一时刻进行中的智能体运行占满了名额，请稍后重试。"));
+                finishSession(session);
+                return;
+            }
             executeWithAgentSession(session, instruction);
         }
     }
@@ -445,7 +460,14 @@ public class ArticleAiService {
                 SkillContext.Scene.SCHEDULED);
     }
 
-    public ScheduledAgentResult runScheduledAgent(ScheduledAgentRequest request) throws Exception {
+    /**
+     * 单智能体定时创作（SINGLE 链路）。
+     *
+     * @param workspace 共享工作区：分阶段日志写在其上，失败时调用方仍能落库（局部变量会随异常丢弃）
+     */
+    public ScheduledAgentResult runScheduledAgent(ScheduledAgentRequest request,
+                                                  ink.icoding.wechat.article.schedule.TaskWorkspace workspace)
+            throws Exception {
         LlmConfigService.RuntimeConfig config = llmConfigService.runtime();
         if (!config.available()) throw new BusinessException("LLM 尚未在系统设置中启用或未配置 API Key");
 
@@ -478,10 +500,8 @@ public class ArticleAiService {
         AgentClient agent = agentFactory.buildByCode(AgentFactory.CODE_SCHEDULED_CREATOR, "SCHEDULED_SINGLE",
                 skillContext, resolver);
 
-        AtomicInteger toolCalls = new AtomicInteger();
-        Set<String> countedCalls = ConcurrentHashMap.newKeySet();
-        List<String> executionLog = java.util.Collections.synchronizedList(new ArrayList<>());
-        StringBuilder assistantText = new StringBuilder();
+        // 日志写在工作区上（不是局部变量）：阶段失败时局部变量随异常丢弃，运行历史就只剩一行错误
+        List<String> executionLog = workspace.executionLog();
         String deliveryRequirement = "LOCAL_DRAFT".equals(request.outputMode())
                 ? "保存为本地草稿；封面可按内容需要设置"
                 : "将由系统同步或发布到微信；必须在提交文章前选择、导入或生成合适图片，并调用set_article_draft_cover设置封面";
@@ -498,41 +518,15 @@ public class ArticleAiService {
                 request.accountId() == null ? "未指定，仅创建本地文章" : "公众号ID " + request.accountId(),
                 request.outputMode(), deliveryRequirement, request.instruction());
 
-        AgentSessionResult result = agent.createSession().command(command).then(new AgentResultHandler() {
-            @Override
-            public void onMessage(String message) {
-                if (message != null) assistantText.append(message);
-            }
-
-            @Override
-            public void onTool(ToolDescriptor tool, ToolStatus status) {
-                if (tool == null || status == ToolStatus.PREPARING) return;
-                String key = tool.getName() + "\n" + safeCallId(tool);
-                if (status == ToolStatus.CALLING && countedCalls.add(key)) {
-                    int count = toolCalls.incrementAndGet();
-                    executionLog.add("调用工具：" + tool.getName());
-                    if (count > MAX_SCHEDULED_TOOL_CALLS) {
-                        // 预算护栏：单次任务工具调用超限即中止，避免无人值守任务无限消耗（方案 5.5）
-                        throw new IllegalStateException(
-                                "单次定时创作最多调用 " + MAX_SCHEDULED_TOOL_CALLS + " 次工具");
-                    }
-                } else if (status == ToolStatus.COMPLETED) {
-                    executionLog.add("工具完成：" + tool.getName());
-                }
-            }
-
-            @Override
-            public void onToolError(ToolDescriptor tool, Exception error) {
-                executionLog.add("工具失败：" + (tool == null ? "unknown" : tool.getName()) + " - "
-                        + (error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage()));
-            }
-        });
-        result.execute();
-        String response = result.get();
-        // 兜底护栏：回调异常可能被 agent4j 吞掉，按最终计数再判一次（方案 5.5）
-        if (toolCalls.get() > MAX_SCHEDULED_TOOL_CALLS) {
-            throw new IllegalStateException("单次定时创作最多调用 " + MAX_SCHEDULED_TOOL_CALLS + " 次工具");
-        }
+        // 三条链路统一走 AgentRunner：阶段硬超时、429 退避、停滞重试与卡点诊断只有一处实现。
+        // 此前 SINGLE（存量任务的默认模式）自己起会话，只有超时没有重试，与另两条链路必然漂移。
+        // 工具调用数与日志**实时**汇入工作区（progressListener）：会话停滞/超时时本次尝试的
+        // 局部日志会随异常丢弃，只有实时上报的那份留得住；日志前缀为 null，与原有「调用工具：X」格式一致。
+        ink.icoding.wechat.article.schedule.AgentRunner.Outcome outcome =
+                agentRunner.runWithLimit(agent, command, null, null,
+                        MAX_SCHEDULED_TOOL_CALLS, workspace.progressListener());
+        workspace.addToolFailures(outcome.toolFailures());
+        String response = outcome.reply();
         // MARKFLOW 延迟渲染：交付前统一渲染一次（skills-agent-plan 5.10.4），失败则任务 FAIL 且 Markdown 不丢
         draftState.renderBeforeDelivery(markFlowRenderService);
         ScheduledArticleTools.Draft draft = draftState.snapshot();
@@ -543,9 +537,10 @@ public class ArticleAiService {
                 throw new BusinessException("智能体选择的封面素材不属于任务目标公众号");
             }
         }
-        String reply = response == null || response.isBlank() ? assistantText.toString().trim() : response.trim();
+        // 回复兜底由 AgentInvoker 统一处理（模型无最终文本时用累积的流式文本），这里只需兜「都为空」
+        String reply = response == null ? "" : response.trim();
         if (reply.isBlank()) reply = "定时文章创作已完成";
-        return new ScheduledAgentResult(draft, reply, toolCalls.get(), String.join("\n", executionLog));
+        return new ScheduledAgentResult(draft, reply, outcome.toolCalls(), String.join("\n", executionLog));
     }
 
     private String readableLlmError(Throwable throwable) {
@@ -579,6 +574,8 @@ public class ArticleAiService {
     }
 
     private void finishSession(EditorSession session) {
+        // 先还名额再收尾：收尾里的 SSE 落库与 complete() 不占 LLM 配额
+        if (session.llmLease != null) session.llmLease.close();
         sessions.remove(session.id, session);
         session.close("编辑会话已结束");
         try {
@@ -627,6 +624,8 @@ public class ArticleAiService {
         private final AtomicInteger delegateCalls = new AtomicInteger();
         /** 当前生效排版引擎（装配时解析，占位替换与校验用）。 */
         private volatile LayoutEngine layoutEngine = LayoutEngine.PROMPT;
+        /** 本次会话持有的 LLM 并发名额（finishSession 释放）；取不到额度时为 null。 */
+        private volatile ink.icoding.wechat.article.common.InFlightGate.Lease llmLease;
         private volatile ScheduledFuture<?> heartbeat;
         private volatile EditorDocument latestDocument;
         private volatile boolean modified;

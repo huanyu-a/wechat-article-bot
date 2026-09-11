@@ -21,13 +21,23 @@ import java.util.function.BiFunction;
  * 预算护栏（代码强制，超限工具直接返回引导性错误文本而非抛异常，让 chief 收尾）：
  * - 委托总次数 ≤ 8；
  * - 同一草稿返工 ≤ max_revision_rounds；
- * - 子智能体单次工具调用 ≤ 24（对齐编辑器侧 MAX_TOOL_CALLS）。
+ * - 子智能体单次工具调用 ≤ 24（对齐编辑器侧 MAX_TOOL_CALLS）；
+ * - 整轮（所有子智能体累计）工具调用 ≤ {@link #MAX_TOTAL_TOOL_CALLS}。
  */
 public final class DelegateTools {
     public static final int MAX_DELEGATIONS = 8;
     public static final int MAX_SUB_AGENT_TOOL_CALLS = 24;
     /** 协调者自身工具调用上限（读草稿 + 8 次委托，留足余量但防失控）。 */
     public static final int MAX_CHIEF_TOOL_CALLS = 48;
+    /**
+     * **整轮**工具调用总上限（子智能体侧累计）。此前只有逐项额度——chief 48 次、
+     * 每次委托的子智能体 24 次、最多 8 次委托——叠加上界达 240 次，比 SINGLE 的
+     * {@code MAX_SCHEDULED_TOOL_CALLS=40} 高一个量级；无人值守的定时任务因此可能在一次运行里
+     * 消耗远超预期的额度，而「委托次数上限」拦不住「每次委托都跑满 24 次」这种组合。
+     * 取 120 ≈ SINGLE 的 3 倍：足够覆盖「调研 + 写作 + 配图 + 审核各跑满一轮」再加两次返工，
+     * 又能在失控时把量级压回可预期范围。chief 自身的额度仍由 MAX_CHIEF_TOOL_CALLS 单独约束。
+     */
+    public static final int MAX_TOTAL_TOOL_CALLS = 120;
 
     private DelegateTools() {
     }
@@ -62,6 +72,8 @@ public final class DelegateTools {
         private final int maxRounds;
         private final List<String> executionLog;
         private final AtomicInteger delegations = new AtomicInteger();
+        /** 子智能体累计工具调用数（整轮预算，见 {@link #MAX_TOTAL_TOOL_CALLS}）。 */
+        private final AtomicInteger subAgentToolCalls = new AtomicInteger();
 
         Budget(TaskWorkspace workspace, int maxRounds, List<String> executionLog) {
             this.workspace = workspace;
@@ -80,6 +92,12 @@ public final class DelegateTools {
 
         /** 预算检查：超限返回引导文本，未超限返回 null 并占用一次额度。 */
         String consume(String stageLabel) {
+            if (subAgentToolCalls.get() >= MAX_TOTAL_TOOL_CALLS) {
+                // 整轮预算已耗尽：与「委托次数上限」同样返回引导文本，让 chief 收尾而不是中断会话
+                log().add("【协调】整轮工具调用已达上限 " + MAX_TOTAL_TOOL_CALLS + " 次，拒绝新的委托");
+                return "本次运行的工具调用总量已达上限 " + MAX_TOTAL_TOOL_CALLS
+                        + " 次，请直接依据现有草稿与调研结果收尾，不要再发起新的委托。";
+            }
             int used = delegations.incrementAndGet();
             if (used > MAX_DELEGATIONS) {
                 delegations.decrementAndGet();
@@ -88,6 +106,11 @@ public final class DelegateTools {
             }
             log().add("【协调】委托 #" + used + "：" + stageLabel);
             return null;
+        }
+
+        /** 记入一次子智能体的工具调用量（整轮预算的在途累计）。 */
+        void recordSubAgentToolCalls(int count) {
+            if (count > 0) subAgentToolCalls.addAndGet(count);
         }
 
         /** 写作类委托的返工计数：超限返回引导文本。 */
@@ -100,6 +123,10 @@ public final class DelegateTools {
 
         int delegations() {
             return delegations.get();
+        }
+
+        int totalToolCalls() {
+            return subAgentToolCalls.get();
         }
     }
 
@@ -114,6 +141,8 @@ public final class DelegateTools {
             budget.log().add(logPrefix + message);
             return "委托中止：" + message + "。请直接依据现有产出收尾，不要再次委托同一阶段。";
         }
+        // 整轮预算记账：子智能体即使被上限中止，也已消耗掉部分额度
+        budget.recordSubAgentToolCalls(outcome.toolCalls());
         budget.log().addAll(splitLines(outcome.executionLog()));
         String reply = outcome.reply();
         if (outcome.toolCalls() > MAX_SUB_AGENT_TOOL_CALLS) {

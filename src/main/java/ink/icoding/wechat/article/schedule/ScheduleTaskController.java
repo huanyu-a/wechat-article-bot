@@ -19,23 +19,28 @@ public class ScheduleTaskController {
     }
 
     @GetMapping
-    public ApiResponse<List<ScheduleTask>> list() { return ApiResponse.ok(service.list()); }
+    public ApiResponse<List<ScheduleTaskService.TaskView>> list() {
+        return ApiResponse.ok(service.list().stream().map(ScheduleTaskService::toView).toList());
+    }
 
     /** 执行模式清单（前端单选卡片用），路径须在 /{id} 之前声明。 */
     @GetMapping("/execution-modes")
     public ApiResponse<List<java.util.Map<String, String>>> executionModes() { return ApiResponse.ok(router.modes()); }
 
     @GetMapping("/{id}")
-    public ApiResponse<ScheduleTask> get(@PathVariable Long id) { return ApiResponse.ok(service.required(id)); }
+    public ApiResponse<ScheduleTaskService.TaskView> get(@PathVariable Long id) {
+        return ApiResponse.ok(ScheduleTaskService.toView(service.required(id)));
+    }
 
     @PostMapping
-    public ApiResponse<ScheduleTask> create(@Valid @RequestBody ScheduleTaskService.TaskRequest request) {
-        return ApiResponse.ok(service.create(request));
+    public ApiResponse<ScheduleTaskService.TaskView> create(@Valid @RequestBody ScheduleTaskService.TaskRequest request) {
+        return ApiResponse.ok(ScheduleTaskService.toView(service.create(request)));
     }
 
     @PutMapping("/{id}")
-    public ApiResponse<ScheduleTask> update(@PathVariable Long id, @Valid @RequestBody ScheduleTaskService.TaskRequest request) {
-        return ApiResponse.ok(service.update(id, request));
+    public ApiResponse<ScheduleTaskService.TaskView> update(@PathVariable Long id,
+                                                           @Valid @RequestBody ScheduleTaskService.TaskRequest request) {
+        return ApiResponse.ok(ScheduleTaskService.toView(service.update(id, request)));
     }
 
     @PostMapping("/{id}/run")

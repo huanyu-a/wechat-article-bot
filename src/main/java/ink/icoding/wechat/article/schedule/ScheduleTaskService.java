@@ -149,6 +149,35 @@ public class ScheduleTaskService {
         }
     }
 
+    /**
+     * 读接口视图：把库内编码还原成结构化字段再出参。
+     *
+     * <p>任务表的 skill_ids 是逗号分隔字符串、stage_agents 是 JSON 对象字符串，而写接口
+     * （{@link TaskRequest}）要求 {@code List<Long>} 与 {@code Map<String, Long>}。若直接返回实体，
+     * GET 的产物无法回填 PUT——前端点了保存就报「JSON parse error: Cannot deserialize value of type
+     * java.util.ArrayList<java.lang.Long> from String value」。与 /api/agents 的 AgentView 同因同治。
+     */
+    public record TaskView(Long id, String name, Long accountId, String accountName, Long coverAssetId,
+                           String cronExpression, String timezone, String aiPrompt, String outputMode,
+                           List<Long> skillIds, Boolean enabled, String executionMode,
+                           java.util.Map<String, Long> stageAgents, Integer maxRevisionRounds,
+                           java.time.LocalDateTime lastRunAt, java.time.LocalDateTime nextRunAt,
+                           Long createdBy, java.time.LocalDateTime createdAt,
+                           java.time.LocalDateTime updatedAt) {
+    }
+
+    /** 实体 → 读接口视图；null 透传，便于 controller 无脑包装。 */
+    public static TaskView toView(ScheduleTask task) {
+        if (task == null) return null;
+        return new TaskView(task.getId(), task.getName(), task.getAccountId(), task.getAccountName(),
+                task.getCoverAssetId(), task.getCronExpression(), task.getTimezone(), task.getAiPrompt(),
+                task.getOutputMode(),
+                ink.icoding.wechat.article.account.WechatAccountService.parseSkillIds(task.getSkillIds()),
+                task.getEnabled(), task.getExecutionMode(), parseStageAgents(task.getStageAgents()),
+                task.getMaxRevisionRounds(), task.getLastRunAt(), task.getNextRunAt(),
+                task.getCreatedBy(), task.getCreatedAt(), task.getUpdatedAt());
+    }
+
     /** 解析 stage_agents JSON 字符串 → Map；空/非法返回空 map。 */
     public static java.util.Map<String, Long> parseStageAgents(String json) {
         if (json == null || json.isBlank()) return java.util.Map.of();

@@ -34,9 +34,10 @@ public class AgentDefinitionController {
     }
 
     @GetMapping
-    public ApiResponse<List<AgentDefinition>> list(@RequestParam(required = false) String stage,
-                                                   @RequestParam(required = false) Boolean enabled) {
-        return ApiResponse.ok(service.list(stage, enabled));
+    public ApiResponse<List<AgentDefinitionService.AgentView>> list(@RequestParam(required = false) String stage,
+                                                                   @RequestParam(required = false) Boolean enabled) {
+        return ApiResponse.ok(service.list(stage, enabled).stream()
+                .map(AgentDefinitionService::toView).toList());
     }
 
     /** 工具组清单（前端勾选用），路径须在 /{id} 之前声明。 */
@@ -46,21 +47,22 @@ public class AgentDefinitionController {
     }
 
     @GetMapping("/{id}")
-    public ApiResponse<AgentDefinition> get(@PathVariable Long id) {
-        return ApiResponse.ok(service.required(id));
+    public ApiResponse<AgentDefinitionService.AgentView> get(@PathVariable Long id) {
+        return ApiResponse.ok(AgentDefinitionService.toView(service.required(id)));
     }
 
     @PostMapping
     @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')")
-    public ApiResponse<AgentDefinition> create(@Valid @RequestBody AgentDefinitionService.AgentRequest request) {
-        return ApiResponse.ok(service.create(request, currentUser()));
+    public ApiResponse<AgentDefinitionService.AgentView> create(
+            @Valid @RequestBody AgentDefinitionService.AgentRequest request) {
+        return ApiResponse.ok(AgentDefinitionService.toView(service.create(request, currentUser())));
     }
 
     @PutMapping("/{id}")
     @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')")
-    public ApiResponse<AgentDefinition> update(@PathVariable Long id,
-                                               @Valid @RequestBody AgentDefinitionService.AgentRequest request) {
-        return ApiResponse.ok(service.update(id, request));
+    public ApiResponse<AgentDefinitionService.AgentView> update(
+            @PathVariable Long id, @Valid @RequestBody AgentDefinitionService.AgentRequest request) {
+        return ApiResponse.ok(AgentDefinitionService.toView(service.update(id, request)));
     }
 
     @DeleteMapping("/{id}")
@@ -72,8 +74,8 @@ public class AgentDefinitionController {
 
     @PostMapping("/{id}/duplicate")
     @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')")
-    public ApiResponse<AgentDefinition> duplicate(@PathVariable Long id) {
-        return ApiResponse.ok(service.duplicate(id, currentUser()));
+    public ApiResponse<AgentDefinitionService.AgentView> duplicate(@PathVariable Long id) {
+        return ApiResponse.ok(AgentDefinitionService.toView(service.duplicate(id, currentUser())));
     }
 
     private Long currentUser() {

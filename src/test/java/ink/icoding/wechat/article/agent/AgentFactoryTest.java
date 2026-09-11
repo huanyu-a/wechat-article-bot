@@ -74,7 +74,8 @@ class AgentFactoryTest {
         // 系统提示 = 核心协议（代码常量）+ persona（DB）+ 技能注入块
         assertThat(agent.getDescription()).contains("公众号撰稿人").contains("你是测试撰稿人。")
                 .contains("模板内容");
-        assertThat(agent.getModel()).isNotNull();
+        // 回放守卫必须真的包在模型外层，否则历史里的空 arguments 会再次触发网关 400
+        assertThat(agent.getModel()).isInstanceOf(ToolCallArgumentGuard.class);
     }
 
     @Test

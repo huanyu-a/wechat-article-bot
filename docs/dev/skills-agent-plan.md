@@ -839,6 +839,9 @@ POST {base_url}/__markflow_render          → {markdown, accent, dark} → {ok,
 | `fact_check_default`      | 事实核查基线      | FACT_CHECK | 关键事实多源交叉验证；数据与引语须注明出处；时效敏感信息标注核实时间；无法核实的信息降级为「据报道」措辞并显式说明（2026-09-08 审查新增：附录 B 的 researcher/reviewer 引用此维度，原种子清单缺失会导致 Seeder 落空）                                                            |
 | `practical_tutorial`    | 干货教程体        | WRITING   | 口语化、每章一个可执行要点、多用数字与案例、开头给出「读完能获得什么」                                                                                                                                                                                                         |
 | `professional_analysis` | 深度分析体        | WRITING   | 克制冷静、论证链完整、数据引用规范、结尾给判断                                                                                                                                                                                                                                 |
+| `photo_documentary`     | 纪实摄影风        | IMAGE     | 真实摄影质感（自然光、可信场景）；生图提示词按「主体/场景/光线/构图镜头/质感/负面约束」脚手架组织并显式含「真实摄影、无文字、无水印」；图注 ≤20 字说明画面与段落关系；每章至多 1 图、封面留标题安全区；禁同一篇混用摄影与插画（2026-09-11 新增：IMAGE 维度此前无种子，配图风格无处可选） |
+| `flat_illustration`     | 扁平插画风        | IMAGE     | 扁平矢量插画（几何色块、克制留白、无渐变阴影）；提示词按「主题概念/场景隐喻/扁平矢量/几何色块/配色/负面约束」组织；配色跟随文章主题色、同一篇主色 ≤3；图注 ≤20 字点明抽象概念；封面四边留白（2026-09-11 新增） |
+| `soft_three_d`          | 柔和 3D 渲染风    | IMAGE     | 柔和 3D 渲染（圆角造型、哑光磨砂材质、柔和漫射光、浅景深、简洁背景）；提示词按「主体造型/材质/打光/背景/视角景深/负面约束」组织；主题色仅作主体或点缀、背景低饱和；图注 ≤20 字说明物件在文中的角色（2026-09-11 新增） |
 
 （内置 Skill 内容随版本 seed 更新；用户可克隆后自由修改。）
 
@@ -1090,3 +1093,321 @@ POST {base_url}/__markflow_render          → {markdown, accent, dark} → {ok,
     渲染产物入库后丢失 KaTeX 的 `aria-hidden` 与上游配套 CSS（实测正文中 `<style>` 会被 Jsoup 清洗剥离，
     数学公式在公众号侧需上游内联样式兜底）；`article.content_markdown` 目前是「留存可重排」的事实依据，
     但尚无「用 Markdown 重新渲染覆盖正文」的产品入口，重排能力待后续按需开放。
+
+  - **2026-09-10 十五轮深度自检（样式层：SkillsView 主题色区 / TasksView 执行模式卡片 / 编辑器收起态）**：
+    本轮起点是用户对「技能库 → 编辑排版技能 → 主题色模式」区域的主观反馈「这个样式不好看」，
+    按「把主观感受变成可测量证据」的思路定位，结果是**一类跨页面的系统性样式失效**，而非单点观感问题。
+    ① **根因（CSS 层叠/特异度陷阱）**：`style.css` 里的通用表单规则
+    `.login-card label,.form-grid label{display:flex;flex-direction:column;gap:7px}` 与
+    `.form-grid input,.form-grid select{height:42px;padding:0 11px}` 特异度均为 **(0,2,0)**，
+    而本意覆写它们的裸类选择器 `.skill-engine-option`(0,1,0)、`.exec-mode-card`(0,1,0)、
+    `.skill-accent-modes label`(0,1,1)、`.tool-group-option`(0,1,0) 都更低——
+    只要这些卡片被放进 `.form-grid` 内（Skills/Tasks/Agents 三页的弹窗都是），
+    就会被强制变成「radio 独占一行 + 文字换行 + 输入框 42px 高」的竖排布局。
+    截图里看到的「pill 变高椭圆、radio 换行」正是这一条规则的产物。
+    **修复手段统一为「把父容器类写进选择器」**：`.skill-engine-section .skill-engine-option`、
+    `.skill-accent-block .skill-accent-mode`、`.agent-section .tool-group-option`、
+    `.exec-mode-grid .exec-mode-card`（0,3,0），并在每条规则上留一行注释说明为何要带父级，
+    避免后来者把它「化简」回裸类又复发。
+    ② **SkillsView 主题色区重做**：原实现把 AUTO/FIXED 做成 `border-radius:999px` 的胶囊并塞进一行，
+    两个输入框（accent/dark）也挤在同一行。现改为——`skill-engine-copy` / `skill-accent-copy` 双层文案结构，
+    AUTO/FIXED 改成 1fr 1fr 网格卡片（radio 左、标题+说明右），AUTO 带「推荐」徽标，
+    hint 文案随模式切换（FIXED 说明「所有文章统一套用下方配色」，AUTO 列出七个可选项）；
+    FIXED 面板包成独立白底描边卡片，accent / dark **各占一行**，
+    accent 行右侧加 `skill-swatch-pair` 双色圆点实时预览，预设色块区加虚线分隔。
+    CDP 实测：`.skill-engine-option` = grid `16px 284.5px` / 336×63、`.skill-accent-mode` = flex row / 336×57、
+    `.skill-accent-modes` 两列 335.5px、FIXED 面板 680 宽、两行色值行高 42、预设 7 个且高 31。
+    ③ **TasksView 执行模式卡片（同源缺陷）**：`.exec-mode-card` 被压成竖排、卡片高 140px 且 radio 换行；
+    提升特异度后实测 `flex-direction:row`、卡片 304×**77**、radio 16×16、三列 `304px 304px 304px`，
+    视觉上「图标 + 标题（含 PIPELINE 推荐徽标）+ 描述」恢复正常横向排布。
+    ④ **补齐整片缺失样式（此前从未写过 CSS，属静默退化）**：`task-mode-row` / `mode-badge`
+    （含 `.mode-single/.mode-pipeline/.mode-coordinator` 三态配色，后者为紫色以区分协调模式）、
+    `task-mode-note`、`exec-mode-icon` / `exec-mode-copy` / `exec-mode-recommend`、
+    `stage-orchestration` / `stage-orch-head` / `stage-orch-warn` / `stage-orch-grid` / `stage-skip-hint` / `stage-rounds`、
+    `run-stage-chips` / `run-log` / `run-log-lines`（含 `.log-error/.log-tool/.log-info` 三色）、
+    `paragraph-toolbar`、`.editor-body.chat-closed`。这些类名在模板里早就存在，但样式表里定义为 0 条，
+    构建与测试都不会报错——这也是本轮唯一「非用户直接反馈但确为真实缺陷」的部分。
+    CDP 实测运行记录弹窗：7 个模式徽标（「单智能体」宽 57）、8 个阶段摘要 chip、日志区 `overflow-y:auto` 正常。
+    ⑤ **编辑器侧核对**：`.editor-body.chat-closed{grid-template-columns:1fr}` 生效（实测 `grid-template-columns`
+    由 `920px 360px` 变为 `1280px`，`.ai-panel` display:none，右下角「打开 AI 助手」按钮出现，无右侧留白）。
+    ⑥ **构建与回归**：`npm run build`（含 prebuild 共享导入自检）通过，仅既有 chunk>500kB 警告；
+    Java 侧本轮未改动，仍复跑全量测试以保持门禁记录一致。
+    ⑦ **过程中排查的异常**：中途出现两次「刚写好的规则读回为 0 条」，根因是并发写入
+    （另有清理任务同时触碰同一批文件），经文件哈希三次采样确认最终状态稳定后继续，未造成残留。
+    **终态门禁：142 例全绿（`./.mvn/mvn-local.sh test`，BUILD SUCCESS，1m22s）；`npm run build` 零报错；四个视图（技能库/定时任务/运行记录/编辑器）CDP 实测与截图复核通过。**
+  - **2026-09-10 十六轮深度自检（渲染组件语法实测纠偏 + Markdown 源文丢失 P0）**：
+    起点是用户反馈 —— **`/articles/3` 页面「渲染的有问题」**。按「把主观感受变成可测量证据」的思路，
+    用 CDP 在真实页面上量化（`getBoundingClientRect` + 子节点枚举 + 字面量探测），
+    定位出**三个相互独立的缺陷**，其中一个是会永久损坏数据的 P0。
+    ① **语法层实测结论（对线上渲染器逐项探测，共 17 组写法变体）**：此前十四轮记录的「`:::steps` 有效」
+    **是错的**。`:::steps` 会把容器内**每一个段落**都拆成独立步骤，每个「步骤」只是一段文字塞进一个
+    直径 38px 的圆形里（`width:38px;height:38px;border-radius:50%`，长文本直接溢出）；
+    配上 `###` 小标题时，标题行与正文段被拆成两个这样的圆形，字面 `###` 也直接出现在产物里。
+    可用的步骤写法只有 `<steps>` 标签：每步一个自然段、空行分隔、步骤内**不要**写 `###` 小标题。
+    标签徽章用 `<badges type="accent">A|B</badges>`（竖线分隔的胶囊标签组）。
+    提示框 `> [TIP]` / `> [WARNING]` 正确，双栏对比 `:::compare` 正确。实测对照表：
+
+    | 写法 | 实测产物 | 结论 |
+    |------|---------|------|
+    | `:::steps` + 每步 `###` 标题 | 标题与正文各自成为一个 38px 圆形步骤，字面 `###` 入库 | ❌ 禁用 |
+    | `:::steps` + 无标题自然段 | 3 个 38px 圆形，圆内就是整段文字、溢出 | ❌ 禁用 |
+    | `<steps>` + 每步一个自然段（3 步） | 编号步骤卡：1 张表 3 个 td、各 33% 宽，编号为 `font-size:22px;font-weight:900` | ✅ 采用 |
+    | `<steps>` + 4 步（不给 type） | 仍是 4 列各 25% **横向** | ⚠️ 需显式 DA02 |
+    | `<steps>` + 5 步（不给 type） | 仍是 5 列各 20% **横向** | ⚠️ 需显式 DA02 |
+    | `<steps type="DA02">` + 4 步 | 竖向卡片：每步 32px 圆形编号 + 16px 内边距卡片 | ✅ >3 步采用 |
+    | `<badge type="tip" title="推荐" />` | 渲染出的是 type 值（`tip`）而非 title | ❌ 禁用 |
+    | `<badge>文字</badge>` | 标签原样吐进正文，无样式 | ❌ 禁用 |
+    | `<badges type="accent">A\|B</badges>` | 胶囊徽章（`border-radius:999px`），竖线分隔多项 | ✅ 采用 |
+    | `> [TIP] 内容` | 绿底 + 左侧色条提示框 | ✅ 正确 |
+    | `:::tip` / `:::warning` | 退化为普通段落、丢提示框样式 | ❌ 不识别 |
+
+    **两个上游「文档与实现不一致」的坑（本轮实证）**：a) guide 第六节第 9 条明写
+    「步骤超过 3 个时，系统自动切换为竖向布局（DA02）；也可以主动指定 type="DA02"」——
+    实测 4 步与 5 步都**没有**自动切换，仍是 25% / 20% 的横向列，只有显式 `type="DA02"` 才变竖向；
+    b) guide 组件第 10 条记载行内徽章 `<badge type="tip" title="推荐" />`，实测渲染出的文字是 **type 的值**，
+    title 从未出现（自闭合写法还会把 `<badge …>` 原样吐进正文）。**结论：语法指令也不是逐字可信的，
+    凡是靠它下判断的地方都要用真实渲染产物核一遍；我们自己的技能文案已对这两条给出实测改正。**
+
+    **教训**：十四轮之所以误判，是因为只看到「有编号圆点流出来」就判定有效，没有核对**分段是否正确**——
+    线上 guide 从头到尾都没记载过 `:::steps`，guide 是对的，是我们读错了自己的探测结果。
+    后续任何「渲染器支持 X」的结论，都必须同时核对组件结构与分段/层级是否符合预期，不能只看有没有样式。
+    ② **技能种子文案缺陷（错误结论的扩散源）**：内置 `MarkFlow 精排版式` 技能与
+    `markflow-typeset` 技能都在推荐 `:::steps` + `###`，并宣称「超过 3 步自动竖排」——AI 按技能写作，
+    缺陷会自动复制到每一篇新文章里。已按实测结论重写 `SkillSeeder.MARKFLOW_CONTENT` 第 2 条
+    （四条踩坑结论 + 「与实时语法指令冲突时以指令为准」），并修正
+    `EditorServiceTools.render_markflow` 的参数描述；Seeder 在启动时即同步进库。
+    ③ **P0 数据缺陷：Markdown 源文被静默丢弃**。`ArticleService.reconcileRenderedLayout` 原先在
+    「正文文本变化」时**无条件**清空 `content_markdown`——而「按新 Markdown 重新渲染后覆盖正文」这条路径
+    同样会改变正文文本，于是重排一次就把源文丢掉，文章**再也无法二次调整**（只剩 HTML 产物，无法反推 Markdown）。
+    修复为「重排提交」判定：正文变化时，若提交的 Markdown **与库中相同**（手动编辑回显正文、
+    AI 局部编辑的 `save_article_draft` 传原文，都属于这一类）才清空；**不同**则说明这是一份新产物的源文，
+    必须留存。「是否不同」是可判定信号，不需要调用方额外声明。新增回归测试
+    `markdownRerenderKeepsNewMarkdownSource`（重排提交后 Markdown 源文留存、`layoutEngine` 仍为 MARKFLOW）。
+    ④ **live 数据修复**：文章 3 先用回滚接口退回 revision 1 恢复原始（坏）正文，再用修正后的 Markdown
+    经真实令牌重渲染覆盖 → revision 5，`content_markdown` 421 字符已留存。
+    CDP 修复前后对比：步骤区 `684×58` → `684×276`；字面 `###` 有 → 无；破损圆形占位 6 个 → 0 个；
+    修复后产物为 2 张表格（步骤卡 + 徽章）、9 个 td；截图确认 3 张编号步骤卡 + 胶囊徽章显示正常。
+    ⑤ **技能实体同步纠偏**：本机技能 `~/.zcode/skills/markflow-typeset/SKILL.md` 也在推荐 `:::steps` 与
+    行内 `<badge>`（第 29、99 行），已按实测改正，并在「限制与注意」补一节「guide 与实现不一致的两处」；
+    内置技能 `MarkFlow 精排版式` 的第 2 条同步细化为「`<steps>` 每步一个自然段 / 禁 `:::steps`（圆内塞长文本）/
+    >3 步必须显式 DA02 / 徽章用 `<badges>`」。
+    ⑥ **本轮遗留（已记录、未在代码层解决）**：a) `ArticleService.rollback()` 是**部分合并**回滚——
+    只取目标版本的标题/摘要/正文，作者、来源 URL、引擎与 Markdown 都保留当前值，回滚结果并非目标版本的完整状态；
+    b) `article_revision` 表没有 `layout_engine` / `content_markdown` 两列，回滚永远无法恢复 Markdown 源文；
+    c) 编辑器 TipTap 往返会剥掉 `data-render-id`，AI「HTML 回灌」防护在手动保存一次后即失效。
+    **终态门禁：`./.mvn/mvn-local.sh -o compile` 通过；143 例全绿（`./.mvn/mvn-local.sh test`，BUILD SUCCESS，
+    1m22s / 复跑 1m29s 两次一致）；`webui` 本轮未改动。**
+  - **2026-09-10 十六轮补充（编辑器往返丢失内联样式：14 轮 P0 的真正根因，前端修复）**：
+    十六轮 ③ 只保住了「Markdown 源文」，但正文 HTML 一旦在编辑器里被改动仍会退化——本轮把退化量化到了具体声明级。
+    ① **实测（渲染产物 → 编辑器序列化，同一篇 9 个单元格的步骤卡/对比表）**：`td` 上的内联声明**全部丢失**——
+     `vertical-align` 9→0、`padding` 9→0、`background` 9→0、`border-bottom` 6→0、`font-size` 6→0、`color` 6→0、
+     `border-radius` 5→0、`border` 3→0、`width` 3→0（步骤卡因此从「三列 33% 卡片」变成等宽裸表格）；
+     表格自身的 `style="margin:0;border-collapse:separate;border-spacing:12px 0;border:none;min-width:360px"`
+     被替换成 TipTap 自己算的 `min-width: 75px`；标记 span 上的 `padding / border-radius:999px / border / display:inline-flex`
+     也只剩 `color / background-color / font-size / line-height` ——徽章从「胶囊」退化成一段染色文字。
+    ② **根因**：TipTap 的 `tableCell`/`tableHeader`/`table` 节点只声明了 `colspan/rowspan/colwidth/align`，
+     `textStyle` 标记只被 `Color/BackgroundColor/FontSize/LineHeight` 四个扩展接管，**其余内联声明
+     在 parse→serialize 往返中没有任何属性持有它们**，于是被静默丢弃。MarkFlow 产物恰恰把全部版式放在内联样式里，
+     两者正好冲突——这类退化不会报错、单测也测不到，只有「真实渲染产物 + 真实编辑器保存」组合才暴露。
+    ③ **修复（`webui/src/editorExtensions.js` 新增两个保留扩展，`ArticleEditorView` 注册）**：
+     - `PreservedMarkStyle`：接管 `textStyle` 标记上除 `color/background/background-color/font-size/line-height`
+       之外的 style 声明。按 **style 属性原文**逐条切分保留，而不是读 `element.style`——后者会把简写展开成十几条长写、
+       丢掉 `!important`，产物与渲染服务给的对不上。
+     - `PreservedTableStyle`：整体接管 `table/tableCell/tableHeader` 的原始 style 原文（这些节点本来就没有
+       需要保留的受管样式，整体接管最省事且不会与工具栏状态冲突）。
+     两个扩展的 `renderHTML` 都走 TipTap 的 `mergeAttributes`，它会按分号合并 style，与四个颜色/字号扩展互不覆盖。
+    ④ **修复后实测（同一篇、同一次「插入一段文字触发自动保存」的端到端往返）**：
+     `td` 的 `vertical-align / padding / background / border-radius:10px / border / text-align / width:33%` 全部保留
+     （td 实测 214px 宽、`border-radius:10px`、背景 `rgba(39,174,96,0.06)`）；表格 `border-spacing:12px 0` 保留；
+     徽章 `border-radius:999px` 保留；步骤编号 `font-size:22px` 保留；`###` 字面量仍为 0。
+     **落库前 vs 落库后都核过**：编辑器 `getHTML()` 与 `ARTICLE.CONTENT_HTML` 两层都确认样式在场（长度 5479 字符，
+     含 colgroup——TipTap 给表格补的，不影响渲染）。
+    ⑤ **新增的验收方法（可复用）**：把渲染产物与编辑器序列化产物做一次**内联声明计数 diff**
+     （`style="…"` 逐条按属性名计数，对比 db vs editor），任何「打开正常、保存后掉样式」的问题都能被这一步量化定位；
+     本轮先据此定位，修复后再跑同一 diff 归零。另外经 CDP 从 Vue 实例树取到 `ArticleEditorView` 的 `setupState.editor`
+     直接调 `getHTML()`，可以拿到「尚未落库的序列化结果」，比只看 DOM 更接近真实保存内容。
+    **门禁：`cd webui && npm run build` 零报错（仅既有 chunk>500kB 警告）；Java 侧本轮未改动，143 例全绿结论不变。**
+
+  - **2026-09-11 十七轮（PIPELINE SSE 400 根因修复 + 图片风格 Skill 落地 + 两项运行时自愈）**：
+    本轮起于「手工触发的 PIPELINE 任务报 `SSE connection failed: HTTP 400 … Assistant tool call arguments must be
+    valid JSON`，且工具调用 0 次」的挂账排查，收尾时把 Skills 体系里唯一没有种子的维度（IMAGE）补齐。
+    ① **JSON-400 根因（线上报文级复现）**：上游 OpenAI 兼容网关会校验**历史消息**里每条 assistant
+    `tool_calls[].function.arguments` 是否为合法 JSON，非法即 400；agent4j 2.3.3 的 `OpenAIChatModel` 把流式
+    增量原样累积进 `argsBuffer` 并在下一轮无校验回放，而供应商对**全可选参数**的工具（`read_article_draft` 等）
+    会先发一个 `{"arguments":"", …}` 增量——于是首轮结束后历史里留下 `"arguments":""`，第二轮开场即 400。
+    用 curl 复刻证明：`arguments:""` → 400、`arguments:"{}"` → 200；并落成离线确定性回归
+    `ToolCallArgumentsReplayTest`（JDK HttpServer 模拟网关，第一轮发空 arguments 增量，第二轮按网关规则校验）。
+    ② **修复 `ToolCallArgumentGuard`**：装饰 `LLMModel`，把非法/空 arguments 归一为 `{}`。关键点是**两个注入位**——
+    入口处归一化回放历史，以及用包装 `ToolExecutor` 归一化**同一次 `ask` 内**追加的 assistant 消息：agent4j 的工具
+    循环在 `ask` 内部继续，只包模型层覆盖不到，这一点是回归测试先失败后才定位到的。装饰点放在 `AgentFactory.createModel`
+    单一路径（编辑器链路与定时链路、各阶段 agent 都经此）。
+    ③ **阶段硬超时（第二个缺陷）**：SSE 被静默掐断时 agent4j 既不回调 onFailure/onClosed 也不完成 Future，
+    阶段线程永久阻塞在 `LLMResult.get(LLMResult.java:77)`（线程栈实证），任务永久 RUNNING。`AgentInvoker.awaitStage`
+    改为在工作线程执行会话并对 Future 施加 `app.schedule.stage-timeout-seconds`（默认 1800s）硬超时，超时抛明确异常。
+    ④ **遗留运行自愈（第三个缺陷）**：进程被杀后 `task_run` 留在 RUNNING，而 `TaskRunMapper.findRunning` 是同一任务的
+    并发闸门，任务从此再也触发不了（「任务正在执行，请勿重复启动」）。新增 `StaleRunPolicy`（纯函数、可单测）+
+    `StaleRunReaper`（`@Order(40)`，在种子之后、Quartz 恢复之前）+ `createRun` 触发路径自愈：把 `started_at` 超过
+    `app.schedule.stale-run-hours`（默认 6h）的 RUNNING 判为孤儿并中止。**刻意不用「启动时清空全部 RUNNING」**——
+    Quartz 是 `isClustered=true`，无条件清空会把另一实例正在跑的任务误判为孤儿并打开并发窗口；时限判定保证只动
+    「可证明已废弃」的行。
+    ⑤ **图片风格 Skill 落地（本轮产品侧增量）**：`IMAGE` 维度早已在白名单、注入顺序与前端筛选里，但**从未有种子**，
+    也没有任何协议要求 agent 遵守它——`builtin_illustrator` 的默认技能是空，等于「图片风格」只有壳。本轮补
+    `photo_documentary` / `flat_illustration` / `soft_three_d` 三个内置种子（内容统一为「配图审美 + 生图提示词脚手架
+    + 画面禁用项（文字/数字/logo/水印）+ 图注习惯 + 数量位置 + 封面标题安全区 + 全篇一致性」），并在
+    `AgentProtocols.ILLUSTRATION` 增第 2 条「审美/提示词/图注严格遵循【图片风格】注入区，未绑定时用克制中性写实风格」、
+    `EDITOR` 第 14 条把「图片风格」并入须遵循的注入区、`generate_image` 工具描述要求按脚手架组织提示词。
+    内置种子数 7 → 10（`SkillApiIntegrationTests` 断言同步更新并新增 IMAGE 维度计数断言）。
+    ⑥ **顺带修掉 `/api/skills/preview` 的静默失效（P1，用新技能做预览时才发现）**：该接口把请求的技能 id 放进
+    `articleSkillIds`，而 `SkillPromptAssembler` 只在 EDITOR 场景参与该槽位——前端预览按钮发的是 `scene=SCHEDULED`，
+    于是**点任何技能看到的都是内置保底版式**（LAYOUT 技能则显示默认版式而非所选版式）。改为放入 `taskSkillIds`
+    （两种场景都参与并集）。原集成测试只断言 prompt 含「排版模板」，恰好被保底版式满足——是典型的假阳性用例，
+    已连同断言改为「必须含被预览技能自身正文，且不得出现保底版式特征串」。
+    ⑦ **真实环境验收（结论与限制）**：本轮用 300s 短超时跑真实 PIPELINE，观测到阶段超时按设计生效——
+    任务 300 秒后以 `FAILED / 智能体会话超时（300 秒未结束）` 收尾（日志 `【调研】智能体会话超过 300 秒未结束，判定阶段超时中止`），
+    且**立即再次触发成功创建新运行**，证实「崩溃/挂起 → 任务永久卡死」已解除；预览修复也用真实接口验证
+    （`skillIds=[9,2]` 返回 `【图片风格】(纪实摄影风) + 极简黑白版式`，不再回落保底）。**但本轮未能取得一次全绿 PIPELINE**：
+    本机出网经 TUN 代理，SSE 流在首轮即停滞（`netstat` 有 6 条到 443 的 ESTABLISHED 但无数据、无 outbound 报错、
+    agent4j Future 不完成），网关 `GET /v1/models` 无鉴权 0.05s 返回 401，说明 HTTP 面正常、问题在流式链路，
+    属环境而非代码；JSON 守卫因此未被线上流量触发（日志守卫命中 0），其正确性由离线报文级回归测试保证。
+    同时确认 `agnes-3.0-flash` 已被网关下线（上一轮 `model_not_found`），排查期间 `LLM_PROFILE`（ID 1）的
+    `MODEL_NAME` 曾临时改为 `deepseek-v4-flash-0731`，请在设置页确认目标模型。
+    ⑧ **本轮遗留（已记录、未在代码层解决）**：a) 孤儿运行只在超过阈值（默认 6h）后才自愈——彻底方案是给
+    `task_run` 增加 `instance_id`（取 Quartz `instanceId`）或心跳列，结合 `QRTZ_SCHEDULER_STATE` 的存活实例判定属主，
+    可把窗口压到分钟级且仍满足集群安全；单实例部署可直接把 `STALE_RUN_HOURS` 调小。b) 多个 IMAGE 技能同时绑定会注入
+    两段冲突风格（与 WRITING 等多注入维度一致，未做单注入；LAYOUT 因涉双引擎才单注入），如需强约束应在绑定处校验。
+    **门禁：`./.mvn/mvn-local.sh -o compile` 通过；新增/改动用例全绿——`StaleRunPolicyTest`(6)、
+    `ToolCallArgumentGuardTest`(4)、`ToolCallArgumentsReplayTest`(1)、`AgentFactoryTest`(5)、
+    `SkillPromptAssemblerTest`(16)、`SkillApiIntegrationTests`(10)。**
+
+  - **2026-09-11 十八轮（回放第二类缺陷 content=null + `/api/agents` 资源不可往返）**：
+    十七轮修掉了 `arguments` 一类回放拒绝，但同一「agent4j 原样回放 / 网关逐条校验」根因还有第二处，
+    本轮在真实环境复现、定位到字节码级并修掉。
+    ① **现象（真机）**：SINGLE 手工运行在完成 4 次 `search_web` 后整轮失败
+    `HTTP 400 … The request failed because it is missing \`***.content\` parameter`（code 400001）。
+    ② **根因（字节码级，非猜测）**：`javap -p -c OpenAIChatModel` 显示 `appendNeutralMessage` 对
+    「role=assistant 且 toolCalls 非空」的消息固定走
+    `if (content != null && !content.isEmpty()) put("content", …) else putNull("content")`——
+    **null 与空串都被写成 `content:null`**。而 agent4j 回放工具调用轮时用 `Message.fromAssistant()`（content 为 null）构造，
+    于是每轮请求体里都是 `{"role":"assistant","content":null,"tool_calls":[…]}`。模型只发工具调用、
+    不输出正文的轮次必然命中（定时任务调研阶段几乎全部如此）。
+    ③ **真机网关行为实测（用项目自己的 key 直连 `POST /v1/chat/completions` 最小请求，四种取值各一次）**：
+    `content:null` → **400 missing content**；`content:""` → 200；`content:" "` → 200；`content:"\u200b"` → 200，
+    且单空格那次模型照常给出正常回复（`reasoning` 正常、无异常）。结论：网关只要求「字段存在且非 null」，
+    但**空串在 agent4j 侧不可达**（`isEmpty()` 直接落到 `putNull`），因此占位值必须非空 → 取单空格。
+    用 mock 网关无法得到这个结论：mock 只复刻已知错误，判不出「哪种取值能过」。
+    ④ **修复**：`ToolCallArgumentGuard` 在同一「两处注入点」（进入 `ask` 的历史 + 工具执行前修本轮
+    `appendedMessages`）之外补第三类归一化 `normalizeContent`：assistant 且带 toolCalls 时 content 为
+    null/空串 → 单空格占位；其余角色 content 为 null → 补空串；`role=tool` 的线上 content 取自
+    `toolResult.content`，故修的是 `toolResult`。`ask(Message)` 单参重载也一并归一化（原先漏网）。
+    ⑤ **测试**：`ToolCallArgumentsReplayTest` 的 mock 网关升级为**同时**执行两条网关规则
+    （arguments 必须合法 JSON + 每条消息必须有非 null content），第一轮发空 arguments 增量、
+    第二轮校验；`ToolCallArgumentGuardTest` 扩到 11 例（含「空串也归一化为空格」「普通消息补空串」
+    「toolResult 补空串」「轮内 assistant 消息在工具执行前修好」）。
+    ⑥ **真机验收**：运行 #26 在修复后连续跑过 **5 个工具调用轮**
+    （日志 `调用工具：create_plan | search_web ×2 | browse_webpage ×2`，`ToolCallArgumentGuard` WARN
+    占位 5 次），**全程无 400**——同一路径在修复前的 #23 是第 2 轮即 400。随后撞到网关
+    `HTTP 429 concurrent limit exceeded`（并发限流，与消息形状无关，属环境侧）。
+    另外顺带实证：`EXECUTION_LOG` 在失败运行上留下了 177 字符的阶段日志（十七轮的局部日志落库修复有效）。
+    ⑦ **`/api/agents` 资源不可往返（本轮一并修）**：GET 返回的 `toolKeys` 是 JSON 数组**字符串**、
+    `skillIds` 是**逗号分隔字符串**，而 PUT（`AgentRequest`）要求两者都是数组——同一资源读出来写不回去。
+    新增 `AgentDefinitionService.AgentView` 读视图（用 `parseToolKeys` / `WechatAccountService.parseSkillIds`
+    还原成数组），controller 六个读端点统一返回；前端 `parseToolKeys`/`parseSkillIds` 本就兼容数组，无需改动。
+    真机 `/api/agents/1` GET→PUT 回填同一份 body 返回 200 且 `code/stage` 未被改动。
+    ⑨ **`/api/tasks` 同一缺陷（本轮一并修，修法是真机逼出来的）**：清理验证现场时要把任务 2 改回
+    `PIPELINE/WECHAT_DRAFT`，于是 GET→PUT 原样回填，结果 PUT 直接 500：
+    `JSON parse error: Cannot deserialize value of type java.util.ArrayList<java.lang.Long> from String value`
+    ——任务表的 `skill_ids`（逗号串）与 `stage_agents`（JSON 对象串）同样只在写接口是结构化的。
+    新增 `ScheduleTaskService.TaskView`（复用已有的 `parseSkillIds` / `parseStageAgents`），
+    controller 的 list/get/create/update 统一返回视图；测试升级为真的往返断言
+    （GET 的 `data` 原样 PUT 回去必须 200）。
+    **说明**：`/api/articles` 存在同一形态（`ARTICLE.SKILL_IDS` 逗号串 + `ArticleRequest.skillIds` 为列表），
+    但 `Article` 实体有 27 个字段，改视图的爆炸半径远大于任务/智能体，且现有用例显式接受字符串形态
+    （“前端 parseSkillIds 两种都能解析”），本轮不动，列入遗留。
+    ⑧ **本轮遗留（已记录、未在代码层解决）**：a) `TASK_RUN.TOOL_CALL_COUNT` 只在成功路径写入，
+    失败运行永远是 0——运行历史里「调了几次工具」在失败时不可读（`EXECUTION_LOG` 已能给出明细，属轻缺陷）。
+    b) reviewer 的 P2 债务仍在：P2-2（轮内修复依赖 agent4j `ask` 的懒执行顺序，仅经验证明，未加版本锚定的断言）、
+    P2-4（`taskLocks` 是 JVM 本地锁，多实例下并发门禁可被击穿，且 reaper 不走该锁）、
+    P2-5（`abortStale` 需要整实体，宜改定点 UPDATE）、P2-7（嵌套 COORDINATOR 的子 agent 预算 vs 整轮预算）。
+    c) 模型可用性：排查期 `agnes-3.0-flash` 曾从网关下架（#17 `model_not_found`），期间改用
+    `deepseek-v4-flash-0731`，用户随后换回并经直连探测确认 `agnes-3.0-flash` 恢复 200。
+    另注：#24 的「未提交草稿」（模型整轮不发工具调用）在修复前的 #18 已出现过同类失败，属模型侧间歇行为，
+    非本轮改动引入。d) `/api/articles` 的 `skillIds` 仍是「读字符串 / 写数组」，未做视图（理由见 ⑨）。
+    **门禁：`./.mvn/mvn-local.sh -o test` 全量 173 例 0 失败（十七轮为 166）。**
+
+  - **2026-09-11 十九轮（清账：把 ⑧b 的 P2 债务与 ⑧/⑨ 的遗留缺陷一次修完）**：
+    本轮不新增功能，只清十八轮及更早记录的债务；每条都补了对应测试，测量类结论用真实令牌/真实浏览器取得。
+    ① **P2-5 `abortStale` 改定点 CAS UPDATE（十八轮 ⑧b）**：原实现要求调用方先加载完整行再整实体回写，
+    传入部分实体就会把其余列写成 null。改为
+    `UPDATE TASK_RUN SET STATUS=?,MESSAGE=?,FINISHED_AT=NOW(6) WHERE ID=? AND STATUS='RUNNING'`：
+    只写三列，且 `AND STATUS='RUNNING'` 让这次中止成为**比较并交换**——扫描到判定为孤儿之间该运行若已被属主
+    正常收尾，返回 0 即不覆盖终态。`FINISHED_AT` 交给数据库 `NOW(6)` 生成，与 smart-mybatis 写本列（varchar）
+    的 `yyyy-MM-dd HH:mm:ss.SSSSSS` 格式一致，避免 Java 侧格式化与驱动转换格式不同。
+    同时修掉一个观测缺陷：返回 0 时不再打「判定为孤儿」WARN，否则一次正常完成会被误报成孤儿中止。
+    ② **P2-4 多实例并发门禁（十八轮 ⑧b）**：`taskLocks` 只是 JVM 本地锁，Quartz 以 `isClustered=true`
+    部署时另一实例可能同时通过检查。修法不需要任何跨实例锁：插入运行后按「RUNNING 中 ID 最小者为唯一属主」
+    复核（`findEarliestRunning`），落败者撤回自己刚插入的行并抛与「未插入就抛错」相同的 `BusinessException`，
+    历史里不留下被拒绝的空运行。ID 单调递增保证两个并发插入里恰好有一个赢家。**未消除**的是
+    `taskLocks` 本身仍是本地锁（reaper 也不走该锁），但并发门禁已不依赖它。
+    ③ **`TOOL_CALL_COUNT` 失败路径恒为 0（十八轮 ⑧a）+ COORDINATOR 子 agent 计数缺失（十八轮 ⑧b 的 P2-7 前置）**：
+    计数器从 `AgentSessionResult` 移到 `TaskWorkspace`（成功/失败共用一份），`AgentInvoker` 在每次
+    `ToolStatus.CALLING` 时经 `IntConsumer` **实时**上报（`countedCalls` 去重），因此会话随后因超限/断流/超时
+    抛异常，调用方仍拿得到已完成的部分计数。`AgentRunner.runWithLimit` 增 6 参重载作为注入缝，
+    SINGLE / PIPELINE / COORDINATOR（chief 与每个子 agent）四处均汇入。成功路径改取
+    `workspace.toolCallCount()`，失败路径也写。
+    ④ **`/api/articles` 资源可往返（十八轮 ⑨d 遗留）**：`ARTICLE.SKILL_IDS` 是逗号串而 `ArticleRequest.skillIds`
+    是 `List<Long>`——GET 结果原样 PUT 回去必然 400。十八轮以「Article 有 27 个字段、改视图爆炸半径大」为由搁置，
+    本轮改用**访问器级序列化器**（不动实体结构、不与视图长期漂移）。踩到两个坑并记录在 `Article.getSkillIds()` 注释里：
+    a) 注解必须落在 getter 上（字段私有，Jackson 序列化主成员是访问器，字段上的注解不生效）；
+    b) 必须用 **Jackson 3**（`tools.jackson`）的注解与基类——**Spring Boot 4 的 HTTP 层用 Jackson 3
+    (`tools.jackson.core:jackson-databind:3.1.4`)，而本项目内部 JSON 走 Jackson 2**。两个 databind 包并存：
+    `com.fasterxml.jackson.annotation` 是共用的，但 `...jackson.databind.annotation` 不是。
+    第一版用 Jackson 2 的 `@JsonSerialize` **在字节码里能看到注解、响应却仍是字符串**（`javap -v` 已证注解在
+    方法上），直到 `mvn dependency:tree | grep -i jackson` 看到两个 databind 版本才定位。
+    真机验收：GET `skillIds` 是数组、原样 PUT 回 200。
+    ⑤ **`article_revision` 缺列导致「部分合并回滚」（缺陷 G1+G2）**：快照只存 title/digest/contentHtml，
+    回滚也只取这三项——作者、来源 URL 保留**当前值**（回滚换来半篇旧版），且 `article_revision` 根本没有
+    `layout_engine` / `content_markdown` 两列，**MARKFLOW 文章回滚后永远拿不回可重排的 Markdown 源文**。
+    补 `author`/`sourceUrl`/`layoutEngine`/`contentMarkdown` 四列，`snapshot()` 写全，`rollback()` 恢复完整版本。
+    边界：封面（coverAssetId/coverUrl）与技能绑定**不随版本回滚**（属当前编辑决策与共享素材，不是某次正文修订的
+    一部分）；账号与并发版本号取自当前行。升级前落库的旧版本四列为 null，用 `restoreOr` **保留当前值而不是抹成 null**
+    ——「恢复不了」不应表现为「丢失数据」。**部署安全性已实证**：带新实体重启后 smart-mybatis 的
+    `DefaultSmartMapperInitializer.syncDatabaseStructure` 在既有 dev `ARTICLE_REVISION` 上 ADD 出四列
+    （`information_schema` 计数 = 4），无需手工 DDL。真机验收 10/10：MARKFLOW v1 → 改全部字段存 v2 → 回滚 v1，
+    Markdown 源文、渲染产物、作者、引擎全部回到 v1。
+    ⑥ **编辑器往返剥掉 `data-render-id`，AI「HTML 回灌」防护在手动保存一次后即失效（缺陷 G3，十四轮 ⑥）**：
+    `data-render-id` 由 `ArticleAiService.markRenderId` 注入渲染产物最外层，`read_article`/`read_blocks` 靠它
+    区分「渲染区段」与普通正文；`ArticleService.clean()` 的 safelist 已放行该属性，但**编辑器侧没有任何节点声明它**，
+    于是 TipTap parse→serialize 一次就丢掉——不报错，只有「渲染 + 手动保存 + AI 读回」的组合才暴露。
+    新增 `PreservedRenderId` 扩展，对**所有可能承载它的节点**统一声明（渲染根元素可能是
+    section/div/p/heading/table 等任意一种，`markRenderId` 只保证有一个最外层）。
+    **真机量化验收（正例 + 反例）**：建一篇 `contentHtml` 含 `<section data-render-id="r1">` 的临时文章，
+    经 Vite dev server（5173 → 代理 8081）在真实浏览器打开编辑器，从 Vue 实例树取 `ArticleEditorView.setupState.editor`
+    调 `getHTML()`：**正例**含该属性；点真实「保存」按钮走完 `editor.getHTML() → PUT` 后库内仍含（位置 10）；
+    **反例**用 `git stash` 临时回退 `editorExtensions.js`+`ArticleEditorView.vue` 两个文件、经 HMR 重载后，
+    **同一份库内 HTML** 往返回来变成裸 `<section>`——证明该项测量确实能发现此缺陷，而不是「恰好都是绿的」。
+    反例后 `git stash pop` 复原并复测（属性回来）。
+    ⑦ **P2-2 版本锚定 canary（十八轮 ⑧b）**：轮内修复依赖 agent4j `ask` 的懒执行顺序，此前只有经验证据。
+    `ToolCallArgumentsReplayTest` 增 `validateArguments` 开关与一个**没有守卫服务**的用例：
+    mock 网关只校验 arguments、不剔除 content，发送**未包裹**的模型，断言第一轮报文里确实是
+    `"content":null` 且**仍被网关拒**（`rejectedAsMissingContent == 1`）。agent4j 若修好上游行为，
+    该断言会失败并提醒撤销守卫——从「经验」变成「可证伪」。
+    ⑧ **P2-7 COORDINATOR 整轮工具预算（十八轮 ⑧b）**：此前只有逐项额度——chief 48 次 + 每次委托子 agent 24 次
+    + 最多 8 次委托，叠加上界约 240 次，比 SINGLE 的 `MAX_SCHEDULED_TOOL_CALLS=40` 高一个量级，
+    无人值守的定时运行可能一次烧掉远超预期的额度，而「委托次数上限」拦不住「每次委托都跑满 24 次」。
+    增 `MAX_TOTAL_TOOL_CALLS = 120`（≈ SINGLE 的 3 倍：够「调研+写作+配图+审核各跑满一轮」再加两次返工），
+    在 `Budget.consume()` **前置**检查，命中时与「委托次数上限」同样**返回引导文本让 chief 收尾**而不是中断会话；
+    `runSubAgent` 回填 `outcome.toolCalls()` 使子 agent 消耗计入总量。chief 自身额度仍由 `MAX_CHIEF_TOOL_CALLS` 单独约束。
+    ⑨ **同维度多枚 IMAGE 技能冲突（十八轮 ⑧b 的 b）**：**有意不改行为**，维持并列注入并新增 WARN 点名冲突技能。
+    理由：LAYOUT 之所以单注入是因为它直接决定用哪个排版引擎（双引擎指令必然打架）；而风格类冲突若「首个生效、
+    其余丢弃」，用户会**看不见地**丢掉一半绑定，比冲突本身更糟。真要加强约束应落在绑定处校验，
+    属产品决策，不单方面收紧（`SkillPromptAssemblerTest.sameDimensionSkillsOtherThanLayoutAreAllInjected` 固化现状）。
+    ⑩ **`delegate_research` 限流（十四轮遗留）核实为已覆盖，无需改动**：会话级 `MAX_EDITOR_DELEGATE_CALLS=3`
+    外加端点级每用户 20/分限流，两处叠加已足够。
+    **门禁：`./.mvn/mvn-local.sh -o test` 全量 178 例 0 失败（十八轮 173）；
+    `webui npm run build` 零报错（仅既有 >500 kB chunk 体积警告）；真机验收三轮全过——
+    文章 GET→PUT 往返 + 版本回滚 13/13、MARKFLOW 回滚完整性 10/10、G3 正反例各一次（含 `git stash` 反例）。**
+    **本轮遗留（仍未在代码层解决）**：a) `taskLocks` 仍是 JVM 本地锁且 reaper 不走该锁（并发门禁已不依赖它）；
+    b) 孤儿运行的**实例感知**诊断仍需给 `task_run` 加 `instance_id`/心跳列，配合 `QRTZ_SCHEDULER_STATE` 判属主，
+    才能把自愈窗口从 6h 压到分钟级；c) COORDINATOR 的返回值不含子 agent 工具计数（已由工作区计数器缓解）。
+    环境侧：本机 SSE 流式链路仍受 TUN 代理影响（十八轮已记录），故 ⑧ 的整轮预算只有离线报文级回归，
+    未取得一次全绿 COORDINATOR 实跑。清理：验收用临时文章与 `target/live_*.py` 已删除；本轮**未做任何提交**。

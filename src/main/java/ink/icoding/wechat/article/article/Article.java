@@ -56,4 +56,43 @@ public class Article extends PO {
     private Long createdBy;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
+    /**
+     * skillIds 的对外 JSON 视图：库内是「逗号分隔字符串」，接口必须与写入侧
+     * （{@code ArticleRequest.skillIds} 为 {@code List<Long>}）同形，否则调用方把 GET 结果原样 PUT
+     * 回来会被 Jackson 以「不能把 String 反序列化成 ArrayList&lt;Long&gt;」拒绝。
+     * AgentView / TaskView 是同一问题的另一种修法（那两个实体字段少，改成视图记录更直观）；
+     * Article 有 27 个字段，改用访问器级序列化器可避免视图与实体长期漂移。
+     * 只影响序列化方向——Article 只作响应体，请求体一律走 ArticleRequest。
+     *
+     * <p>两个容易踩空的点：
+     * <ol>
+     *   <li>注解必须落在 getter 上：字段是私有的，Jackson 的序列化主成员是访问器，
+     *       字段上的 {@code @JsonSerialize} 不生效。手写 getter 后 Lombok 不再生成同名方法，
+     *       字段映射不受影响（smart-mybatis 反射读字段）。</li>
+     *   <li>必须用 <b>Jackson 3</b>（{@code tools.jackson}）的注解与基类：Spring Boot 4 的 HTTP 层
+     *       用 Jackson 3，而本项目内部 JSON 走 Jackson 2（{@code com.fasterxml.jackson.databind}）。
+     *       两个 databind 包并存——{@code com.fasterxml.jackson.annotation} 是共用的（{@code @JsonProperty} 两边都认），
+     *       但 {@code ...jackson.databind.annotation} 不是：用 Jackson 2 的 {@code @JsonSerialize}
+     *       会被 HTTP 层静默忽略（实测：注解在字节码里、响应仍是字符串）。</li>
+     * </ol>
+     */
+    @tools.jackson.databind.annotation.JsonSerialize(using = SkillIdsArraySerializer.class)
+    public String getSkillIds() {
+        return skillIds;
+    }
+
+    /** {@link #getSkillIds()} 的数组序列化实现（Jackson 3，见该方法注释）。 */
+    public static final class SkillIdsArraySerializer
+            extends tools.jackson.databind.ValueSerializer<String> {
+        @Override
+        public void serialize(String value, tools.jackson.core.JsonGenerator generator,
+                              tools.jackson.databind.SerializationContext context) {
+            generator.writeStartArray();
+            for (Long id : ink.icoding.wechat.article.account.WechatAccountService.parseSkillIds(value)) {
+                generator.writeNumber(id.longValue());
+            }
+            generator.writeEndArray();
+        }
+    }
 }

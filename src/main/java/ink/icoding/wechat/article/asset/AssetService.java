@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentMap;
 
 @Service
 public class AssetService {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(AssetService.class);
     private static final Set<String> ALLOWED_TYPES = Set.of("image/jpeg", "image/png", "image/gif", "image/webp");
     private final AssetMapper mapper;
     private final CurrentUserService currentUserService;
@@ -120,7 +121,10 @@ public class AssetService {
             asset.setFileSize((long) bytes.length);
             asset.setSourceType(sourceType);
             asset.setSourceUrl(sourceUrl);
-            asset.setDescription(description);
+            // 截图/生图工具可能给出很长的描述。描述只是元数据，但超长会让整条 insert 失败、
+            // 连图片都进不了素材库（实测 Data too long for column 'DESCRIPTION' → 文章缺图却记成功）。
+            // 因此按实体声明的列长截断并留一条 WARN，宁可丢描述尾部也不丢图片。
+            asset.setDescription(truncateDescription(description));
             asset.setCreatedBy(userId);
             asset.setCreatedAt(LocalDateTime.now());
             mapper.insert(asset);
@@ -130,6 +134,13 @@ public class AssetService {
         } catch (Exception exception) {
             throw new BusinessException("素材保存失败：" + exception.getMessage());
         }
+    }
+
+    /** 按 {@link Asset#DESCRIPTION_MAX_LENGTH} 截断描述；确实截断时留 WARN 便于回查。 */
+    private static String truncateDescription(String description) {
+        if (description == null || description.length() <= Asset.DESCRIPTION_MAX_LENGTH) return description;
+        log.warn("图片描述超过 {} 字符（实际 {}），已截断后入库", Asset.DESCRIPTION_MAX_LENGTH, description.length());
+        return description.substring(0, Asset.DESCRIPTION_MAX_LENGTH);
     }
 
     public byte[] readBytes(Long assetId) {

@@ -124,7 +124,7 @@ public class ArticleMediaTools {
         @Param(description = "图片内容和适用位置的简短描述") private String description;
     }
 
-    @ToolInfo(name = "generate_image", description = "使用后台配置的图片模型创作配图并保存到素材库。提示词应描述主体、构图、风格、比例且避免在图中生成文字；成功后使用publicUrl通过insert_blocks插入文章。")
+    @ToolInfo(name = "generate_image", description = "使用后台配置的图片模型创作配图并保存到素材库。提示词应描述主体、构图、风格、比例且避免在图中生成文字；已绑定图片风格技能时（系统提示的【图片风格】注入区），提示词必须按该技能的脚手架组织并包含其要求的禁用项。成功后使用publicUrl通过insert_blocks插入文章。")
     public class GenerateImageTool implements Tool<GenerateImageParam> {
         private final Long accountId;
         private final Long userId;

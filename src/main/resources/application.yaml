@@ -36,6 +36,22 @@ server:
   port: ${SERVER_PORT:8081}
 
 app:
+  schedule:
+    # 单阶段智能体会话硬超时（秒）：SSE 流被掐断后 agent4j 可能永不完成 Future，任务会永久停在 RUNNING。
+    # 1800 意味着每次事故都白等半小时且期间占着并发闸门（上游网关并发配额有限），故收紧到 300：
+    # 正常的单阶段会话是分钟级，300s 足够；停滞则由 AgentInvoker 再重建会话重试一次。
+    stage-timeout-seconds: ${STAGE_TIMEOUT_SECONDS:300}
+    # 遗留运行判定阈值（小时）：进程被杀时 task_run 会永久停在 RUNNING 并占住并发闸门；
+    # 启动时与下一次触发时中止「开始时间超过本阈值」的运行。默认 3h 是按「阶段超时 300s × 阶段数上界 19
+    # （4 基础阶段 + 5 轮返工 × 3）≈ 1.6h」留出余量得出的——调小到低于这个估算值会把仍在正常执行的运行
+    # 误判为孤儿（启动时会打 WARN 提醒）；Quartz 集群部署下多实例共用一套库，更不能设得过小。
+    # ⚠️ 与 stage-timeout-seconds 绑在同一个估算式上：改一个必须同步改另一个。
+    stale-run-hours: ${STALE_RUN_HOURS:3}
+  llm:
+    # 在飞智能体运行闸门（见 common/InFlightGate）：上游网关并发配额硬上限为 6，本应用自己先守住 4，
+    # 余量留给编辑器链路与手工触发。排队超过 acquire-timeout-seconds 即让该次运行明确失败（不静默卡住）。
+    max-in-flight: ${LLM_MAX_IN_FLIGHT:4}
+    acquire-timeout-seconds: ${LLM_ACQUIRE_TIMEOUT_SECONDS:60}
   bootstrap:
     admin-username: ${ADMIN_USERNAME:admin}
     admin-password: ${ADMIN_PASSWORD:Admin@123}

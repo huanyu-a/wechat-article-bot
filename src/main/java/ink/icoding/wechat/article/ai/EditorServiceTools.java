@@ -85,7 +85,7 @@ public final class EditorServiceTools {
 
     @Data
     public static class RenderMarkflowParam extends ToolParam {
-        @Param(description = "MarkFlow 语法 Markdown 正文（组件写法以系统提示中的实时语法指令为准：步骤 :::steps / <steps>、对比 :::compare、提示 > [TIP]，具体以语法指令为最准）")
+        @Param(description = "MarkFlow 语法 Markdown 正文（组件写法以系统提示中的实时语法指令为准：步骤用 <steps> 标签、超过 3 步须显式 type=\"DA02\"、双栏对比用 :::compare 容器、提示用 > [TIP]、标签徽章用 <badges type=\"accent\">A|B</badges>；不要使用 :::steps 容器与行内 <badge>）")
         private String markdown;
         @Param(required = false, description = "主题主色（6 位 hex，可选；留空由渲染服务派生）") private String accent;
         @Param(required = false, description = "主题深色（6 位 hex，可选；留空由渲染服务派生）") private String dark;

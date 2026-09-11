@@ -207,6 +207,33 @@ public class AgentDefinitionService {
         }
     }
 
+    /**
+     * 读接口视图：把库内编码还原成数组再出参。
+     *
+     * <p>tool_keys 在库里是 JSON 数组字符串、skill_ids 是逗号分隔字符串，而写接口
+     * （{@link AgentRequest}）要求两者都是数组。若直接把实体当响应，GET 的产物无法回填 PUT
+     * ——同一个资源读出来和写回去的形状不一致，第三方客户端必然踩坑。前端虽有容错解析，
+     * 但契约层面必须自洽，故在响应侧统一还原。
+     */
+    public record AgentView(Long id, String code, String name, String stage, String persona,
+                            List<String> toolKeys, List<Long> skillIds, Long llmProfileId,
+                            java.math.BigDecimal temperature, Integer maxTokens, Boolean enabled,
+                            @com.fasterxml.jackson.annotation.JsonProperty("isBuiltin") Boolean isBuiltin,
+                            String builtinKey, Long createdBy,
+                            java.time.LocalDateTime createdAt, java.time.LocalDateTime updatedAt) {
+    }
+
+    /** 实体 → 读接口视图；null 透传，便于 controller 无脑包装。 */
+    public static AgentView toView(AgentDefinition agent) {
+        if (agent == null) return null;
+        return new AgentView(agent.getId(), agent.getCode(), agent.getName(), agent.getStage(),
+                agent.getPersona(), parseToolKeys(agent.getToolKeys()),
+                ink.icoding.wechat.article.account.WechatAccountService.parseSkillIds(agent.getSkillIds()),
+                agent.getLlmProfileId(), agent.getTemperature(), agent.getMaxTokens(), agent.getEnabled(),
+                agent.getIsBuiltin(), agent.getBuiltinKey(), agent.getCreatedBy(),
+                agent.getCreatedAt(), agent.getUpdatedAt());
+    }
+
     public record AgentRequest(String code, String name, String stage, String persona,
                                List<String> toolKeys, List<Long> skillIds, Long llmProfileId,
                                java.math.BigDecimal temperature, Integer maxTokens, Boolean enabled) {
