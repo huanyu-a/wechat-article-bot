@@ -1,59 +1,67 @@
 {
   "agent": "main",
-  "timestamp": "2026-09-11T17:50:00",
+  "timestamp": "2026-09-13T22:10:00",
   "status": "completed",
-  "summary": "按用户「将bug与未实现的写成交接文档」产出 docs/dev/known-issues-handoff.md：把本轮（agent-session-timeout-plan 第①②③④期）与近几轮自检中散落在各方案文档里的缺陷与未实现项收敛成一份可交接清单。文档分五节——②已修缺陷索引 D1–D13（每条给症状/量化证据/修复轮次/关键文件，明确「命中即回归、不是新缺陷」）；并单列「已核实不属于遗留」的 5 条（站点 Base URL 与渲染前 URL 绝对化、digest 用 render meta.summary、账号 defaultStyle 接线、/preview 30次每分每用户限流、delegate_research 已有会话级 3 次+端点 20 次每分双重约束），避免接手方重复排查；③仍然未实现——上游依赖 U1 agent4j 2.3.3 无 readTimeout/cancel（停滞后流不关闭，重试可能与下次运行重叠产生重复付费副作用）、U2 temperature/maxTokens 只存不用（LLM.create 仅 4 参，UI 已标注）、U3 网关并发 max=6；本仓库缺口 I1 进程内信号量与 taskLocks 均为 JVM 本地、多实例合计可超配额、I2 孤儿运行是纯时间阈值（3h）而非属主存活判定、I3 MarkFlow preview 字段未用致 KaTeX 配套 CSS 与 aria-hidden 丢失、I4 无「用留存 Markdown 重新渲染覆盖正文」入口、I5 同维度多 IMAGE 技能并列注入有意不改（产品决策）、I6 COORDINATOR 子智能体停滞时局部日志与计数缺失、I7 TUN 代理致 COORDINATOR 无全绿实跑、I8（P0，最高优先）编辑器 AI 对话链路无硬超时——CompletableFuture.runAsync 起 execute() → executeWithAgentSession 直接 result.execute()/result.get()，完全不经过 StageTimeout，停滞即永久占住一个 InFlightGate 名额并且 TASK_RUN 里没有任何记录（现场线程栈抓到 worker-3 已挂 4730 秒/79 分钟，该 dump 里共 2 条线程阻塞在 LLMResult.get 即 2 个网关名额被白占）、I9 browse_webpage 403/404 被计为工具失败、I10 RUNNING 行无进度可读（MODE 恒 NULL、EXECUTION_LOG 空、TOOL_CALL_COUNT=0，运行期间只能 jstack）。另新增 3.4 节对齐并行会话（sess 现场证据文档 docs/dev/agent-session-timeout-handoff.md，16:14–17:30 只读采集）：其「剩余工作」7 项中第 4（工具失败记 SUCCESS）与第 5（时间戳混源）本份已列为已修 D5/D4（它写作时跑的是补丁前实例，故以本份为准），第 1 项即 I8、第 6 项即 U1、第 7 项即 I9、第 2 项定时链路已做（编辑器随 I8）；并更正它的一个推断——「一次 COORDINATOR 运行天然占 ≥2 个名额」不成立，闸门只在 TaskExecutionService.java:136（运行级，一次运行一个）与 ArticleAiService.java:220（编辑器会话）两处取名额，AgentRunner.runWithLimit 不取，嵌套子智能体在同一运行内不重复占位，run#39 在 limit=1 下失败只是先到的 run#38 占住了唯一名额，故默认 4 够用、不必按「占 2」上调（上限也不得超过网关 6）；随后按用户「把 sess_457cd5ec 的文档也合并进来」把该会话 handoff 的实体内容整体并入本份：新增第五节「现场证据与根因」（根因四条 + 已排除项：reasoning_content 处理正常、TLS 证书 8-11→11-9 有效、与请求体大小无关、调研员是受害者；run#33 完整结论含「不是卡在第一次调用，而是完成约 26 轮工具调用后才卡」的更正；16:14:08 PID 24700 的 455 行/43 线程活体栈，含编辑器 worker-3 已挂 4730s、栈里 OkHttp 读线程为 0；InFlightGate 源码 15:26/class 16:10 但实例 14:33 启动故 #33 跑在闸门之前；#35/#36/#38 均在 300 秒止损且卡点显示模型只吐 0–2 字符；17:27 现场空闲健康=间歇性发作）与第六节「可复用的现场诊断手法」（jstack 判读要点、用 class mtime 判运行实例版本、网关劣化探测与样本数据、直查开发库、RUNNING 行无进度的观测缺口），原第五/六节顺延为第七/八节；3.4 改为「对并行会话剩余工作的逐条核销」；U1 补入它提出的两项待确认（agent4j 流式解析是否忽略 reasoning_content、读层补 readTimeout/心跳/兜底 onFailure 并让 runSubAgent 内外超时可在报错里区分）；第八节补「继续采样把间歇性量化」一条。合并时**有意剔除原文里解密出的 API Key 与 secret 明文**，6.3 节只保留手法并加了「不要把 key 写进文档或提交」的告警。原 handoff 文件保留未删——该会话 17:42 仍在编辑它，且非本会话产物，删改会打断对方。④工程约束与验收方式（mvn-local.sh、测试库串行禁并行、不能用 grep 搜日志中文、测量须可反证、结论须核对结构）与工作树状态；⑤文档地图与按性价比排序的下一步（建议 I2+I1 一起做）。本轮只新增文档，未改任何源码，故未重跑测试——第四节引用的 205 例全绿门禁沿用同一工作树状态下本轮实施时的结果。",
+  "summary": "第十四轮：①修掉用户当场报告的「/articles/43 公式不显示、/articles/44 轮播不显示」——根因不是渲染能力，而是「应用实际对外提供的前端 ≠ 探针验证的前端」。frontend-maven-plugin 的 install-node-and-npm / npm-ci / build-webui 三个 execution 全部绑在 prepare-package，而 `spring-boot:run` 只走到 test-compile，从不执行它，于是 target/classes/static 停在几天前的构建（entry index-CX6OBQPX.js；编辑器 chunk 里 katex / rawSvg / rawMath / preservedEmptySpan 命中数全为 0），而 webui/dist 已是新构建（index-ChPmeBR_.js，四个标记全有）。三条独立证据：库内产物本身是对的（43 的 CONTENT_HTML 10368 字符、katex 命中 12；44 含 svg 1 个 + foreignObject 6 个）、curl 8081 返回旧 entry、新旧 editor chunk 指纹全 0 vs 全有。处置=把最新前端构建进 target/classes/static 再重启。复验走真实 Chrome 直连 127.0.0.1:8081（不是本地临时页面）：43 → katex 5 个全部可见、高度 [22,22,22,45,53]、无源码残留；44 → 轮播 1 个可见、600×200（与声明的尺寸一致）、动画元素 1、分帧容器 3、内嵌 3 张图全部加载成功。防复发=新增 browser/verify-live-app.mjs 直接量应用对外提供的那份前端（原有套件量的是 webui/dist，方法论上就看不见这类不一致），并写进复现手册坑清单（第 12–16 条）。②按用户指令把探针脚本搬进受版本控制目录：target/ 被 .gitignore:2（裸 `target/`，任意深度命中）忽略，git ls-files target/probe 实测 0 个文件，后果是结论不可复核——clone 下来一支套件都跑不了。新增 tools/render-verify/：gen/（Python 生成器 6 支）+ browser/（Node+CDP 驱动器 12 支，刻意不装 playwright/puppeteer，用 Node 24 自带全局 WebSocket+fetch 直连 CDP）+ spec/（组件注册表 63 ID、匹配器 29 条、官方 guide 13744 字符、引擎 bundle 存档 641KB）+ 终稿汇总脚本与两份 README。路径常量集中到 paths.py / paths.mjs，脚本内不再有裸相对路径（原脚本用 HERE=dirname(__file__) 把输入与产物混在一处，搬完必须拆开否则 cwd 一变就崩）；产物仍落 target/probe/，不进版本控制。搬运原则是产物落点逐字节不变，故全部历史截图路径与文档里的既有预期值继续有效。照新路径整体重跑，判定数字与第十三轮逐条一致：79 行 0 异常、[('components',237),('combos',17),('alt',10),('registry',76)]、70 通过/9 不适用的 0 失败、17 组合编辑器 17/17、10 替代全通过、76 组全 not-rendered、终稿表 {registryTotal:63, tierA:13, tierB:50, upstreamRows:38, backendOk:25, editorPass:25, dangling:0}、交叉验证 groups=18 notRendered=18 doubtful=0、44 篇 70 项 39 命中 31 无 6 禁写全 0。③重启同时使 D45 收官（此前第九、十一轮都是「源码已改、库里仍是旧文案」）：SKILL.CONTENT CHAR_LENGTH 5635 → 6649、五个关键片段 LOCATE 全部 > 0、UPDATED_AT = 2026-09-13 20:36:15，§八 第 7 条据此改为已闭合。④文档同步：known-issues-handoff.md 新增 §3.18（探针入库 + 43/44 故障取证 + D45 落库 + 本轮数字）并把 §八 第 7 条标闭合；render-verification.md 第五节重写为「tools/render-verify 里有什么、target/probe 里还剩什么」、§3.4 增第 6 条命令、§3.10 增本轮结果与指纹表、§六 增坑 12–16；render-acceptance-report.md 第六节改为「之前唯一需要您做的事已经做完了」并新增 43/44 故障小节。",
   "artifacts": [
-    "docs/dev/known-issues-handoff.md（新增；本轮唯一产物，2026-09-11 17:36 建立、17:50 前后合并 sess_457cd5ec 的现场证据为第五/六节，共 355 行）"
+    "tools/render-verify/（新增，32 个文件 / 948KB，全部进版本控制）：README.md、paths.mjs、paths.py、round10_component_paths.mjs、gen/×6、browser/×12（含新增的 verify-live-app.mjs）、spec/×5（含 engine/mf_app.js 641KB 引擎包存档）",
+    "docs/dev/render-verification.md（新增，37KB，渲染验收复现手册）",
+    "docs/dev/upstream-issues.md（新增，43KB，上游问题清单）",
+    "docs/render-acceptance-report.md（新增，11KB，面向用户的终稿验收报告）",
+    ".gitignore（追加 render-verify harness 段的 __pycache__/）",
+    "docs/dev/known-issues-handoff.md（§3.10–§3.18 与 §八 第 7 条闭合）"
   ],
   "quality": {
     "checks": [
       {
         "name": "test",
-        "result": "skip",
-        "detail": "本轮无代码改动（仅新增一份 Markdown 文档），未重跑测试；205 例全绿为同一工作树状态下本轮实施时的门禁结果"
-      },
-      {
-        "name": "compile",
-        "result": "skip",
-        "detail": "同上，无源码改动"
-      },
-      {
-        "name": "fact-check",
         "result": "pass",
-        "detail": "文档中每一条事实都回到代码/文档核对：AssetService.java:119 的 /uploads/ 相对路径、RenderConfig.siteBaseUrl + MarkFlowRenderService.absoluteImageUrls（确认 Base URL 缺口已闭合，不再列为遗留）、ScheduledArticleTools.java:140 用 result.summary() 兜底 digest、SkillPromptAssembler 规则 8 注入 defaultStyle、SkillController.PREVIEW_MAX_PER_MINUTE=30 与 ArticleAiController.CHAT_MAX_PER_MINUTE=20、MAX_EDITOR_DELEGATE_CALLS=3、InFlightGate DEFAULT_LIMIT=4/ACQUIRE=60、AgentInvoker MAX_RATE_LIMIT_RETRIES=3/MAX_STALL_RETRIES=1、Asset.DESCRIPTION_MAX_LENGTH=500、DelegateTools MAX_TOTAL_TOOL_CALLS=120/MAX_CHIEF=48/MAX_SUB_AGENT=24"
+        "detail": "./.mvn/mvn-local.sh -o test → 308 例、0 失败、0 错误、0 跳过、BUILD SUCCESS、2:54（日志 target/probe/r14_tests.log）。按项目约束用 mvn-local.sh、串行不并行"
       },
       {
-        "name": "gap-verification",
+        "name": "build",
         "result": "pass",
-        "detail": "对并行会话新提出的缺口做独立核实后才写入：grep 确认 StageTimeout 只被 AgentInvoker 使用（schedule 链路），ArticleAiService.executeWithAgentSession 在 280 行附近直接 result.execute()/result.get()，编辑器链路确无硬超时 → I8 成立；grep 确认 InFlightGate 只有 TaskExecutionService.java:136 与 ArticleAiService.java:220 两个取名额点、AgentRunner.runWithLimit 不取名额 → 并行会话「COORDINATOR 天然占 2 名额」的推断被证伪，已在文档 3.4 更正（对方 17:40 亦已自行更正）"
+        "detail": "(cd webui && npm run build) → ✓ 393ms（日志 target/probe/r14_webui_build.log）；仅有既存的 >500kB chunk 体积警告"
       },
       {
-        "name": "merge-hygiene",
+        "name": "live-app-reverification",
         "result": "pass",
-        "detail": "合并 sess_457cd5ec 文档时做了三项卫生检查：①grep 确认合并后的文档不含原文里解密出的 secret/API Key 明文（原文写了密钥值片段，本次只保留手法描述并加告警，密钥值不落任何文档）；②标题层级自检（〇/一…八顺序连续、3.4 与 5.x/6.x 无重号、第七/八节已顺延）；③未删改对方的 docs/dev/agent-session-timeout-handoff.md（17:42 仍在被其编辑，非本会话产物）"
+        "detail": "browser/verify-live-app.mjs 43 44 直连 127.0.0.1:8081：43 → katex=5(5 可见)、高度 [22,22,22,45,53]、源码残留=false；44 → svg=1(1 可见)、尺寸 [[600,200]]、轮播图 3/3 加载成功、源码残留=false。截图 target/probe/browser/shots/live/<id>.png"
       },
       {
-        "name": "push-hygiene",
+        "name": "migration-non-drift",
         "result": "pass",
-        "detail": "推送到公开仓库前的检查：①密钥扫描（local-dev-secret-key/sk-XNilb/32位hex/gho_ 等模式）——仅命中 .env.example/deploy/*.env.example/README 的占位符，无真实密钥；②提交前把我在记录里写下的密钥值片段改为不含值的表述；③git check-ignore 确认 .env、data/、logs/ 被忽略且未被暂存；④无 >1MB 大文件；⑤确认 origin 是上游 onlyGuo/wechat-article-bot、新增独立 remote huanyu 指向用户仓库，未向上游推送；⑥推送后 git ls-remote 校验远端 HEAD == 本地 HEAD 5f88ca5；⑦gh api 确认 5 份 docs/dev 文档已在远端"
+        "detail": "搬运后照新路径整体重跑（gen×4 → 探针 dist → 三个浏览器批次 → 汇总 → 交叉验证），全部判定数字与第十三轮逐条一致：79 行 0 异常；70/9/0；17 组合 8/8/1 + 17 pass；10 替代 10 ok + 10 pass；76 组 76 not-rendered + 76 na；终稿表 63/13/50/38/25/25/悬空 0；交叉验证 groups=18 notRendered=18 doubtful=0 controlFP=0；覆盖 44 篇 70 项 39 命中 31 无 6 禁写全 0。搬运本身踩到两个坑并记入手册：探针 vite 构建的同目录依赖（probe.css/editor-setup.js/legacyExtensions.js）漏拷致 UNRESOLVED_IMPORT；Bash 工具 cwd 粘滞导致在 gen/ 下写出的相对路径建了杂散目录（.gitignore 的裸 target/ 会静默吞掉，故必须用绝对路径）"
+      },
+      {
+        "name": "d45-landed",
+        "result": "pass",
+        "detail": "只读复核 SKILL ID=4：CHAR_LENGTH(CONTENT)=6649（= SkillSeeder.MARKFLOW_CONTENT.length()，SkillSeederMarkflowContentTest 钉的就是这个值）、has_layout_family/has_76/has_caseflow_dash/has_hint_container_only/has_slider_direction 全部 > 0、UPDATED_AT=2026-09-13 20:36:15（此前 2026-09-13 08:38:21）"
+      },
+      {
+        "name": "secret-scan",
+        "result": "pass",
+        "detail": "提交前扫描：①用真实令牌值在仓库（排除 .git/target/node_modules）做 grep -F，命中 0 个文件——令牌只以 ~/.zcode/secrets/markflow-render-token 这个文件路径出现在 paths.py/paths.mjs/README.md，值不落任何文件；②对全部 96 个待提交文件跑高置信度密钥模式（PEM 私钥头 / sk- / ghp_ / AKIA / xox / JWT 三段式）命中 0；③唯一命中的 Admin@123 经 git grep 确认在 HEAD 里已存在于 10 个文件（含 src/main/resources/application.yaml），非本次引入；④暂存集里无 target/、.env、data/、logs/，无 >200k 行的大文件"
       }
     ],
     "gate_passed": true
   },
   "next": [
-    "全部改动已提交并推送：commit 5f88ca5 → huanyu-a/wechat-article-bot 的 main（用户明确要求「全部推送到我的仓库，连交接文档」）。提交含 63 个文件（22 新增/41 修改），把此前多轮未提交的改动一并纳入。注意 origin 指向上游 onlyGuo/wechat-article-bot，本次新增 remote huanyu 指向用户仓库，未向上游推送",
-    "文档给出的建议顺序：①I8 编辑器链路加硬超时（P0，复用 StageTimeout，成本最低）②I2 实例身份（task_run.instance_id/心跳）+ I1 全局配额（Redis）一起做 ③I4 重新渲染入口 ④I7 补一次 COORDINATOR 全绿实跑 ⑤U1/U3 对外提诉求 ⑥I9/I10/I3/I5/I6 按痛点排",
-    "本文件 .zcode/handoff/latest.json 为并行 ZCode 会话共享的单文件，其他会话写入前请先读；本次覆盖的是本项目实施记录，未发现其他会话的新记录；另注意并行会话的现场证据文档 docs/dev/agent-session-timeout-handoff.md（只读采集，未与本次编辑冲突）",
-    "验收在开发库留下 run#34–#39 的真实记录（#37 为已删除的 UI 夹具），未清理，勿误判为线上脏数据"
+    "本次仅提交，未推送。commit 520938e（96 文件 / 17317 insertions / 255 deletions）在本地 main 上；origin 指向上游 onlyGuo/wechat-article-bot、remote huanyu 指向用户仓库，推送需用户单独许可（约束：未经允许不 push 到远程）",
+    "建议后续按这个顺序补：①让 frontend-maven-plugin 的 build-webui 在 `spring-boot:run` 路径下也生效（或把 target/classes/static 的陈旧检测做成启动自检）——本轮的根因会复发，因为任何 `spring-boot:run` 重启都不会刷新静态产物；②§八 第 1–6、8–11 条仍开放，其中 §八 第 2 条（I7 补一次 COORDINATOR 全绿实跑）与第 8 条（D42 真实轮次对照）是仅剩的两条「只有离线回归、没有线上证据」的链路；③§八 第 9 条：把 31 个 B 级组件升到 A 级证据",
+    "本文件 .zcode/handoff/latest.json 为并行 ZCode 会话共享的单文件，写入前请先读；本次覆盖的是本项目实施记录。并行会话的现场证据文档 docs/dev/agent-session-timeout-handoff.md 未删改",
+    "开发库里留有 run#34–#39 与 43/44 两篇探针稿件的真实记录，未清理，勿误判为线上脏数据"
   ],
   "read_files": [
-    "docs/dev/agent-session-timeout-plan.md",
-    "docs/dev/skills-agent-plan.md",
-    "docs/dev/skills-agent-plan-review.md",
+    "pom.xml",
+    "webui/src/editorExtensions.js",
+    "webui/src/views/ArticleEditorView.vue",
+    "src/main/java/ink/icoding/wechat/article/skill/SkillSeeder.java",
     "src/main/java/ink/icoding/wechat/article/skill/MarkFlowRenderService.java",
-    "src/main/java/ink/icoding/wechat/article/asset/{Asset,AssetService}.java",
-    "src/main/java/ink/icoding/wechat/article/ai/{ArticleAiService,ArticleMediaTools,DelegateTools,ScheduledArticleTools}.java",
-    "src/main/java/ink/icoding/wechat/article/{schedule/AgentInvoker,schedule/AgentRunner,common/InFlightGate,common/RateLimiter}.java"
+    "docs/dev/known-issues-handoff.md",
+    "docs/dev/render-verification.md",
+    "docs/render-acceptance-report.md",
+    "tools/render-verify/README.md",
+    "tools/render-verify/spec/README.md"
   ]
 }
