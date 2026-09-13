@@ -35,6 +35,20 @@ public class Article extends PO {
     /** MARKFLOW 文章的 Markdown 源文：渲染产物被覆盖后仍可重排，也是版式保真的唯一依据。 */
     @TableField(length = 65535)
     private String contentMarkdown;
+    /**
+     * MARKFLOW 渲染时**实际生效**的主题色（渲染服务响应里的 theme.accent/theme.dark）。
+     *
+     * <p>为什么不落这两列就不行：主题色是渲染参数而不是正文内容，渲染产物 HTML 里反推不出来
+     * （颜色散落在几十个内联样式里）。此前它只活在「模型这一轮传了什么」的内存态里，落库时被丢掉，
+     * 于是 `POST /api/articles/{id}/rerender`（换模板/换主题后重排，I4）只能传 null，
+     * 渲染服务按默认色渲染——一篇科技蓝的文章重排一次就整篇漂成默认绿，
+     * 这正是「重排后的版式没有复刻原来的 MarkFlow 渲染」。
+     */
+    @TableField(length = 20)
+    private String themeAccent;
+    /** 见 {@link #themeAccent}；未显式指定时由渲染服务派生，同样必须留存。 */
+    @TableField(length = 20)
+    private String themeDark;
     @TableField(length = 500)
     private String coverUrl;
     private Long coverAssetId;

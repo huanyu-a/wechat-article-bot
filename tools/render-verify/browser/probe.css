@@ -1,0 +1,19 @@
+/* 探针页面自己的排版；编辑器正文样式来自 webui/src/style.css 的 .ProseMirror 规则 */
+body { margin: 0; background: #eef0ec; font-family: 'Noto Sans SC', system-ui, sans-serif; }
+.probe-header { padding: 16px 22px; background: #fff; border-bottom: 1px solid #dde1dc; position: sticky; top: 0; z-index: 5; }
+.probe-header h1 { margin: 0; font-size: 17px; color: #1c2923; }
+.probe-header p { margin: 5px 0 0; font-size: 12px; color: #6b7b73; }
+.probe-row { padding: 14px 22px 6px; }
+.probe-row h2 { margin: 0 0 3px; font-size: 14px; color: #1c2923; }
+.probe-row .probe-note { margin: 0 0 9px; font-size: 11px; color: #7f8c85; }
+.probe-panes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.probe-pane { background: #fff; border: 1px solid #dde1dc; border-radius: 7px; box-shadow: 0 8px 22px rgba(25, 45, 37, .05); }
+.probe-pane > header { padding: 7px 13px; border-bottom: 1px solid #edf0ed; font-size: 11px; color: #587066; display: flex; justify-content: space-between; }
+.probe-pane.before > header { color: #a2594a; background: #fdf6f4; }
+.probe-pane.after > header { color: #28785a; background: #f4faf7; }
+.probe-pane.reference > header { color: #3d5a86; background: #f3f6fb; }
+.probe-canvas { padding: 14px 18px; }
+.probe-canvas > div > .ProseMirror { min-height: 0; padding: 0; }
+/* 参照侧直接把产物注进一个 .ProseMirror 容器（为了吃到同一份正文样式），
+   内边距/最小高度要跟编辑器那栏对齐，否则两栏量的盒子不可比。 */
+.probe-canvas.ProseMirror { min-height: 0; padding: 0; }

@@ -59,7 +59,18 @@ public class ArticleMediaTools {
 
     @ToolInfo(name = "browse_webpage", description = "打开一个公开网页并提取标题和正文。必须先有明确URL，禁止访问内网。")
     public class BrowseWebpageTool implements Tool<BrowseWebpageParam> {
-        @Override public String execute(BrowseWebpageParam param) { return json(webService.browse(param.getUrl())); }
+        @Override public String execute(BrowseWebpageParam param) {
+            try {
+                return json(webService.browse(param.getUrl()));
+            } catch (SafeWebService.PageUnavailableException unavailable) {
+                // 403/404/410 属「这一页读不到」而非工具故障：返回可跳过的引导文本，不再计为工具失败，
+                // 避免外部噪声把整次运行拖成「有警告的成功」并掩盖真正的失败。
+                return json(Map.of("url", param.getUrl() == null ? "" : param.getUrl(),
+                        "skipped", true,
+                        "message", "该网页当前不可访问（HTTP " + unavailable.statusCode()
+                                + "，可能不存在或被反爬拦截），已跳过。请改用搜索结果中的其他来源。"));
+            }
+        }
     }
 
     @Data

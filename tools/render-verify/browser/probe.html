@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>编辑器扩展集 · 真实浏览器对照探针</title>
+    <!--
+      与 webui/index.html 用的是同一条 KaTeX 样式表（渲染服务的公式是 class 驱动的，
+      不带样式表就只是一串普通 span）。版本必须与渲染服务预览页一致。
+    -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.17.0/dist/katex.min.css" />
+    <link rel="stylesheet" href="./probe.css" />
+  </head>
+  <body>
+    <header class="probe-header">
+      <h1>编辑器扩展集 · 真实浏览器对照</h1>
+      <p id="probe-meta">载入中…</p>
+    </header>
+    <main id="probe-root"></main>
+    <script type="module" src="./probe.js"></script>
+  </body>
+</html>

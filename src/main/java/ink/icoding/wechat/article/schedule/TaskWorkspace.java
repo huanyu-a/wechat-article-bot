@@ -38,6 +38,14 @@ public class TaskWorkspace {
      * 交付物却缺图。终态判定必须能看见「有工具失败」这件事，所以失败数随工具调用数一起累计到工作区。
      */
     private final java.util.concurrent.atomic.AtomicInteger toolFailures = new java.util.concurrent.atomic.AtomicInteger();
+    /**
+     * 降级计数：某个阶段/主编会话中止，但已产出物可用、按现有产出继续完成交付（见 PipelineExecutor、CoordinatorExecutor）。
+     *
+     * <p>与工具失败分开计数：降级不是「某个工具报错」，而是「这一阶段整个没做完」——
+     * 混进 toolFailures 会让运行说明写成「有 N 次工具调用失败」，与实情不符。
+     * 单独计数才能让终态说清楚「哪次交付是打了折扣的」。
+     */
+    private final java.util.concurrent.atomic.AtomicInteger degradations = new java.util.concurrent.atomic.AtomicInteger();
     private int revisionRound;
 
     public TaskWorkspace(ScheduledArticleTools.DraftState draftState) {
@@ -102,6 +110,16 @@ public class TaskWorkspace {
     /** 本次运行累计的工具失败次数；&gt;0 时运行终态不应是纯粹的 SUCCESS（见 TaskExecutionService）。 */
     public int toolFailureCount() {
         return toolFailures.get();
+    }
+
+    /** 记入一次降级（某阶段中止但按现有产出继续）。 */
+    public void addDegradation() {
+        degradations.incrementAndGet();
+    }
+
+    /** 本次运行累计的降级次数；&gt;0 时交付物是打了折扣的（见 TaskExecutionService 的终态判定）。 */
+    public int degradationCount() {
+        return degradations.get();
     }
 
     public ScheduledArticleTools.DraftState draftState() {
@@ -193,6 +211,8 @@ public class TaskWorkspace {
         value.put("reviewRounds", reviewRounds.size());
         value.put("toolCalls", toolCalls.get());
         value.put("toolFailures", toolFailures.get());
+        value.put("degradations", degradations.get());
+        value.put("renderWarnings", draftState.renderWarnings().size());
         value.put("saved", draftState.isSaved());
         return value;
     }

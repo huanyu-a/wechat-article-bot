@@ -76,6 +76,18 @@ public class ArticleController {
         return ApiResponse.ok(service.rollback(id, revision));
     }
 
+    /** 用留存 Markdown 源文重新渲染（I4）；body 可带 accent/dark 覆盖主题色，缺省由渲染服务决定。 */
+    @PostMapping("/{id}/rerender")
+    @PreAuthorize("hasAnyRole('ADMIN','OPERATOR','EDITOR')")
+    public ApiResponse<Article> rerender(@PathVariable Long id,
+                                         @RequestBody(required = false) RerenderRequest request) {
+        RerenderRequest body = request == null ? new RerenderRequest(null, null) : request;
+        return ApiResponse.ok(service.rerender(id, body.accent(), body.dark()));
+    }
+
+    public record RerenderRequest(String accent, String dark) {
+    }
+
     @PostMapping(value = "/{id}/wechat-draft", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @PreAuthorize("hasAnyRole('ADMIN','OPERATOR','REVIEWER')")
     public SseEmitter syncDraft(@PathVariable Long id, HttpServletResponse response) {

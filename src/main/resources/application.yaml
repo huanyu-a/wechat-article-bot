@@ -41,17 +41,51 @@ app:
     # 1800 意味着每次事故都白等半小时且期间占着并发闸门（上游网关并发配额有限），故收紧到 300：
     # 正常的单阶段会话是分钟级，300s 足够；停滞则由 AgentInvoker 再重建会话重试一次。
     stage-timeout-seconds: ${STAGE_TIMEOUT_SECONDS:300}
+    # 协调者主编会话硬超时（秒，COORDINATOR 链路）：主编的一次会话**覆盖全部委托**，
+    # 每次委托都是一次完整的子会话（还各带一次停滞重试），量级与单阶段会话完全不同。
+    # 实测 run#41/42/47/48 的卡点都是「主编侧无事件、子智能体正在运行」——300s 一到就把正常工作中的
+    # 主编硬超时杀掉、整轮 FAILED；编辑器的同类会话（含委托）本就按 1800s 计，这里对齐。
+    coordinator-timeout-seconds: ${COORDINATOR_TIMEOUT_SECONDS:1800}
+    # 工具调用预算（方案 5.5 预算护栏的可配置来源，见 ToolCallBudget）：
+    # 调研阶段单独一档——实测 run#46 的调研子智能体 25 次调用全部成功（search_web ×20 + browse_webpage ×5，
+    # 零失败零重试），仅因超过 24 的上限 1 次就让整轮 PIPELINE 失败。宽口径调研的正常工作量本就大于写作/审核；
+    # run#62 进一步说明 40 仍不够：同一任务发起 47 次调用、前 40 次全部成功，故按实测上浮到 60。
+    # stage 一档 24 → 36：修复后的 run#63 / run#68 逐会话计数显示配图 26 次、审核 25 次都已越过 24，
+    # 只是靠「收尾工具宽限」才把成果交出来——宽限是兜底，不该是常态。
+    # total 120 → 200：run#68 整轮实测 110 次，距 120 只剩 8 次。
+    # 触顶不再等于白干：收尾工具（save_research_notes 等）在预算用尽后仍放行有限次，见 ToolCallBudget.TERMINAL_TOOLS。
+    tool-calls:
+      research: ${TOOL_CALLS_RESEARCH:60}
+      stage: ${TOOL_CALLS_STAGE:36}
+      chief: ${TOOL_CALLS_CHIEF:48}
+      total: ${TOOL_CALLS_TOTAL:200}
     # 遗留运行判定阈值（小时）：进程被杀时 task_run 会永久停在 RUNNING 并占住并发闸门；
-    # 启动时与下一次触发时中止「开始时间超过本阈值」的运行。默认 3h 是按「阶段超时 300s × 阶段数上界 19
-    # （4 基础阶段 + 5 轮返工 × 3）≈ 1.6h」留出余量得出的——调小到低于这个估算值会把仍在正常执行的运行
-    # 误判为孤儿（启动时会打 WARN 提醒）；Quartz 集群部署下多实例共用一套库，更不能设得过小。
-    # ⚠️ 与 stage-timeout-seconds 绑在同一个估算式上：改一个必须同步改另一个。
+    # 启动时与下一次触发时中止「开始时间超过本阈值」的运行。COORDINATOR 一轮的上界是
+    # 「主编超时 1800s + 子会话 300s × 委托数」≈ 1.2h，PIPELINE 是「阶段超时 300s × 阶段数上界 19
+    # （4 基础阶段 + 5 轮返工 × 3）≈ 1.6h」；取 3h 是在两者之上留出余量——调小到低于这个估算值会把
+    # 仍在正常执行的运行误判为孤儿（启动时会打 WARN 提醒）；Quartz 集群部署下多实例共用一套库，
+    # 更不能设得过小。
+    # ⚠️ 与 stage-timeout-seconds / coordinator-timeout-seconds 绑在同一个估算式上：改一个必须同步改另一个。
     stale-run-hours: ${STALE_RUN_HOURS:3}
+    # 运行心跳超时（秒，I2）：执行线程每 progress-flush-seconds 秒刷新 task_run.HEARTBEAT_AT，
+    # 心跳早于本值即判定属主实例已失联/崩溃，其它实例可中止该运行并把自愈窗口压到分钟级。
+    # 默认 180 = 心跳间隔（15s）× 12：容忍数次数据库抖动，又远小于旧的时间阈值（3h）。
+    heartbeat-timeout-seconds: ${HEARTBEAT_TIMEOUT_SECONDS:180}
+    # 运行中进度与心跳的落库间隔（秒，I10）：周期把 MODE/EXECUTION_LOG/TOOL_CALL_COUNT 刷进 task_run，
+    # 使 RUNNING 行不再是「MODE=NULL、日志空、计数 0」。调小会更实时但增加写库频率。
+    progress-flush-seconds: ${PROGRESS_FLUSH_SECONDS:15}
   llm:
     # 在飞智能体运行闸门（见 common/InFlightGate）：上游网关并发配额硬上限为 6，本应用自己先守住 4，
     # 余量留给编辑器链路与手工触发。排队超过 acquire-timeout-seconds 即让该次运行明确失败（不静默卡住）。
     max-in-flight: ${LLM_MAX_IN_FLIGHT:4}
     acquire-timeout-seconds: ${LLM_ACQUIRE_TIMEOUT_SECONDS:60}
+    # 跨实例名额租约 TTL（秒，I1）：心跳早于 TTL 的租约会被其它实例回收（属主实例已崩溃/失联）。
+    # 必须显著大于心跳间隔（TTL/3）以容忍单次数据库抖动；调大会延长故障后名额归还的等待时间。
+    lease-ttl-seconds: ${LLM_LEASE_TTL_SECONDS:120}
+    # 编辑器交互式会话的硬超时（秒）：与 schedule.stage-timeout-seconds 分开——用户在场，等 300 秒太短，
+    # 且编辑器单轮可含多次浏览器工具等待（每次最长 90 秒）。停滞的编辑器会话此前无任何护栏，会永久占住
+    # 一个并发名额且 TASK_RUN 无记录（现场线程栈实测 79 分钟），超时后释放名额并向浏览器发 error 事件。
+    editor-timeout-seconds: ${EDITOR_TIMEOUT_SECONDS:1800}
   bootstrap:
     admin-username: ${ADMIN_USERNAME:admin}
     admin-password: ${ADMIN_PASSWORD:Admin@123}

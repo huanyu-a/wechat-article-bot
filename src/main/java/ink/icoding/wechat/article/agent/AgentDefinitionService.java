@@ -20,12 +20,15 @@ public class AgentDefinitionService {
     private final AgentDefinitionMapper mapper;
     private final ToolRegistry toolRegistry;
     private final LlmProfileService llmProfileService;
+    private final ink.icoding.wechat.article.skill.SkillBindingValidator skillBindingValidator;
 
     public AgentDefinitionService(AgentDefinitionMapper mapper, ToolRegistry toolRegistry,
-                                  LlmProfileService llmProfileService) {
+                                  LlmProfileService llmProfileService,
+                                  ink.icoding.wechat.article.skill.SkillBindingValidator skillBindingValidator) {
         this.mapper = mapper;
         this.toolRegistry = toolRegistry;
         this.llmProfileService = llmProfileService;
+        this.skillBindingValidator = skillBindingValidator;
     }
 
     public List<AgentDefinition> list(String stage, Boolean enabled) {
@@ -130,6 +133,7 @@ public class AgentDefinitionService {
         agent.setName(request.name().strip());
         agent.setPersona(request.persona().strip());
         agent.setToolKeys(groups.isEmpty() ? null : toJson(groups));
+        skillBindingValidator.validate(request.skillIds());
         agent.setSkillIds(normalizeSkillIds(request.skillIds()));
         agent.setLlmProfileId(request.llmProfileId());
         agent.setTemperature(request.temperature());

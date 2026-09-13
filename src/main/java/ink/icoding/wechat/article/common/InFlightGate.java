@@ -1,10 +1,17 @@
 package ink.icoding.wechat.article.common;
 
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDateTime;
+import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -32,8 +39,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>代价（有意接受）：名额在整个运行期间持有，包含渲染/落库等非 LLM 阶段，
  * 因而略微保守。上限默认 4 与网关 6 之间的余量留给编辑器链路与手工触发。
  *
- * <p>边界：进程内信号量是**每实例**的。Quartz 以 {@code isClustered=true} 多实例部署时，
- * N 个实例合计仍可能超过网关配额，此时需要换成全局配额（Redis 等）。
+ * <p>跨实例（I1）：Spring 注入 {@link LlmLeaseMapper} 时改为**数据库租约**模式——固定槽位表
+ * （{@link LlmLease}）保证多实例合计不超过上限；租约带 TTL 心跳，实例崩溃后其它实例可回收名额。
+ * 无 Mapper（单测直接构造）时退回进程内信号量，行为与旧实现完全一致。
  */
 @Component
 public class InFlightGate {
@@ -43,20 +51,48 @@ public class InFlightGate {
     public static final int DEFAULT_LIMIT = 4;
     /** 配置缺失时的排队等待上限（秒）。 */
     public static final long DEFAULT_ACQUIRE_TIMEOUT_SECONDS = 60L;
+    /** 配置缺失时的租约 TTL（秒）：心跳早于 TTL 的租约可被其它实例回收。 */
+    public static final long DEFAULT_LEASE_TTL_SECONDS = 120L;
+    /** DB 租约模式的排队轮询间隔（毫秒）。 */
+    private static final long POLL_MILLIS = 250L;
 
     private final int limit;
     private final long acquireTimeoutSeconds;
+    /** 数据库租约模式的 Mapper；为 null 时退回进程内信号量。 */
+    private final LlmLeaseMapper leaseMapper;
+    private final long leaseTtlSeconds;
     private final Semaphore permits;
     private final AtomicInteger inFlight = new AtomicInteger();
+    private final ScheduledExecutorService heartbeats;
 
+    /** 进程内模式（单测直接构造；Spring 不会用这个）。 */
+    public InFlightGate(int limit, long acquireTimeoutSeconds) {
+        this(limit, acquireTimeoutSeconds, null, DEFAULT_LEASE_TTL_SECONDS);
+    }
+
+    @Autowired
     public InFlightGate(
             @Value("${app.llm.max-in-flight:" + DEFAULT_LIMIT + "}") int limit,
             @Value("${app.llm.acquire-timeout-seconds:" + DEFAULT_ACQUIRE_TIMEOUT_SECONDS + "}")
-            long acquireTimeoutSeconds) {
+            long acquireTimeoutSeconds,
+            LlmLeaseMapper leaseMapper,
+            @Value("${app.llm.lease-ttl-seconds:" + DEFAULT_LEASE_TTL_SECONDS + "}")
+            long leaseTtlSeconds) {
         this.limit = limit <= 0 ? DEFAULT_LIMIT : limit;
         this.acquireTimeoutSeconds = Math.max(0L, acquireTimeoutSeconds);
+        this.leaseMapper = leaseMapper;
+        this.leaseTtlSeconds = leaseTtlSeconds <= 0 ? DEFAULT_LEASE_TTL_SECONDS : leaseTtlSeconds;
         this.permits = new Semaphore(this.limit, true);
-        log.info("LLM 在飞会话闸门上限 {}，排队等待上限 {} 秒", this.limit, this.acquireTimeoutSeconds);
+        // 心跳用线程池而非单线程：DB 抖动（某次 UPDATE 阻塞）不能让所有租约的心跳排队延后——
+        // 心跳一旦晚于 TTL，别的实例就会判定本实例已崩溃并回收名额，此时本实例仍在调用网关，
+        // 两侧同时持牌即超发。两条线程足以让一次阻塞不拖累其余租约。
+        this.heartbeats = leaseMapper == null ? null : Executors.newScheduledThreadPool(2, task -> {
+            Thread thread = new Thread(task, "llm-lease-heartbeat");
+            thread.setDaemon(true);
+            return thread;
+        });
+        log.info("LLM 在飞会话闸门上限 {}，排队等待上限 {} 秒，模式 {}，租约 TTL {} 秒",
+                this.limit, this.acquireTimeoutSeconds, leaseMapper == null ? "进程内" : "数据库租约", this.leaseTtlSeconds);
     }
 
     public int limit() {
@@ -68,9 +104,14 @@ public class InFlightGate {
         return acquireTimeoutSeconds;
     }
 
-    /** 当前在飞运行数（用于日志与验收观测）。 */
+    /** 当前实例在飞运行数（用于日志与验收观测）。 */
     public int inFlight() {
         return inFlight.get();
+    }
+
+    @PreDestroy
+    public void shutdownHeartbeats() {
+        if (heartbeats != null) heartbeats.shutdownNow();
     }
 
     /**
@@ -80,8 +121,13 @@ public class InFlightGate {
      * @return 名额租约；等待超时返回 {@code null}，由调用方给出**明确失败**（绝不静默卡住）
      */
     public Lease acquire(String what) {
+        return leaseMapper == null ? acquireLocal(what) : acquireShared(what);
+    }
+
+    /** 进程内信号量：单实例语义，与旧实现逐字一致。 */
+    private Lease acquireLocal(String what) {
         long startedAt = System.nanoTime();
-        boolean acquired = false;
+        boolean acquired;
         try {
             acquired = permits.tryAcquire(acquireTimeoutSeconds, TimeUnit.SECONDS);
         } catch (InterruptedException interrupted) {
@@ -95,36 +141,146 @@ public class InFlightGate {
             return null;
         }
         int now = inFlight.incrementAndGet();
+        logIfQueued(what, startedAt, now);
+        return new Lease(what, null, null);
+    }
+
+    /** 数据库租约：跨实例共享上限；实例失联后由 TTL 心跳回收。 */
+    private Lease acquireShared(String what) {
+        String token = UUID.randomUUID().toString();
+        long startedAt = System.nanoTime();
+        reclaimExpiredQuietly();
+        long deadline = startedAt + TimeUnit.SECONDS.toNanos(acquireTimeoutSeconds);
+        while (true) {
+            for (long slot = 1; slot <= limit; slot++) {
+                boolean occupied;
+                try {
+                    occupied = leaseMapper.tryOccupy(slot, token, what, LocalDateTime.now());
+                } catch (Exception firstFailure) {
+                    // 抖动多为瞬时，先重试一次再谈降级：降级意味着本实例不再受跨实例上限约束
+                    try {
+                        occupied = leaseMapper.tryOccupy(slot, token, what, LocalDateTime.now());
+                    } catch (Exception secondFailure) {
+                        // 数据库不可用：降级为进程内闸门，至少守住本实例（否则 LLM 调用完全裸奔）。
+                        // 代价必须说清楚：多实例部署下这段时间各实例会各自放行 limit 个，合计可能突破
+                        // 上游网关的并发上限——比「完全无限流」轻，但已不是全局硬上限。
+                        log.error("{}数据库租约闸门不可用，本次降级为进程内闸门：本实例暂不受跨实例上限约束，"
+                                        + "多实例合计可能超过上游并发配额，请尽快排查数据库",
+                                what == null ? "" : what + " ", secondFailure);
+                        return acquireLocal(what);
+                    }
+                }
+                if (occupied) {
+                    Lease lease = new Lease(what, token, slot);
+                    lease.heartbeatTask(scheduleHeartbeat(token, slot, what));
+                    int now = inFlight.incrementAndGet();
+                    logIfQueued(what, startedAt, now);
+                    return lease;
+                }
+            }
+            if (System.nanoTime() >= deadline) {
+                log.warn("{}等待 LLM 并发名额超过 {} 秒仍未取得（上限 {}，本实例在飞 {}），本次放弃",
+                        what == null ? "" : what + " ", acquireTimeoutSeconds, limit, inFlight.get());
+                return null;
+            }
+            try {
+                Thread.sleep(POLL_MILLIS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                log.warn("{}等待 LLM 并发名额时被中断", what == null ? "" : what + " ");
+                return null;
+            }
+        }
+    }
+
+    private void reclaimExpiredQuietly() {
+        try {
+            int reclaimed = leaseMapper.reclaimExpired(LocalDateTime.now().minusSeconds(leaseTtlSeconds));
+            if (reclaimed > 0) {
+                log.warn("回收了 {} 个心跳超时（>{} 秒）的 LLM 名额租约：属主实例可能已崩溃", reclaimed, leaseTtlSeconds);
+            }
+        } catch (Exception exception) {
+            log.warn("回收过期 LLM 名额租约失败（跳过，不影响本次申请）", exception);
+        }
+    }
+
+    private ScheduledFuture<?> scheduleHeartbeat(String token, long slotNo, String what) {
+        long interval = Math.max(5L, leaseTtlSeconds / 3L);
+        return heartbeats.scheduleAtFixedRate(() -> {
+            try {
+                if (leaseMapper.heartbeat(token, LocalDateTime.now()) > 0) return;
+                // 心跳晚于 TTL：本租约已被其它实例按「属主已崩溃」回收，而本实例其实还在调用网关。
+                // 不夺回就等于跨实例超发，故尽力重占原槽位；夺不回则如实记错——真正的止血要取消在飞会话，
+                // 而 agent4j 没有取消接口（U1）。
+                if (leaseMapper.tryOccupy(slotNo, token, what, LocalDateTime.now())) {
+                    log.warn("{}的名额租约曾被按 TTL 回收，已重新占回槽位 {}（数据库时延导致心跳迟到）",
+                            what == null ? "" : what + " ", slotNo);
+                } else {
+                    log.error("{}的名额租约已被其它实例占用且槽位 {} 夺回失败：本实例可能在超发，请检查数据库时延",
+                            what == null ? "" : what + " ", slotNo);
+                }
+            } catch (Exception exception) {
+                log.warn("刷新 LLM 名额租约心跳失败：{}", token, exception);
+            }
+        }, interval, interval, TimeUnit.SECONDS);
+    }
+
+    private void logIfQueued(String what, long startedAt, int now) {
         long waitedMillis = (System.nanoTime() - startedAt) / 1_000_000L;
         if (waitedMillis >= 1_000L) {
             // 排队说明闸门确实在生效，且给出「排了多久」便于判断上游是否被别的实例/链路占满
-            log.info("{}取得 LLM 并发名额（排队 {} ms，在飞 {}/{}）",
+            log.info("{}取得 LLM 并发名额（排队 {} ms，本实例在飞 {}/{}）",
                     what == null ? "" : what + " ", waitedMillis, now, limit);
         }
-        return new Lease(what);
     }
 
     /**
      * 名额租约。{@link #close()} 幂等——运行收尾路径（try/finally 与异常分支）可能重复释放，
-     * 而多释放会让信号量凭空增加许可，使闸门失效。
+     * 而多释放会让闸门凭空增加许可（或删到别人的租约），使闸门失效。
      */
     public final class Lease implements AutoCloseable {
         private final AtomicBoolean released = new AtomicBoolean();
         private final String what;
+        /** 数据库租约令牌；进程内模式为 null。 */
+        private final String dbToken;
+        private final Long slotNo;
+        private volatile ScheduledFuture<?> heartbeatTask;
 
-        private Lease(String what) {
+        private Lease(String what, String dbToken, Long slotNo) {
             this.what = what;
+            this.dbToken = dbToken;
+            this.slotNo = slotNo;
+        }
+
+        /** 记录心跳任务（数据库模式），释放时取消。 */
+        private void heartbeatTask(ScheduledFuture<?> task) {
+            this.heartbeatTask = task;
         }
 
         @Override
         public void close() {
             if (!released.compareAndSet(false, true)) return;
+            ScheduledFuture<?> task = heartbeatTask;
+            if (task != null) task.cancel(false);
+            if (dbToken != null) {
+                try {
+                    leaseMapper.releaseByToken(dbToken);
+                } catch (Exception exception) {
+                    log.warn("{}释放 LLM 数据库名额失败（TTL 心跳过期后会自动回收）", what == null ? "" : what + " ", exception);
+                }
+            } else {
+                permits.release();
+            }
             int now = inFlight.decrementAndGet();
-            permits.release();
             if (now < 0) {
                 // 只可能来自重复释放（已由上面的 CAS 拦住）或未持有就释放，属编程错误
                 log.error("{}释放 LLM 并发名额后计数为负（{}），存在未配对释放", what == null ? "" : what + " ", now);
             }
+        }
+
+        @Override
+        public String toString() {
+            return "Lease{" + (dbToken == null ? "local" : "db slot=" + slotNo) + ", " + what + "}";
         }
     }
 }

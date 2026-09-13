@@ -67,7 +67,9 @@ class ArticleWechatContentTests {
         when(accountService.required(5L)).thenReturn(new WechatAccount());
         when(wechatClient.addDraft(eq(5L), anyMap())).thenReturn("draft-media-id");
         ArticleService service = new ArticleService(mapper, mock(ArticleRevisionMapper.class),
-                mock(CurrentUserService.class), assetService, accountService, wechatClient);
+                mock(CurrentUserService.class), assetService, accountService, wechatClient,
+                mock(ink.icoding.wechat.article.skill.MarkFlowRenderService.class),
+                mock(ink.icoding.wechat.article.skill.SkillBindingValidator.class));
         List<ArticleService.WechatProgress> events = new ArrayList<>();
 
         service.syncDraft(1L, events::add);
@@ -87,7 +89,8 @@ class ArticleWechatContentTests {
         when(wechatClient.publish(5L, "existing-draft-id")).thenReturn("publish-id");
         ArticleService service = new ArticleService(mapper, mock(ArticleRevisionMapper.class),
                 mock(CurrentUserService.class), mock(AssetService.class), mock(WechatAccountService.class),
-                wechatClient);
+                wechatClient, mock(ink.icoding.wechat.article.skill.MarkFlowRenderService.class),
+                mock(ink.icoding.wechat.article.skill.SkillBindingValidator.class));
         List<ArticleService.WechatProgress> events = new ArrayList<>();
 
         service.publish(1L, events::add);
@@ -112,6 +115,7 @@ class ArticleWechatContentTests {
     private ArticleService service(AssetService assetService) {
         return new ArticleService(mock(ArticleMapper.class), mock(ArticleRevisionMapper.class),
                 mock(CurrentUserService.class), assetService, mock(WechatAccountService.class),
-                mock(WechatClient.class));
+                mock(WechatClient.class), mock(ink.icoding.wechat.article.skill.MarkFlowRenderService.class),
+                mock(ink.icoding.wechat.article.skill.SkillBindingValidator.class));
     }
 }

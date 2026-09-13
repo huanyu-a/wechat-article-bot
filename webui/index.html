@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      KaTeX 样式表：MARKFLOW 渲染服务的公式是 class 驱动的 KaTeX HTML
+      （`<span class="katex">…`，条目本身几乎没有内联样式），不带样式表
+      就只是一串普通 span。渲染服务自己的预览页用的就是这一条 CDN 链接
+      （见 `target/probe/katex_css_probe.txt`：preview 里 `katex@0.17.0`，
+      版本与渲染器的输出结构对齐，不要随手升级）。
+    -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.17.0/dist/katex.min.css" />
     <title>webui</title>
   </head>
   <body>

@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -61,14 +62,14 @@ public class AgentInvoker extends AgentRunner {
     /** @param logPrefix 执行日志前缀（如「【调研】」），null 表示不加前缀。 */
     @Override
     public Outcome run(AgentClient agent, String command, List<MemoryMultipartFile> attachments, String logPrefix) {
-        return run(agent, command, attachments, logPrefix, 0, null);
+        return run(agent, command, attachments, logPrefix, 0, 0, null);
     }
 
     /** @param maxToolCalls 工具调用上限（&le;0 表示不限制）；超限抛异常中止会话（预算护栏）。 */
     @Override
     public Outcome runWithLimit(AgentClient agent, String command, List<MemoryMultipartFile> attachments,
                                 String logPrefix, int maxToolCalls) {
-        return run(agent, command, attachments, logPrefix, maxToolCalls, null);
+        return run(agent, command, attachments, logPrefix, maxToolCalls, 0, null);
     }
 
     /**
@@ -78,15 +79,27 @@ public class AgentInvoker extends AgentRunner {
     public Outcome runWithLimit(AgentClient agent, String command, List<MemoryMultipartFile> attachments,
                                 String logPrefix, int maxToolCalls,
                                 ProgressListener progress) {
-        return run(agent, command, attachments, logPrefix, maxToolCalls, progress);
+        return run(agent, command, attachments, logPrefix, maxToolCalls, 0, progress);
+    }
+
+    /**
+     * @param timeoutSeconds 会话硬超时覆盖（&le;0 表示沿用 {@code app.schedule.stage-timeout-seconds}）；
+     *                       协调者主编的一次会话覆盖全部委托，需要比单阶段会话长得多的额度。
+     */
+    @Override
+    public Outcome runWithLimit(AgentClient agent, String command, List<MemoryMultipartFile> attachments,
+                                String logPrefix, int maxToolCalls, long timeoutSeconds,
+                                ProgressListener progress) {
+        return run(agent, command, attachments, logPrefix, maxToolCalls, timeoutSeconds, progress);
     }
 
     private Outcome run(AgentClient agent, String command, List<MemoryMultipartFile> attachments,
-                        String logPrefix, int maxToolCalls, ProgressListener progress) {
+                        String logPrefix, int maxToolCalls, long timeoutSeconds, ProgressListener progress) {
         int rateLimitRetries = 0;
         int stallRetries = 0;
         while (true) {
-            Attempt attempt = attempt(agent, command, attachments, logPrefix, maxToolCalls, progress);
+            Attempt attempt = attempt(agent, command, attachments, logPrefix, maxToolCalls, timeoutSeconds,
+                    progress);
             if (attempt.outcome() != null) return attempt.outcome();
             IllegalStateException failure = attempt.failure();
             boolean rateLimited = isRateLimited(failure);
@@ -111,9 +124,16 @@ public class AgentInvoker extends AgentRunner {
 
     /** 一次会话尝试：成功返回 outcome，失败返回异常（并带上本次尝试已发生的工具调用数）。 */
     private Attempt attempt(AgentClient agent, String command, List<MemoryMultipartFile> attachments,
-                            String logPrefix, int maxToolCalls, ProgressListener progress) {
+                            String logPrefix, int maxToolCalls, long timeoutSeconds, ProgressListener progress) {
         AtomicInteger toolCalls = new AtomicInteger();
         AtomicInteger toolFailures = new AtomicInteger();
+        // 超限被拒的次数（只统计**非收尾工具**）：兜底护栏按它判，而不是按总计数——
+        // 总计数会把「预算用尽后放行的收尾工具」也算成超限，让正常的收尾变成阶段失败。
+        AtomicInteger rejectedOverBudget = new AtomicInteger();
+        AtomicInteger terminalGraceUsed = new AtomicInteger();
+        // 本次会话是否**成功提交过成果**（收尾工具走到 COMPLETED）。预算用尽后有收尾工具放行的宽限，
+        // 但「被拒过」与「成果交没交出来」是两件事：只要成果交出来了，这一阶段就不该记成中止。
+        AtomicBoolean deliverableSubmitted = new AtomicBoolean();
         Set<String> countedCalls = ConcurrentHashMap.newKeySet();
         List<String> executionLog = java.util.Collections.synchronizedList(new ArrayList<>());
         StringBuilder assistantText = new StringBuilder();
@@ -145,12 +165,22 @@ public class AgentInvoker extends AgentRunner {
                             report(progress, executionLog, prefix(logPrefix) + "调用工具：" + name);
                             markActivity(lastActivity, lastActivityAt, "调用工具 " + name);
                             if (maxToolCalls > 0 && count > maxToolCalls) {
-                                // 预算护栏：超出上限即中止会话（skills-agent-plan 5.5）
-                                throw new IllegalStateException("子智能体工具调用超过上限 " + maxToolCalls + " 次，已中止");
+                                // 预算护栏：超出上限即中止会话（skills-agent-plan 5.5）。
+                                // 例外是「交出成果」的收尾工具——预算拦的是失控检索，不是提交成果，
+                                // 拦下它等于把前面几十次成功检索的产出全部作废（见 ToolCallBudget.TERMINAL_TOOLS）。
+                                if (ToolCallBudget.TERMINAL_TOOLS.contains(name)
+                                        && terminalGraceUsed.incrementAndGet() <= ToolCallBudget.TERMINAL_GRACE) {
+                                    report(progress, executionLog, prefix(logPrefix)
+                                            + "预算已用尽，放行收尾工具：" + name);
+                                } else {
+                                    rejectedOverBudget.incrementAndGet();
+                                    throw new IllegalStateException(budgetExceededMessage(maxToolCalls, name));
+                                }
                             }
                         } else if (status == ToolStatus.COMPLETED) {
                             report(progress, executionLog, prefix(logPrefix) + "工具完成：" + name);
                             markActivity(lastActivity, lastActivityAt, "工具完成 " + name);
+                            if (ToolCallBudget.TERMINAL_TOOLS.contains(name)) deliverableSubmitted.set(true);
                         }
                     }
 
@@ -167,28 +197,42 @@ public class AgentInvoker extends AgentRunner {
         try {
             // 停在 await（停滞）还是停在 get（模型/工具错误）都要走同一处归一化：
             // 停滞要补卡点信息，429 要能被 isRateLimited 识别出来。
-            awaitStage(result, logPrefix);
+            awaitStage(result, logPrefix, timeoutSeconds);
             response = result.get();
         } catch (Exception exception) {
             // 失败必须**返回**给调用循环（而不是就地抛出），否则 run() 里的有界重试永远不会生效
             return new Attempt(null, toolCalls.get(),
                     fail(exception, logPrefix, lastActivity, lastActivityAt, toolCalls.get(), toolFailures.get()));
         }
-        // 兜底护栏：回调里抛出的异常可能被 agent4j 吞掉，这里按最终计数再判一次，
+        // 兜底护栏：回调里抛出的异常可能被 agent4j 吞掉，这里按「被拒次数」再判一次，
         // 保证「子智能体工具调用超限」一定能被调用方感知（方案 5.5 预算护栏）。
-        if (maxToolCalls > 0 && toolCalls.get() > maxToolCalls) {
-            // 同上：交给调用循环决定（此时已调用过工具，必然不可重试）
-            return new Attempt(null, toolCalls.get(),
-                    new IllegalStateException("子智能体工具调用超过上限 " + maxToolCalls + " 次，已中止"));
+        // 按被拒次数而非总计数：总计数含预算用尽后放行的收尾工具，会让正常收尾被判成超限。
+        if (rejectedOverBudget.get() > 0) {
+            // 但「被拒过」不等于「这一阶段白干」：预算用尽后模型仍可用收尾工具交出成果（TERMINAL_TOOLS），
+            // 成果已经交出来了就不该记成「阶段中止」——那会把一次成功的交付报成降级，
+            // 排查的人会去找一个不存在的失败阶段（run#63/#68 都是靠收尾工具才把成果交出来的）。
+            if (deliverableSubmitted.get()) {
+                report(progress, executionLog, prefix(logPrefix) + "预算超限被拒 " + rejectedOverBudget.get()
+                        + " 次，但收尾工具已提交成果，本次按已交付处理");
+            } else {
+                // 同上：交给调用循环决定（此时已调用过工具，必然不可重试）
+                return new Attempt(null, toolCalls.get(),
+                        new IllegalStateException(budgetExceededMessage(maxToolCalls, null)));
+            }
         }
         String reply = response == null || response.isBlank() ? assistantText.toString().trim() : response.trim();
         return new Attempt(new Outcome(reply, toolCalls.get(), String.join("\n", executionLog), toolFailures.get()),
                 toolCalls.get(), null);
     }
 
-    /** 执行会话并施加阶段硬超时；停滞抛 {@link StageTimeoutException}（可重试），模型错误抛 IllegalStateException。 */
-    private void awaitStage(AgentSessionResult result, String logPrefix) {
-        StageTimeout.await(result, stageTimeoutSeconds, prefix(logPrefix));
+    /**
+     * 执行会话并施加阶段硬超时；停滞抛 {@link StageTimeoutException}（可重试），模型错误抛 IllegalStateException。
+     *
+     * @param timeoutSeconds 调用方覆盖的超时（&le;0 表示用本组件配置的 stage-timeout-seconds）
+     */
+    private void awaitStage(AgentSessionResult result, String logPrefix, long timeoutSeconds) {
+        long effective = timeoutSeconds > 0 ? timeoutSeconds : stageTimeoutSeconds;
+        StageTimeout.await(result, effective, prefix(logPrefix));
     }
 
     /**
@@ -214,6 +258,23 @@ public class AgentInvoker extends AgentRunner {
     private static void markActivity(AtomicReference<String> target, AtomicLong at, String what) {
         target.set(what);
         at.set(System.nanoTime());
+    }
+
+    /**
+     * 超限消息：这段文字**会作为工具结果回给模型**（回调里抛出的异常经 agent4j 转成该工具的失败原因），
+     * 所以必须是可执行的指令，而不是一句「已中止」。
+     *
+     * <p>实测（run#62）：模型读到「已中止」后并不明白该收手，又连调 7 次工具（4 次 search_web、
+     * 3 次 save_research_notes），全部被同一句拒绝——既白烧 tokens，又错过了提交收尾工具的窗口。
+     *
+     * @param toolName 被拒的工具名；兜底路径不带具体工具名时传 null
+     */
+    private static String budgetExceededMessage(int maxToolCalls, String toolName) {
+        return "子智能体工具调用超过上限 " + maxToolCalls + " 次，已中止"
+                + (toolName == null ? "" : "工具：" + toolName)
+                + "。预算已用尽，不要再检索、浏览或读取；请立即用收尾工具"
+                + "（save_research_notes / save_article_draft / submit_review）提交已有成果，"
+                + "或直接输出最终回复。";
     }
 
     /**

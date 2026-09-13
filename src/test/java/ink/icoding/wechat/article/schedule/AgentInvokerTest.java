@@ -105,23 +105,101 @@ class AgentInvokerTest {
         List<String> streamedLog = new java.util.concurrent.CopyOnWriteArrayList<>();
 
         assertThatThrownBy(() -> fixture.invoker.runWithLimit(fixture.agent, "指令", null, "【配图】", 2,
-                new AgentRunner.ProgressListener() {
-                    @Override
-                    public void toolCallCounted(int delta) {
-                        reported.addAndGet(delta);
-                    }
-
-                    @Override
-                    public void logLine(String line) {
-                        streamedLog.add(line);
-                    }
-                }))
+                progressListener(reported, streamedLog)))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("超过上限 2 次");
+                .hasMessageContaining("超过上限 2 次")
+                // 这段文字会作为工具结果回给模型，必须给出下一步动作，而不是只说「已中止」：
+                // 实测 run#62 的模型读到「已中止」后并不明白要收手，又白调了 7 次工具
+                .hasMessageContaining("不要再检索")
+                .hasMessageContaining("save_research_notes");
         // 超限前已发生的调用必须实时上报过，否则失败路径里的「调了几次工具」永远是 0
         assertThat(reported.get()).isEqualTo(3);
         // 失败路径也要留住日志：会话抛异常时局部日志会丢弃，只有实时上报的那份能进运行历史
         assertThat(streamedLog).contains("【配图】调用工具：generate_image");
+    }
+
+    /**
+     * 预算用尽后，收尾工具仍须放行——拦下它等于把前面所有成功检索的产出全部作废。
+     *
+     * <p>实测 run#62（PIPELINE 调研阶段）：40 次成功检索后连调 3 次 {@code save_research_notes}
+     * 全被同一套预算拒绝，简报一个字没存下来，写作阶段只能在没有调研的情况下硬写。
+     * 这条用例钉住「超限 + 收尾工具 → 不抛异常、正常结束」，即产出必须能交出来。
+     */
+    @Test
+    void terminalToolsAreAllowedPastTheBudgetSoTheWorkIsNotThrownAway() throws Exception {
+        Fixture fixture = new Fixture(30);
+        when(fixture.session.command(anyString())).thenReturn(
+                toolCallSequence("search_web", "search_web", "save_research_notes"));
+        List<String> streamedLog = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        AgentRunner.Outcome outcome = fixture.invoker.runWithLimit(fixture.agent, "指令", null, "【调研】", 2,
+                progressListener(new AtomicInteger(), streamedLog));
+
+        assertThat(outcome.reply()).isEqualTo("完成");
+        assertThat(outcome.toolCalls()).isEqualTo(3);
+        assertThat(streamedLog).contains("【调研】预算已用尽，放行收尾工具：save_research_notes");
+    }
+
+    /**
+     * 放行必须有上限：{@code save_research_notes} 是追加语义，不封顶就会被重复简报刷满工作区。
+     */
+    @Test
+    void terminalToolGraceIsBounded() throws Exception {
+        Fixture fixture = new Fixture(30);
+        // 1 次正常调用 + 超过宽限（3）的 4 次收尾调用：第 4 次收尾必须被拒
+        when(fixture.session.command(anyString())).thenReturn(toolCallSequence(
+                "search_web",
+                "save_research_notes", "save_research_notes", "save_research_notes", "save_research_notes"));
+
+        assertThatThrownBy(() -> fixture.invoker.runWithLimit(fixture.agent, "指令", null, "【调研】", 1))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("超过上限 1 次")
+                .hasMessageContaining("save_research_notes");
+    }
+
+    /**
+     * 「超限被拒」与「这一阶段白干」是两件事：预算用尽后模型仍用收尾工具交出了成果，
+     * 整轮就不该记成中止（实测 run#63/#68 都是靠收尾工具才把成果交出来的）。
+     */
+    @Test
+    void budgetRejectionIsNotAFailureOnceTheDeliverableIsSubmitted() throws Exception {
+        Fixture fixture = new Fixture(30);
+        when(fixture.session.command(anyString())).thenReturn(rejectedThenDelivers(
+                "search_web", "save_research_notes"));
+        List<String> streamedLog = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        AgentRunner.Outcome outcome = fixture.invoker.runWithLimit(fixture.agent, "指令", null, "【调研】", 2,
+                progressListener(new AtomicInteger(), streamedLog));
+
+        assertThat(outcome.reply()).isEqualTo("完成");
+        assertThat(streamedLog).contains("【调研】预算已用尽，放行收尾工具：save_research_notes");
+        assertThat(streamedLog)
+                .contains("【调研】预算超限被拒 1 次，但收尾工具已提交成果，本次按已交付处理");
+    }
+
+    /** 反过来：被拒之后没有任何收尾工具交成果，这一阶段确实是白干，仍须失败。 */
+    @Test
+    void budgetRejectionWithoutADeliverableStillFails() throws Exception {
+        Fixture fixture = new Fixture(30);
+        when(fixture.session.command(anyString())).thenReturn(rejectedWithoutDeliverable("search_web"));
+
+        assertThatThrownBy(() -> fixture.invoker.runWithLimit(fixture.agent, "指令", null, "【调研】", 2))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("超过上限 2 次");
+    }
+
+    private static AgentRunner.ProgressListener progressListener(AtomicInteger reported, List<String> streamedLog) {
+        return new AgentRunner.ProgressListener() {
+            @Override
+            public void toolCallCounted(int delta) {
+                reported.addAndGet(delta);
+            }
+
+            @Override
+            public void logLine(String line) {
+                streamedLog.add(line);
+            }
+        };
     }
 
     @Test
@@ -215,6 +293,52 @@ class AgentInvokerTest {
             }
             self.complete("完成");
         });
+    }
+
+    /** 依次发起指定的工具调用（用于验证「预算用尽后收尾工具仍被放行」这类混合序列）。 */
+    private static AgentSessionResult toolCallSequence(String... toolNames) {
+        return new AgentSessionResult(self -> {
+            AgentResultHandler handler = self.getHandler();
+            for (int index = 0; index < toolNames.length; index++) {
+                handler.onTool(tool(toolNames[index], "call-" + index), ToolStatus.CALLING);
+            }
+            self.complete("完成");
+        });
+    }
+
+    /**
+     * 超限被拒之后又把成果交出来的形状：前两次检索正常、第三次检索被预算拒绝、随后收尾工具提交成功。
+     *
+     * <p>回调里抛出的异常在真实链路里会被 agent4j 转成该工具自身的失败原因，会话并不因此终止，
+     * 所以这里显式吞掉它——直接让异常冒出去就复刻不出「运行结束时的兜底判据」。
+     */
+    private static AgentSessionResult rejectedThenDelivers(String noisyTool, String deliverTool) {
+        return new AgentSessionResult(self -> {
+            AgentResultHandler handler = self.getHandler();
+            twoCallsThenOneRejected(handler, noisyTool);
+            handler.onTool(tool(deliverTool, "deliver-1"), ToolStatus.CALLING);
+            handler.onTool(tool(deliverTool, "deliver-1"), ToolStatus.COMPLETED);
+            self.complete("完成");
+        });
+    }
+
+    /** 只有超限被拒、没有任何收尾工具：这一阶段确实白干。 */
+    private static AgentSessionResult rejectedWithoutDeliverable(String noisyTool) {
+        return new AgentSessionResult(self -> {
+            twoCallsThenOneRejected(self.getHandler(), noisyTool);
+            self.complete("完成");
+        });
+    }
+
+    private static void twoCallsThenOneRejected(AgentResultHandler handler, String toolName) {
+        handler.onTool(tool(toolName, "search-1"), ToolStatus.CALLING);
+        handler.onTool(tool(toolName, "search-2"), ToolStatus.CALLING);
+        try {
+            handler.onTool(tool(toolName, "search-3"), ToolStatus.CALLING);
+            throw new AssertionError("第 3 次调用应当越过上限被拒");
+        } catch (IllegalStateException rejected) {
+            // 预算护栏按预期生效
+        }
     }
 
     private static AgentSessionResult toolErrorThenCompletes(String toolName, String error, String reply) {

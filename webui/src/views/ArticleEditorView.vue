@@ -14,16 +14,17 @@ import { api, stream, uploadAsset } from '../api'
 import { parseSkillIds } from '../utils/skills'
 import SkillPicker from '../components/SkillPicker.vue'
 import {
-  Figure, FigureCaption, ParagraphStyle, paragraphStyleTypes, PreservedInlineStyle,
-  PreservedMarkStyle, PreservedRenderId, PreservedTableStyle, StyledDiv, StyledInlineDiv, StyledSection,
+  Figure, FigureCaption, MarkflowBold, MarkflowCodeBlock, ParagraphStyle, paragraphStyleTypes, PreservedClass,
+  PreservedEmptySpan, PreservedInlineStyle, PreservedMarkStyle, PreservedRenderId, PreservedTableStyle,
+  RawMath, RawSvg, StyledDiv, StyledInlineDiv, StyledSection, Subscript, Superscript,
 } from '../editorExtensions'
 import '../article-agent.css'
 import {
   ArrowLeft, Save, Eye, CloudUpload, Send, Bold, Italic, Strikethrough, Heading2,
   Quote, Undo2, Redo2, ImagePlus, Images, Upload, Link2, Sparkles, Bot, User,
-  LoaderCircle, X, Smartphone, Check, PanelRightClose, PanelRightOpen,
+  LoaderCircle, X, Smartphone, Check, PanelRightClose, PanelRightOpen, CircleAlert,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Palette, RemoveFormatting,
-  Underline, Highlighter, Table2, Rows3, Columns3, Trash2, Minus, Code2,
+  Underline, Highlighter, Table2, Rows3, Columns3, Trash2, Minus, Code2, RefreshCw,
 } from 'lucide-vue-next'
 
 const route=useRoute(), router=useRouter(), article=ref(null), accounts=ref([]), messages=ref([]), instruction=ref(''), error=ref(''), saving=ref(false), aiBusy=ref(false), preview=ref(false), chatOpen=ref(true), ready=ref(false), dirty=ref(false), savedAt=ref(''), coverInput=ref()
@@ -43,10 +44,15 @@ let saveTimer, wechatHideTimer, savePromise=null, applyingServerArticle=false, e
 marked.setOptions({gfm:true,breaks:true})
 const editor=useEditor({
   extensions:[
-    StarterKit.configure({link:false}),
+    StarterKit.configure({link:false,codeBlock:false,bold:false}),
+    MarkflowBold,
+    MarkflowCodeBlock,
     StyledSection,
     StyledDiv,
     StyledInlineDiv,
+    RawSvg,
+    RawMath,
+    PreservedEmptySpan,
     FigureCaption,
     Figure,
     Image.configure({inline:false,allowBase64:false}),
@@ -61,6 +67,9 @@ const editor=useEditor({
     TextAlign.configure({types:['heading','paragraph','blockquote','styledSection','styledDiv','styledInlineDiv','figure','figureCaption']}),
     PreservedInlineStyle,
     PreservedMarkStyle,
+    PreservedClass,
+    Subscript,
+    Superscript,
     PreservedTableStyle,
     PreservedRenderId,
   ],
@@ -134,6 +143,7 @@ async function action(type){
     if(dirty.value){clearTimeout(saveTimer);saveTimer=setTimeout(()=>save(false),1800)}
   }
 }
+async function rerender(){if(interactionBusy.value)return;error.value='';try{if(savePromise)await savePromise;if(dirty.value)await save();const updated=await api(`/api/articles/${article.value.id}/rerender`,{method:'POST',body:JSON.stringify({})});applyServerArticle(updated,true);dirty.value=false;savedAt.value=formatClock(updated.updatedAt||new Date())}catch(e){error.value=e.message}}
 async function openAssetPicker(target){
   if(interactionBusy.value)return
   assetPickerTarget.value=target;assetPickerOpen.value=true;assetPickerLoading.value=true;assetPickerError.value=''
@@ -272,7 +282,7 @@ onMounted(load);onBeforeUnmount(()=>{clearTimeout(saveTimer);clearTimeout(wechat
     <header class="editor-header">
       <div class="editor-header-left"><button class="icon-button" @click="router.push('/articles')"><ArrowLeft :size="19" /></button><div class="editor-doc-meta"><strong>{{article.title||'未命名文章'}}</strong><span><i :class="{dirty}"></i>{{saving?'正在保存…':dirty?'有未保存修改':`已于 ${savedAt} 保存`}}</span></div></div>
       <div class="editor-header-center"><span>{{accountName}}</span><span class="status-pill" :class="article.wechatStatus.toLowerCase()">{{article.wechatStatus}}</span></div>
-      <div class="editor-header-actions"><button class="secondary-button" @click="preview=true"><Eye :size="16" />预览</button><button class="secondary-button" :disabled="saving||interactionBusy" @click="dirty=true;save()"><Save :size="16" />保存</button><button class="secondary-button" :disabled="interactionBusy" @click="action('draft')"><LoaderCircle v-if="wechatBusy&&wechatOperation.type==='draft'" class="spin" :size="16"/><CloudUpload v-else :size="16" />{{wechatBusy&&wechatOperation.type==='draft'?`同步中 ${wechatOperation.percent}%`:'同步草稿'}}</button><button class="primary-button" :disabled="interactionBusy" @click="action('publish')"><LoaderCircle v-if="wechatBusy&&wechatOperation.type==='publish'" class="spin" :size="16"/><Send v-else :size="16" />{{wechatBusy&&wechatOperation.type==='publish'?`发布中 ${wechatOperation.percent}%`:'发布'}}</button></div>
+      <div class="editor-header-actions"><button v-if="article.layoutEngine==='MARKFLOW'" class="secondary-button" :disabled="interactionBusy" title="用留存的 Markdown 源文重新渲染排版（换主题/模板后重排）" @click="rerender"><RefreshCw :size="16" />重新渲染</button><button class="secondary-button" @click="preview=true"><Eye :size="16" />预览</button><button class="secondary-button" :disabled="saving||interactionBusy" @click="dirty=true;save()"><Save :size="16" />保存</button><button class="secondary-button" :disabled="interactionBusy" @click="action('draft')"><LoaderCircle v-if="wechatBusy&&wechatOperation.type==='draft'" class="spin" :size="16"/><CloudUpload v-else :size="16" />{{wechatBusy&&wechatOperation.type==='draft'?`同步中 ${wechatOperation.percent}%`:'同步草稿'}}</button><button class="primary-button" :disabled="interactionBusy" @click="action('publish')"><LoaderCircle v-if="wechatBusy&&wechatOperation.type==='publish'" class="spin" :size="16"/><Send v-else :size="16" />{{wechatBusy&&wechatOperation.type==='publish'?`发布中 ${wechatOperation.percent}%`:'发布'}}</button></div>
     </header>
     <div v-if="error" class="editor-alert"><span>{{error}}</span><button @click="error=''"><X :size="16" /></button></div>
     <Transition name="wechat-progress">
@@ -358,5 +368,9 @@ onMounted(load);onBeforeUnmount(()=>{clearTimeout(saveTimer);clearTimeout(wechat
     <div v-if="assetPickerOpen" class="modal-backdrop" @click.self="assetPickerOpen=false"><div class="modal-card wide asset-picker-modal"><header><div><h3>{{assetPickerTarget==='cover'?'选择文章封面':'插入素材图片'}}</h3><p>从当前公众号素材库中选择，也可以上传新图片。</p></div><button class="icon-button" @click="assetPickerOpen=false"><X :size="18"/></button></header><div class="asset-picker-actions"><span>{{assetPickerItems.length}} 个可用素材</span><button class="secondary-button" @click="triggerAssetUpload"><Upload :size="15"/>上传新图片</button></div><div v-if="assetPickerError" class="alert error">{{assetPickerError}}</div><div v-if="assetPickerLoading" class="asset-picker-loading"><LoaderCircle class="spin" :size="20"/>正在加载素材…</div><div v-else-if="assetPickerItems.length" class="asset-picker-grid"><button v-for="asset in assetPickerItems" :key="asset.id" @click="chooseAsset(asset)"><img :src="asset.publicUrl" :alt="asset.originalName"><span>{{asset.originalName}}</span><small>{{asset.sourceType||'素材库'}}</small></button></div><div v-else class="empty-state"><Images :size="32"/><strong>素材库还没有图片</strong><p>上传第一张图片后即可用于封面或正文。</p><button class="primary-button" @click="triggerAssetUpload"><Upload :size="15"/>上传图片</button></div></div></div>
     <div v-if="preview" class="modal-backdrop preview-backdrop" @click.self="preview=false"><div class="phone-preview-modal"><header><div><Smartphone :size="18" /><strong>微信手机预览</strong></div><button class="icon-button" @click="preview=false"><X :size="19" /></button></header><div class="phone-frame"><article><h1>{{article.title}}</h1><div class="wechat-byline">{{article.author||accountName}} · {{accountName}}</div><p class="wechat-digest">{{article.digest}}</p><div class="preview-content" v-html="editor.getHTML()"></div></article></div></div></div>
   </div>
+  <!-- 打开失败（文章被软删 → 后端 404、网络断了、没权限）时，load() 只会把消息写进 error，
+       原来这里仍然渲染「正在打开文章…」，页面就永远停在转圈上——用户看不出发生了什么。
+       error 有值就换成错误态，并给一条回列表的路。 -->
+  <div v-else-if="error" class="page-loading open-error"><CircleAlert :size="18" /><span>{{error}}</span><button class="secondary-button" @click="router.push('/articles')">返回文章列表</button></div>
   <div v-else class="page-loading"><LoaderCircle class="spin" />正在打开文章…</div>
 </template>

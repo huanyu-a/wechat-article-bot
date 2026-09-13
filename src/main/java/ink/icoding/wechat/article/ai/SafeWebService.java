@@ -26,6 +26,13 @@ import java.util.Set;
 public class SafeWebService {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Set<String> IMAGE_TYPES = Set.of("image/jpeg", "image/png", "image/gif", "image/webp");
+    /**
+     * 浏览器式 User-Agent：此前用「Mozilla/5.0 WechatArticleAssistant/1.0」，部分站点会按非浏览器
+     * 客户端反爬直接回 403（实测 run#36 的 browse_webpage 403）。带真实浏览器标识与语言头可显著降低误拒。
+     */
+    private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+    private static final String ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en;q=0.8";
     private final HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(12))
             .followRedirects(HttpClient.Redirect.NEVER)
@@ -100,8 +107,9 @@ public class SafeWebService {
                 validatePublicUri(uri);
                 HttpRequest request = HttpRequest.newBuilder(uri)
                         .timeout(Duration.ofSeconds(25))
-                        .header("User-Agent", "Mozilla/5.0 WechatArticleAssistant/1.0")
+                        .header("User-Agent", USER_AGENT)
                         .header("Accept", accept)
+                        .header("Accept-Language", ACCEPT_LANGUAGE)
                         .GET().build();
                 HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
                 if (response.statusCode() >= 300 && response.statusCode() < 400) {
@@ -110,8 +118,14 @@ public class SafeWebService {
                     uri = uri.resolve(location);
                     continue;
                 }
-                if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                    throw new BusinessException("网页请求失败（HTTP " + response.statusCode() + "）");
+                int status = response.statusCode();
+                // 403/404/410 属「这一页读不到」而非工具故障：抛专用异常，由 browse_webpage 工具转为
+                // 可跳过的引导文本，不再计入工具失败（run#36 的 403/404 噪声会掩盖真正的失败）。
+                if (status == 403 || status == 404 || status == 410) {
+                    throw new PageUnavailableException(status, "网页不可访问（HTTP " + status + "）");
+                }
+                if (status < 200 || status >= 300) {
+                    throw new BusinessException("网页请求失败（HTTP " + status + "）");
                 }
                 return response;
             }
@@ -211,4 +225,22 @@ public class SafeWebService {
     public record ImageSearchResult(String title, String imageUrl, String sourcePageUrl) {}
     public record PageContent(String title, String url, String text) {}
     public record BinaryResponse(String finalUrl, String contentType, byte[] bytes) {}
+
+    /**
+     * 目标网页不可访问（403/404/410）：与「工具本身故障」区分开。
+     * browse_webpage 捕获它后返回可跳过的引导文本，避免这类外部噪声把整次运行拖成「有警告的成功」。
+     */
+    public static class PageUnavailableException extends BusinessException {
+        private static final long serialVersionUID = 1L;
+        private final int statusCode;
+
+        PageUnavailableException(int statusCode, String message) {
+            super(message);
+            this.statusCode = statusCode;
+        }
+
+        public int statusCode() {
+            return statusCode;
+        }
+    }
 }

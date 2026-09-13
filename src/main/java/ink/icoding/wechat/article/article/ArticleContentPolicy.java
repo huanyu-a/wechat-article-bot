@@ -36,14 +36,37 @@ public final class ArticleContentPolicy {
     }
 
     public static String formatForWechat(String html) {
+        return formatForWechat(html, LayoutEngine.PROMPT);
+    }
+
+    /**
+     * 交付微信前的正文整理（引擎感知）。
+     *
+     * <p>PROMPT 引擎：模型手写内联样式，段落间距由本方法统一补齐（当前行为不变）。
+     *
+     * <p>MARKFLOW 引擎：正文是渲染服务的产物，**已自带完整内联样式**，无条件追加段间距会破坏它——
+     * 渲染器给组件内部段落（步骤卡、徽章、对比卡等）的间距会被这行 `margin-bottom: 16px;`
+     * 覆盖掉（它排在 style 末尾，优先级更高），于是公众号侧的版式与渲染结果不一致，
+     * 也就是「没有 100% 复刻 MarkFlow 渲染能力」的直接来源之一。
+     * 因此这里只给**完全没有 margin 声明**的段落补默认间距：渲染器声明过的段落一律尊重其原值，
+     * 未声明时仍保留安全网（不至于两个段落粘在一起）。
+     */
+    public static String formatForWechat(String html, LayoutEngine engine) {
         if (html == null || html.isBlank()) return "<p style=\"margin-bottom: 16px;\"></p>";
+        boolean markflow = engine == LayoutEngine.MARKFLOW;
         Document document = Jsoup.parseBodyFragment(html);
         document.outputSettings().prettyPrint(false);
         for (Element paragraph : document.select("p")) {
             String style = paragraph.attr("style").trim();
+            if (markflow && declaresMargin(style)) continue;
             if (!style.isEmpty() && !style.endsWith(";")) style += ";";
             paragraph.attr("style", (style.isEmpty() ? "" : style + " ") + WECHAT_PARAGRAPH_SPACING);
         }
         return document.body().html();
+    }
+
+    /** 段落内联样式是否已声明间距（margin / margin-bottom / margin-top 任一）。 */
+    private static boolean declaresMargin(String style) {
+        return style != null && style.toLowerCase(java.util.Locale.ROOT).contains("margin");
     }
 }

@@ -49,6 +49,22 @@ public abstract class AgentRunner {
         return outcome;
     }
 
+    /**
+     * 带**会话超时覆盖**的运行。
+     *
+     * <p>为什么需要按调用方覆盖：全局 {@code app.schedule.stage-timeout-seconds}（300s）是照「单个阶段会话是
+     * 分钟级」定的，但协调者主编的一次会话**覆盖全部委托**——每次委托都是一次完整的子会话，自身还带停滞重试，
+     * 量级完全不同。实测 run#41/42/47/48：卡点都是「主编侧无事件、子智能体正在运行」，300s 一到就把**正常
+     * 工作中**的主编杀掉，整轮失败。默认实现忽略该参数（沿用实现自身的超时配置），因此替身实现无需关心。
+     *
+     * @param timeoutSeconds 会话硬超时（秒）；&le;0 表示沿用实现自身的配置
+     */
+    public Outcome runWithLimit(AgentClient agent, String command, List<MemoryMultipartFile> attachments,
+                                String logPrefix, int maxToolCalls, long timeoutSeconds,
+                                ProgressListener progress) {
+        return runWithLimit(agent, command, attachments, logPrefix, maxToolCalls, progress);
+    }
+
     static List<String> splitLines(String text) {
         if (text == null || text.isBlank()) return List.of();
         return List.of(text.split("\n"));

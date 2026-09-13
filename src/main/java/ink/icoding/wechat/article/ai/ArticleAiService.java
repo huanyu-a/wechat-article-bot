@@ -118,6 +118,17 @@ public class ArticleAiService {
     private final ink.icoding.wechat.article.agent.AgentDefinitionMapper agentDefinitionMapper;
     private final ink.icoding.wechat.article.schedule.AgentRunner agentRunner;
     private final ink.icoding.wechat.article.common.InFlightGate inFlightGate;
+    /**
+     * 编辑器交互式会话的硬超时（秒）：与定时链路的 stage-timeout-seconds 分开——
+     * 用户在场，等 300 秒太短。停滞的编辑器会话此前会永久占住一个 InFlightGate 名额
+     * 且 TASK_RUN 无任何记录（现场线程栈实测挂了 79 分钟）。
+     */
+    private final long editorTimeoutSeconds;
+    /**
+     * 工具调用预算：编辑器的调研委托与定时链路共用同一套额度（见 {@link ToolCallBudget}）——
+     * 调研阶段单独一档，否则编辑器里一次宽口径调研同样会在 24 次处被中止。
+     */
+    private final ink.icoding.wechat.article.schedule.ToolCallBudget toolCallBudget;
     private final Map<String, EditorSession> sessions = new ConcurrentHashMap<>();
     private final Map<Long, Object> articleSessionLocks = new ConcurrentHashMap<>();
     private final ScheduledExecutorService heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(task -> {
@@ -136,7 +147,10 @@ public class ArticleAiService {
                             ScheduledAgentFactory scheduledAgentFactory,
                             ink.icoding.wechat.article.agent.AgentDefinitionMapper agentDefinitionMapper,
                             ink.icoding.wechat.article.schedule.AgentRunner agentRunner,
-                            ink.icoding.wechat.article.common.InFlightGate inFlightGate) {
+                            ink.icoding.wechat.article.common.InFlightGate inFlightGate,
+                            ink.icoding.wechat.article.schedule.ToolCallBudget toolCallBudget,
+                            @org.springframework.beans.factory.annotation.Value(
+                                    "${app.llm.editor-timeout-seconds:1800}") long editorTimeoutSeconds) {
         this.messageMapper = messageMapper;
         this.agentSessionMapper = agentSessionMapper;
         this.articleService = articleService;
@@ -152,6 +166,9 @@ public class ArticleAiService {
         this.agentDefinitionMapper = agentDefinitionMapper;
         this.agentRunner = agentRunner;
         this.inFlightGate = inFlightGate;
+        this.toolCallBudget = toolCallBudget == null
+                ? ink.icoding.wechat.article.schedule.ToolCallBudget.defaults() : toolCallBudget;
+        this.editorTimeoutSeconds = editorTimeoutSeconds;
     }
 
     public List<AiMessage> messages(Long articleId) {
@@ -288,7 +305,13 @@ public class ArticleAiService {
                                             ? "正在压缩较早的对话上下文…" : "对话上下文压缩完成"));
                         }
                     });
-            result.execute();
+            // 硬超时护栏（I8）：编辑器链路此前直接 result.execute()/result.get()，完全绕过 StageTimeout。
+            // 上游 SSE 一旦停滞，该线程永久 WAITING，InFlightGate 名额（在 finishSession 才释放）被永久占住，
+            // 且编辑器会话不是「运行」，TASK_RUN 里没有任何记录——用户只看到「AI 一直不回」。
+            // 这里包上 StageTimeout：超时抛 StageTimeoutException → 下面的 catch 发 error 事件 → finally
+            // 走 finishSession 释放名额。门槛用独立配置 editor-timeout-seconds（用户在场，等 300 秒太短）。
+            // 说明：StageTimeout 只能放弃工作线程（agent4j 无 cancel），这一限制与定时链路一致（U1）。
+            ink.icoding.wechat.article.schedule.StageTimeout.await(result, editorTimeoutSeconds, "编辑器");
             String response = result.get();
             if (session.serverToolCalls.get() > MAX_SERVER_TOOL_CALLS) {
                 throw new IllegalStateException("单次对话最多调用 " + MAX_SERVER_TOOL_CALLS
@@ -400,7 +423,9 @@ public class ArticleAiService {
                 document.contentHtml(), coverAssetId, coverUrl,
                 original.getSourceUrl(), original.getRevision(),
                 ink.icoding.wechat.article.account.WechatAccountService.parseSkillIds(original.getSkillIds()),
-                original.getLayoutEngine(), original.getContentMarkdown());
+                original.getLayoutEngine(), original.getContentMarkdown(),
+                // 编辑器只改渲染产物，换不了主题色；显式带上留存值，避免 applyLayout 把它当「未提供」而走归档逻辑
+                original.getThemeAccent(), original.getThemeDark());
         return articleService.updateByAi(original.getId(), request,
                 "AI 工具编辑（" + session.toolCalls.get() + " 次工具调用）", session.user.id());
     }
@@ -549,6 +574,9 @@ public class ArticleAiService {
         if (cause instanceof java.util.concurrent.TimeoutException) {
             return "浏览器编辑工具等待超时，请保持文章编辑页面打开后重试。";
         }
+        if (cause instanceof ink.icoding.wechat.article.schedule.StageTimeoutException) {
+            return "AI 会话超时（上游长时间无响应），本次已中止并释放并发名额，请重试。";
+        }
         String message = cause.getMessage();
         if (message == null || message.isBlank()) return "AI 处理失败";
         if (message.contains("HTTP 401")) return "LLM 服务鉴权失败（HTTP 401），请检查 API Key 是否正确。";
@@ -679,7 +707,7 @@ public class ArticleAiService {
                 ink.icoding.wechat.article.schedule.AgentRunner.Outcome outcome =
                         agentRunner.runWithLimit(subAgent, "请完成调研任务。\n调研要求：\n" + instruction
                                         + "\n\n完成后必须调用 save_research_notes 提交结构化简报。", null,
-                                "【委托·调研】", ink.icoding.wechat.article.ai.DelegateTools.MAX_SUB_AGENT_TOOL_CALLS);
+                                "【委托·调研】", toolCallBudget.subAgentLimitFor("RESEARCH"));
                 String notes = researchWorkspace.hasResearchNotes()
                         ? researchWorkspace.researchNotesText()
                         : (outcome.reply() == null || outcome.reply().isBlank()

@@ -62,6 +62,38 @@ class StaleRunPolicyTest {
         assertThat(StaleRunPolicy.thresholdTooSmall(2, 300)).isFalse();
     }
 
+    @Test
+    void heartbeatingRunIsNotStaleEvenWhenStartedLongAgo() {
+        // I2：心跳新鲜即证明属主实例还活着——即使开始时间早已超过 staleHours，也不能中止
+        // （多实例部署下这正是「不误杀另一实例正在跑的长任务」的关键）
+        TaskRun run = run(NOW.minusHours(9));
+        run.setHeartbeatAt(NOW.minusSeconds(10));
+        assertThat(StaleRunPolicy.isStale(run, 6, NOW, 180)).isFalse();
+    }
+
+    @Test
+    void runWithStoppedHeartbeatIsStale() {
+        // I2：心跳停止即证明属主已失联——不必等满 staleHours，分钟级即可回收
+        TaskRun run = run(NOW.minusMinutes(5));
+        run.setHeartbeatAt(NOW.minusSeconds(181));
+        assertThat(StaleRunPolicy.isStale(run, 6, NOW, 180)).isTrue();
+    }
+
+    @Test
+    void heartbeatBoundaryIsNotStale() {
+        // 恰好等于心跳超时不算失联（严格 isBefore），避免一次数据库抖动就误判
+        TaskRun run = run(NOW.minusMinutes(5));
+        run.setHeartbeatAt(NOW.minusSeconds(180));
+        assertThat(StaleRunPolicy.isStale(run, 6, NOW, 180)).isFalse();
+    }
+
+    @Test
+    void legacyRunWithoutHeartbeatFallsBackToTimeThreshold() {
+        // 升级前落库的旧运行没有心跳列，必须回退到「开始时间 + staleHours」的保守判据
+        assertThat(StaleRunPolicy.isStale(run(NOW.minusHours(7)), 6, NOW, 180)).isTrue();
+        assertThat(StaleRunPolicy.isStale(run(NOW.minusHours(1)), 6, NOW, 180)).isFalse();
+    }
+
     private static TaskRun run(LocalDateTime startedAt) {
         TaskRun run = new TaskRun();
         run.setId(1L);

@@ -21,14 +21,17 @@ public class ScheduleTaskService {
     private final QuartzTaskManager quartz;
     private final TaskExecutionService executionService;
     private final CurrentUserService currentUserService;
+    private final ink.icoding.wechat.article.skill.SkillBindingValidator skillBindingValidator;
 
     public ScheduleTaskService(ScheduleTaskMapper mapper, TaskRunMapper runMapper, QuartzTaskManager quartz,
-                               TaskExecutionService executionService, CurrentUserService currentUserService) {
+                               TaskExecutionService executionService, CurrentUserService currentUserService,
+                               ink.icoding.wechat.article.skill.SkillBindingValidator skillBindingValidator) {
         this.mapper = mapper;
         this.runMapper = runMapper;
         this.quartz = quartz;
         this.executionService = executionService;
         this.currentUserService = currentUserService;
+        this.skillBindingValidator = skillBindingValidator;
     }
 
     public List<ScheduleTask> list() { return mapper.findAll(); }
@@ -101,6 +104,7 @@ public class ScheduleTaskService {
         }
         task.setAiPrompt(request.aiPrompt().trim());
         task.setOutputMode(request.outputMode() == null ? "LOCAL_DRAFT" : request.outputMode());
+        skillBindingValidator.validate(request.skillIds());
         task.setSkillIds(normalizeSkillIds(request.skillIds()));
         task.setExecutionMode(normalizeExecutionMode(request.executionMode()));
         task.setStageAgents(normalizeStageAgents(request.stageAgents()));

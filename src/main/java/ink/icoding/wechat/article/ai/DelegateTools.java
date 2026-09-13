@@ -7,6 +7,7 @@ import ink.icoding.llm.core.tool.annotations.ToolInfo;
 import ink.icoding.wechat.article.agent.AgentFactory;
 import ink.icoding.wechat.article.schedule.AgentRunner;
 import ink.icoding.wechat.article.schedule.TaskWorkspace;
+import ink.icoding.wechat.article.schedule.ToolCallBudget;
 import lombok.Data;
 
 import java.util.ArrayList;
@@ -21,23 +22,31 @@ import java.util.function.BiFunction;
  * 预算护栏（代码强制，超限工具直接返回引导性错误文本而非抛异常，让 chief 收尾）：
  * - 委托总次数 ≤ 8；
  * - 同一草稿返工 ≤ max_revision_rounds；
- * - 子智能体单次工具调用 ≤ 24（对齐编辑器侧 MAX_TOOL_CALLS）；
+ * - 子智能体单次工具调用 ≤ {@link ToolCallBudget#subAgentLimitFor(String)}（调研阶段单独一档）；
  * - 整轮（所有子智能体累计）工具调用 ≤ {@link #MAX_TOTAL_TOOL_CALLS}。
  */
 public final class DelegateTools {
     public static final int MAX_DELEGATIONS = 8;
-    public static final int MAX_SUB_AGENT_TOOL_CALLS = 24;
+    /**
+     * 子智能体工具调用上限的**缺省值**（写作/配图/审核阶段）；实际额度按阶段取自 {@link ToolCallBudget}。
+     * 与 {@link ToolCallBudget#DEFAULT_STAGE} 必须同源，否则会出现「执行器按 36 跑完、这里按 24 判超限」的
+     * 自相矛盾日志（{@code ToolCallBudgetTest.defaultsStayAlignedWithTheDelegateToolConstants} 钉住这条）。
+     */
+    public static final int MAX_SUB_AGENT_TOOL_CALLS = 36;
     /** 协调者自身工具调用上限（读草稿 + 8 次委托，留足余量但防失控）。 */
     public static final int MAX_CHIEF_TOOL_CALLS = 48;
     /**
      * **整轮**工具调用总上限（子智能体侧累计）。此前只有逐项额度——chief 48 次、
      * 每次委托的子智能体 24 次、最多 8 次委托——叠加上界达 240 次，比 SINGLE 的
      * {@code MAX_SCHEDULED_TOOL_CALLS=40} 高一个量级；无人值守的定时任务因此可能在一次运行里
-     * 消耗远超预期的额度，而「委托次数上限」拦不住「每次委托都跑满 24 次」这种组合。
-     * 取 120 ≈ SINGLE 的 3 倍：足够覆盖「调研 + 写作 + 配图 + 审核各跑满一轮」再加两次返工，
-     * 又能在失控时把量级压回可预期范围。chief 自身的额度仍由 MAX_CHIEF_TOOL_CALLS 单独约束。
+     * 消耗远超预期的额度，而「委托次数上限」拦不住「每次委托都跑满额度」这种组合。
+     * 取 200 ≈ SINGLE 的 5 倍：实测一轮 PIPELINE 已用到 110 次（run#68），
+     * 四个阶段各跑满 36 次时仍有 56 次余量，同时「失控时把量级压回可预期范围」这条仍然成立。
+     * 判据是「**已累计** ≥ 上限才拒绝下一次委托」（{@code consume}），所以最后一次委托可以带着整笔
+     * 阶段额度越线，实际落在 [上限, 上限 + 单次额度) 区间里——总闸拦的是量级，不是逐次记账。
+     * chief 自身的额度仍由 MAX_CHIEF_TOOL_CALLS 单独约束。
      */
-    public static final int MAX_TOTAL_TOOL_CALLS = 120;
+    public static final int MAX_TOTAL_TOOL_CALLS = 200;
 
     private DelegateTools() {
     }
@@ -58,12 +67,23 @@ public final class DelegateTools {
     public static List<Tool> create(TaskWorkspace workspace, int maxRounds,
                                     BiFunction<String, String, SubAgentRunner> runnerFactory,
                                     List<String> executionLog) {
-        Budget budget = new Budget(workspace, maxRounds, executionLog);
+        return create(workspace, maxRounds, runnerFactory, executionLog, ToolCallBudget.defaults());
+    }
+
+    /**
+     * 构建 DELEGATE 工具组（按阶段预算）。
+     *
+     * @param budget 工具调用预算（Spring 注入的 {@link ToolCallBudget}；缺省即默认额度）
+     */
+    public static List<Tool> create(TaskWorkspace workspace, int maxRounds,
+                                    BiFunction<String, String, SubAgentRunner> runnerFactory,
+                                    List<String> executionLog, ToolCallBudget budget) {
+        Budget state = new Budget(workspace, maxRounds, executionLog, budget);
         return List.of(
-                new DelegateResearchTool(budget, runnerFactory),
-                new DelegateWritingTool(budget, runnerFactory),
-                new DelegateIllustrationTool(budget, runnerFactory),
-                new DelegateReviewTool(budget, runnerFactory));
+                new DelegateResearchTool(state, runnerFactory),
+                new DelegateWritingTool(state, runnerFactory),
+                new DelegateIllustrationTool(state, runnerFactory),
+                new DelegateReviewTool(state, runnerFactory));
     }
 
     /** 委托预算与返工计数（共享于 4 个工具实例）。 */
@@ -71,15 +91,17 @@ public final class DelegateTools {
         private final TaskWorkspace workspace;
         private final int maxRounds;
         private final List<String> executionLog;
+        private final ToolCallBudget limits;
         private final AtomicInteger delegations = new AtomicInteger();
         /** 子智能体累计工具调用数（整轮预算，见 {@link #MAX_TOTAL_TOOL_CALLS}）。 */
         private final AtomicInteger subAgentToolCalls = new AtomicInteger();
 
-        Budget(TaskWorkspace workspace, int maxRounds, List<String> executionLog) {
+        Budget(TaskWorkspace workspace, int maxRounds, List<String> executionLog, ToolCallBudget limits) {
             this.workspace = workspace;
             this.maxRounds = maxRounds;
             this.executionLog = executionLog == null
                     ? Collections.synchronizedList(new ArrayList<>()) : executionLog;
+            this.limits = limits == null ? ToolCallBudget.defaults() : limits;
         }
 
         TaskWorkspace workspace() {
@@ -90,12 +112,17 @@ public final class DelegateTools {
             return executionLog;
         }
 
+        /** 本阶段子智能体的工具调用额度（调研阶段高于其他阶段，见 {@link ToolCallBudget}）。 */
+        int subAgentLimit(String stage) {
+            return limits.subAgentLimitFor(stage);
+        }
+
         /** 预算检查：超限返回引导文本，未超限返回 null 并占用一次额度。 */
         String consume(String stageLabel) {
-            if (subAgentToolCalls.get() >= MAX_TOTAL_TOOL_CALLS) {
+            if (subAgentToolCalls.get() >= limits.totalLimit()) {
                 // 整轮预算已耗尽：与「委托次数上限」同样返回引导文本，让 chief 收尾而不是中断会话
-                log().add("【协调】整轮工具调用已达上限 " + MAX_TOTAL_TOOL_CALLS + " 次，拒绝新的委托");
-                return "本次运行的工具调用总量已达上限 " + MAX_TOTAL_TOOL_CALLS
+                log().add("【协调】整轮工具调用已达上限 " + limits.totalLimit() + " 次，拒绝新的委托");
+                return "本次运行的工具调用总量已达上限 " + limits.totalLimit()
                         + " 次，请直接依据现有草稿与调研结果收尾，不要再发起新的委托。";
             }
             int used = delegations.incrementAndGet();
@@ -145,10 +172,12 @@ public final class DelegateTools {
         budget.recordSubAgentToolCalls(outcome.toolCalls());
         budget.log().addAll(splitLines(outcome.executionLog()));
         String reply = outcome.reply();
-        if (outcome.toolCalls() > MAX_SUB_AGENT_TOOL_CALLS) {
-            budget.log().add(logPrefix + "子智能体工具调用 " + outcome.toolCalls() + " 次，超出上限 "
-                    + MAX_SUB_AGENT_TOOL_CALLS);
-            return "子智能体本次工具调用已达上限（" + MAX_SUB_AGENT_TOOL_CALLS + " 次）。"
+        // 阶段额度按 stage 取（调研阶段高于其他阶段）：这里与 runnerFactory 传入 runWithLimit 的
+        // 额度必须同源，否则会出现「执行器按 40 跑完、这里按 24 判超限」的自相矛盾日志。
+        int limit = budget.subAgentLimit(stage);
+        if (outcome.toolCalls() > limit) {
+            budget.log().add(logPrefix + "子智能体工具调用 " + outcome.toolCalls() + " 次，超出上限 " + limit);
+            return "子智能体本次工具调用已达上限（" + limit + " 次）。"
                     + "请直接依据现有产出收尾，不要再次委托同一阶段。\n\n"
                     + (reply == null || reply.isBlank() ? "（无产出摘要）" : reply);
         }

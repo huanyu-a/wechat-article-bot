@@ -873,7 +873,7 @@ POST {base_url}/__markflow_render          → {markdown, accent, dark} → {ok,
   1. **相对路径图片：上游原样透传**——`![x](/uploads/test-spike.png)` 渲染后 src 原样保留（未改写、未拼域名、未丢弃）。结论：**必须落地「站点 Base URL 配置 + 渲染前 URL 绝对化」**（否则远程渲染产物对最终读者仍是坏图）；实现点定在 save_article_draft 工具的 MARKFLOW 分支（服务端把 markdown 中 `](/uploads/…) / src="/uploads/…"` 替换为 `{base_url}` 前缀，base_url 来自新增 render_config 字段 `site_base_url`）。
   2. **未知语法：宽松透传不报错**——`:::nonexistent_widget` 容器内容按普通文本段落渲染；自造标签 `<unknown-tag>` 原样进 html（HTTP 200 + ok:true）。结论：上游无语法硬失败风险（低危），但**服务端危险元素剥离必须覆盖未知标签**（不能只剥 script/iframe，需按「非白名单属性 on*/javascript: 一律剥、未知标签降级为其内容」策略），已写入 MarkFlowRenderService 实现要求。
   3. **错误契约确认**：空 markdown → HTTP 400 + `{ok:false,error:"markdown 字段缺失或为空"}`；错误令牌 → HTTP 401 + `{ok:false,error:"X-Render-Token 无效"}`。状态码与 body.ok 一致，仍按「body.ok 为最终判据 + 状态码映射」双保险实现。
-  4. **guide 获取**：GET 实测 200、guide 约 6.8k 字符（含 :::compare 等容器；未列 :::steps 但渲染器支持，guide 覆盖面以线上为准——坚持实时注入不内置副本的原则不变）。
+  4. **guide 获取**：GET 实测 200、guide 约 6.8k 字符（含 :::compare 等容器；未列 :::steps，2026-09-12 复测确认渲染器也**不支持** `:::steps`，见下 ⑬——guide 覆盖面以线上为准，坚持实时注入不内置副本的原则不变）。
   5. **正常渲染**：steps/TIP 提示框/figure 均正确渲染；meta.title/summary 稳定返回；theme 自动派生 dark（#27ae60 → #1d8348）；preview 字段确认存在（约 4.5k，服务端忽略）。
   6. 渲染接口平均耗时 0.2-0.5s，30s 超时设定充裕。
   附注：本机开发环境 JDK 17.0.11（`C:\Program Files\Java\jdk-17`）+ Node 24 + Docker MySQL 8.0（容器 momo-mysql-dev，root/change-me，库 wechat-article 与 wechat-article-test 已建）+ `.env` 已按 .env.example 配置（.env 已在 .gitignore）。
@@ -1079,11 +1079,17 @@ POST {base_url}/__markflow_render          → {markdown, accent, dark} → {ok,
     实测复验：改标题后 `contentHtml` 仍为 6585 字符原渲染产物、`layoutEngine=MARKFLOW`、Markdown 源文保留。
     ④ **渲染器语法实测纠偏**：语言直取线上 `guide` 逐项探测后发现，`markflow-typeset` 技能与内置
     `MarkFlow 精排版式` 技能正文中「步骤用 :::steps / 提示用 :::tip / :::warning」的说法与渲染器实际能力不符——
-    `:::steps` 与 `:::compare` 有效（`:::steps` 渲染为编号圆点步骤流、`:::compare` 渲染为对比网格，均正确），
-    但 `:::tip` / `:::warning` **不被识别**（退回普通段落，丢提示框样式）；提示框的正确写法是引用块加标记
+    `:::compare` 渲染为对比网格（正确）；提示框的正确写法是引用块加标记
     `> [TIP] 内容` / `> [WARNING] 内容`（实测转为绿/橙底 + 左侧色条）+ 图标。已修正技能种子文案与
     `render_markflow` 工具描述（改为「以系统提示中的实时语法指令为准」并给出实测结论），重启后 Seeder
     已将修正同步进库。
+    > **2026-09-12 更正（F9，详见 `known-issues-handoff.md` 的 F9）**：本轮判「`:::tip` / `:::warning`
+    > 不被识别」**有误**。当时的探针把这几条容器写成了未闭合（或未顶格）的形态，落进产物的 `:::` 是
+    > 写法问题，不是渲染器不认。逐种复测：`:::tip` / `:::note` / `:::info` / `:::warning` / `:::caution` /
+    > `:::important` 六种**全部**渲染成与 `> [TIP]` 完全相同的提示框（`border-left:4px`），
+    > `:::tip 自定义标题` 还能覆盖默认标题；真正不支持的只有 `:::danger` / `:::success`（字面输出 `::: danger`）。
+    > `:::steps` 的结论同样要收窄：它确实不能用，但不是「渲染成编号圆点步骤流」，而是**整个容器退化成普通段落**
+    > （0 个步骤节点）。六种提示框容器已从保存自检的「不支持的容器」名单移出——误报会把模型从一条好写法上劝退。
     ⑤ **可见性补强**：MARKFLOW 文章此前在文章列表与其他文章无任何区别，用户不知道编辑正文会改版式。
     列表来源列新增 MARKFLOW 徽标（title 提示「在编辑器里手工改动正文会变成普通 HTML 版式」）。
     ⑥ **验收与回归**：新增 `MarkFlowArticleLayoutPersistenceTests`(3)——引擎与 Markdown 源文随文章落库、
@@ -1149,24 +1155,47 @@ POST {base_url}/__markflow_render          → {markdown, accent, dark} → {ok,
 
     | 写法 | 实测产物 | 结论 |
     |------|---------|------|
-    | `:::steps` + 每步 `###` 标题 | 标题与正文各自成为一个 38px 圆形步骤，字面 `###` 入库 | ❌ 禁用 |
-    | `:::steps` + 无标题自然段 | 3 个 38px 圆形，圆内就是整段文字、溢出 | ❌ 禁用 |
+    | `:::steps` + 每步 `###` 标题 | <s>38px 圆形步骤</s> **实为退化成普通段落**；字面 `###` 入库 | ❌ 禁用 |
+    | `:::steps` + 无标题自然段 | <s>3 个 38px 圆形</s> **实为退化成普通段落（0 个步骤节点）** | ❌ 禁用 |
     | `<steps>` + 每步一个自然段（3 步） | 编号步骤卡：1 张表 3 个 td、各 33% 宽，编号为 `font-size:22px;font-weight:900` | ✅ 采用 |
     | `<steps>` + 4 步（不给 type） | 仍是 4 列各 25% **横向** | ⚠️ 需显式 DA02 |
     | `<steps>` + 5 步（不给 type） | 仍是 5 列各 20% **横向** | ⚠️ 需显式 DA02 |
     | `<steps type="DA02">` + 4 步 | 竖向卡片：每步 32px 圆形编号 + 16px 内边距卡片 | ✅ >3 步采用 |
-    | `<badge type="tip" title="推荐" />` | 渲染出的是 type 值（`tip`）而非 title | ❌ 禁用 |
-    | `<badge>文字</badge>` | 标签原样吐进正文，无样式 | ❌ 禁用 |
+    | `<badge type="tip" title="推荐" />` | <s>渲染出的是 type 值</s> **实为渲染出 title「推荐」（`text=` 与 `<Badge>` 写法同样有效）** | ✅ 采用（须自闭合） |
+    | `<badge type="tip">推荐</badge>`（成对） | 徽章本身正常，但 `</badge>` 原样吐进正文（产物文本 `tip推荐</badge>`） | ❌ 禁用 |
     | `<badges type="accent">A\|B</badges>` | 胶囊徽章（`border-radius:999px`），竖线分隔多项 | ✅ 采用 |
     | `> [TIP] 内容` | 绿底 + 左侧色条提示框 | ✅ 正确 |
-    | `:::tip` / `:::warning` | 退化为普通段落、丢提示框样式 | ❌ 不识别 |
+    | `:::tip` / `:::warning` | <s>退化为普通段落</s> **实为与 `> [TIP]` 完全相同的提示框** | ✅ 识别 |
+
+    > **2026-09-12 更正（F9，详见 `known-issues-handoff.md` 的 F9；被划掉的都是本轮推翻的旧结论）**：
+    > 表中三处结论是当时探针的**写法问题**被记成了渲染器能力问题——
+    > a) `:::tip` / `:::note` / `:::info` / `:::warning` / `:::caution` / `:::important` 六种容器**全部**渲染成
+    > 与 `> [TIP]` 完全一致的提示框（`border-left:4px`），`:::tip 自定义标题` 还能覆盖默认标题；真正不支持的
+    > 只有 `:::danger` / `:::success`（字面输出 `::: danger`）。旧探针写的是未闭合或未顶格的形态，落进产物的
+    > `:::` 是写法问题。b) 行内 `<badge type="tip" title="推荐" />` 渲染出的就是 title「推荐」——旧结论误因是
+    > 探针写成了成对标签，看到 `</badge>` 落进正文就推断「title 从未出现」。写成自闭合即可，**不必禁用**。
+    > c) `:::steps` 该禁用的结论不变，但机制要说准：它**不再**拆成 38px 圆形，而是整个容器退化成普通段落。
+    > 保存自检已同步：六种提示框容器从「不支持的容器」名单移出（原先会把正确写法误报成错误、把模型劝退），
+    > 新增成对 `<badge>`/`<icon>` 与 `<steps>` 内 `###` 小标题、图注隔空行三条检查。
 
     **两个上游「文档与实现不一致」的坑（本轮实证）**：a) guide 第六节第 9 条明写
     「步骤超过 3 个时，系统自动切换为竖向布局（DA02）；也可以主动指定 type="DA02"」——
     实测 4 步与 5 步都**没有**自动切换，仍是 25% / 20% 的横向列，只有显式 `type="DA02"` 才变竖向；
-    b) guide 组件第 10 条记载行内徽章 `<badge type="tip" title="推荐" />`，实测渲染出的文字是 **type 的值**，
-    title 从未出现（自闭合写法还会把 `<badge …>` 原样吐进正文）。**结论：语法指令也不是逐字可信的，
-    凡是靠它下判断的地方都要用真实渲染产物核一遍；我们自己的技能文案已对这两条给出实测改正。**
+    b) ~~guide 组件第 10 条记载行内徽章 `<badge type="tip" title="推荐" />`，实测渲染出的文字是 type 的值，
+    title 从未出现~~——**此项 2026-09-12 已推翻，见上更正**：自闭合写法渲染正常，是当时探针写成了成对标签。
+    **结论：语法指令也不是逐字可信的，凡是靠它下判断的地方都要用真实渲染产物核一遍；
+    我们自己的技能文案已对这两条给出实测改正。**
+    （2026-09-12 再补：guide 也有**漏写**——第一节说 ` ```mermaid ` 代码块「自动渲染为 SVG」，实测渲染器
+    只做代码高亮、不产出任何图形。至于 `<timeline>`：F10 已证伪「渲染为空」，真因是每行必须三列。
+    F10 还查出 guide 漏得更狠的一处：官网 Web 端组件注册表里的 `:::reading-path`、`:::steps-horizontal`、
+    `:::steps-vertical`、`:::case-flow`、`:::slider`、`:::callout`、`:::align`、`:::code-block`
+    共 8 个容器，guide 全文一次都没提（`:::breaking`/`:::timeline`/`:::table` guide 有记载，
+    是本节之外的补记；2026-09-13 逐名复核见 `known-issues-handoff.md` D24 的复查更正）——
+    这是「成品比官网示例素」
+    的真正原因，详见 `known-issues-handoff.md` 的 D24。**新补进白名单的容器同样要逐条量行格式**：
+    `:::reading-path` 只要有一行不带 `-`（含整块写成 `*`）整块产物就是 0 字符、上游零 warnings；
+    `:::slider` 缺 `images` 会把「请提供图片URL列表」的灰框留在成稿里；
+    `:::compare` 的行只接受 3–4 列，5 列/2 列会被整行忽略——2 列时末尾那一方的**整列内容直接丢失**。）
 
     **教训**：十四轮之所以误判，是因为只看到「有编号圆点流出来」就判定有效，没有核对**分段是否正确**——
     线上 guide 从头到尾都没记载过 `:::steps`，guide 是对的，是我们读错了自己的探测结果。
@@ -1176,6 +1205,9 @@ POST {base_url}/__markflow_render          → {markdown, accent, dark} → {ok,
     缺陷会自动复制到每一篇新文章里。已按实测结论重写 `SkillSeeder.MARKFLOW_CONTENT` 第 2 条
     （四条踩坑结论 + 「与实时语法指令冲突时以指令为准」），并修正
     `EditorServiceTools.render_markflow` 的参数描述；Seeder 在启动时即同步进库。
+    （2026-09-12 再改：第 2 条当时的四条里，①「`:::tip`/`:::warning` 不被识别」②「`<badge>` 渲染的是 type 值」
+    两条**本身就是错的**，等于把模型从两条好写法上劝退，已按上面 ① 的更正重写——现文案把「实测结论」
+    收窄为真正与 guide 不一致的那几条，并补上 `<steps>` 内禁 `###`、图注须紧贴图片、mermaid 不出图三处新实证。）
     ③ **P0 数据缺陷：Markdown 源文被静默丢弃**。`ArticleService.reconcileRenderedLayout` 原先在
     「正文文本变化」时**无条件**清空 `content_markdown`——而「按新 Markdown 重新渲染后覆盖正文」这条路径
     同样会改变正文文本，于是重排一次就把源文丢掉，文章**再也无法二次调整**（只剩 HTML 产物，无法反推 Markdown）。
@@ -1189,8 +1221,9 @@ POST {base_url}/__markflow_render          → {markdown, accent, dark} → {ok,
     修复后产物为 2 张表格（步骤卡 + 徽章）、9 个 td；截图确认 3 张编号步骤卡 + 胶囊徽章显示正常。
     ⑤ **技能实体同步纠偏**：本机技能 `~/.zcode/skills/markflow-typeset/SKILL.md` 也在推荐 `:::steps` 与
     行内 `<badge>`（第 29、99 行），已按实测改正，并在「限制与注意」补一节「guide 与实现不一致的两处」；
-    内置技能 `MarkFlow 精排版式` 的第 2 条同步细化为「`<steps>` 每步一个自然段 / 禁 `:::steps`（圆内塞长文本）/
-    >3 步必须显式 DA02 / 徽章用 `<badges>`」。
+    内置技能 `MarkFlow 精排版式` 的第 2 条同步细化为「`<steps>` 每步一个自然段 / 禁 `:::steps`（退化成普通段落）/
+    >3 步建议显式 DA02 / 徽章用 `<badges>`」。
+    （2026-09-12 再补：本机技能文件里的「两处不一致」其一也已被推翻——`<badge>` 是好的，只有**成对写法**才坏。）
     ⑥ **本轮遗留（已记录、未在代码层解决）**：a) `ArticleService.rollback()` 是**部分合并**回滚——
     只取目标版本的标题/摘要/正文，作者、来源 URL、引擎与 Markdown 都保留当前值，回滚结果并非目标版本的完整状态；
     b) `article_revision` 表没有 `layout_engine` / `content_markdown` 两列，回滚永远无法恢复 Markdown 源文；

@@ -82,4 +82,21 @@ public interface TaskRunMapper extends SmartMapper<TaskRun> {
         return value == null ? null
                 : value.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS"));
     }
+
+    /**
+     * 运行中进度落库（I10）：周期刷新 MODE / EXECUTION_LOG / TOOL_CALL_COUNT 与心跳（I2）。
+     * {@code AND STATUS = 'RUNNING'} 保证已收尾的行不被运行中的快照覆盖。
+     */
+    default int updateProgress(Long id, String mode, String executionLog, Integer toolCallCount,
+                               LocalDateTime heartbeatAt) {
+        return executeSql("UPDATE TASK_RUN SET MODE = ?, EXECUTION_LOG = ?, TOOL_CALL_COUNT = ?, "
+                        + "HEARTBEAT_AT = ? WHERE ID = ? AND STATUS = ?",
+                mode, executionLog, toolCallCount, formatTimestamp(heartbeatAt), id, "RUNNING");
+    }
+
+    /** 仅刷新心跳（I2）：用于进度无变化但仍需宣告属主存活的周期。 */
+    default int updateHeartbeat(Long id, LocalDateTime heartbeatAt) {
+        return executeSql("UPDATE TASK_RUN SET HEARTBEAT_AT = ? WHERE ID = ? AND STATUS = ?",
+                formatTimestamp(heartbeatAt), id, "RUNNING");
+    }
 }

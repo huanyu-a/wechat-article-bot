@@ -38,6 +38,10 @@ public interface ArticleMapper extends SmartMapper<Article> {
         article.setContentText(changes.getContentText());
         article.setLayoutEngine(changes.getLayoutEngine());
         article.setContentMarkdown(changes.getContentMarkdown());
+        // 主题色同样直接赋值：切回指令式排版（PROMPT）时 article 侧被置为 null，
+        // 若漏掉这两行，「换回普通排版」就清不掉旧主题，下次误用旧色重排。
+        article.setThemeAccent(changes.getThemeAccent());
+        article.setThemeDark(changes.getThemeDark());
         article.setCoverUrl(changes.getCoverUrl());
         article.setCoverAssetId(changes.getCoverAssetId());
         article.setSourceUrl(changes.getSourceUrl());

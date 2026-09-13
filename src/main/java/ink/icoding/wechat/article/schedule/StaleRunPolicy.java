@@ -44,6 +44,35 @@ public final class StaleRunPolicy {
     }
 
     /**
+     * 心跳超时（秒）——I2 的第二判据：心跳停止即证明属主实例已崩溃，与「开始时间过阈值」无关。
+     * 默认 180 秒 = 心跳间隔（15s）× 12，既能容忍数次抖动，又能把故障后的自愈窗口从小时级压到分钟级。
+     */
+    public static final long DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 180L;
+
+    /**
+     * 运行是否已可判定为遗留（孤儿），带心跳判据（I2）。
+     *
+     * <p>优先用心跳：{@code HEARTBEAT_AT} 由执行线程周期刷新，新鲜即证明属主实例还活着——
+     * 即使运行开始时间已很久，也不能中止（多实例部署下不会误杀另一实例正在跑的长任务）。
+     * 心跳早于 {@code heartbeatTimeoutSeconds} 才判定为孤儿。
+     *
+     * <p>升级前落库的旧运行没有心跳列，回退到「开始时间 + staleHours」的保守判据。
+     *
+     * @param staleHours             无心跳时使用的时间阈值（小时）
+     * @param heartbeatTimeoutSeconds 心跳超时（秒）；&le;0 时用 {@link #DEFAULT_HEARTBEAT_TIMEOUT_SECONDS}
+     */
+    public static boolean isStale(TaskRun run, long staleHours, LocalDateTime now,
+                                  long heartbeatTimeoutSeconds) {
+        if (run == null || now == null) return false;
+        if (run.getHeartbeatAt() != null) {
+            long timeout = heartbeatTimeoutSeconds > 0
+                    ? heartbeatTimeoutSeconds : DEFAULT_HEARTBEAT_TIMEOUT_SECONDS;
+            return run.getHeartbeatAt().isBefore(now.minusSeconds(timeout));
+        }
+        return isStale(run, staleHours, now);
+    }
+
+    /**
      * 阈值是否偏小到可能误杀正常长任务（启动时据此告警）。
      * 当前默认 3h 对默认阶段超时（300s × 19 ≈ 1.6h）留有约一倍余量；调小阶段超时可相应放宽。
      */

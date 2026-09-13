@@ -17,11 +17,14 @@ public class WechatAccountService {
     private final WechatAccountMapper mapper;
     private final CryptoService cryptoService;
     private final WechatClient wechatClient;
+    private final ink.icoding.wechat.article.skill.SkillBindingValidator skillBindingValidator;
 
-    public WechatAccountService(WechatAccountMapper mapper, CryptoService cryptoService, WechatClient wechatClient) {
+    public WechatAccountService(WechatAccountMapper mapper, CryptoService cryptoService, WechatClient wechatClient,
+                                ink.icoding.wechat.article.skill.SkillBindingValidator skillBindingValidator) {
         this.mapper = mapper;
         this.cryptoService = cryptoService;
         this.wechatClient = wechatClient;
+        this.skillBindingValidator = skillBindingValidator;
     }
 
     public List<AccountView> list() {
@@ -92,6 +95,7 @@ public class WechatAccountService {
         account.setAvatarUrl(request.avatarUrl());
         account.setDefaultAuthor(request.defaultAuthor());
         account.setDefaultStyle(request.defaultStyle());
+        skillBindingValidator.validate(request.skillIds());
         account.setSkillIds(skillIdsOrNull(request.skillIds()));
         if (request.status() != null && !request.status().isBlank()) {
             String status = request.status().strip();

@@ -3,7 +3,6 @@ package ink.icoding.wechat.article.schedule;
 import ink.icoding.llm.agent.AgentClient;
 import ink.icoding.llm.core.entity.MemoryMultipartFile;
 import ink.icoding.wechat.article.ai.ArticleAiService;
-import ink.icoding.wechat.article.ai.DelegateTools;
 import ink.icoding.wechat.article.ai.ScheduledArticleTools;
 import ink.icoding.wechat.article.agent.AgentFactory;
 import ink.icoding.wechat.article.skill.LayoutEngine;
@@ -57,7 +56,7 @@ class PipelineExecutorTest {
     }
 
     private static PipelineExecutor executor(StubRunner runner) {
-        PipelineExecutor executor = new PipelineExecutor(null, null, runner);
+        PipelineExecutor executor = new PipelineExecutor(null, null, runner, ToolCallBudget.defaults());
         executor.setStageAgentBuilder((code, stage, request, workspace) -> {
             AgentClient agent = new AgentClient();
             agent.setName(code);
@@ -215,6 +214,8 @@ class PipelineExecutorTest {
     void stageRunsAreCappedByToolLimit() throws Exception {
         TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
         List<Integer> limits = new ArrayList<>();
+        List<String> researchLimits = new ArrayList<>();
+        List<String> otherLimits = new ArrayList<>();
         AgentRunner capped = new AgentRunner() {
             @Override
             public Outcome run(AgentClient agent, String command, List<MemoryMultipartFile> attachments) {
@@ -231,6 +232,8 @@ class PipelineExecutorTest {
             public Outcome runWithLimit(AgentClient agent, String command, List<MemoryMultipartFile> attachments,
                                         String logPrefix, int maxToolCalls) {
                 limits.add(maxToolCalls);
+                if (isResearcher(agent)) researchLimits.add(agent.getName());
+                else otherLimits.add(agent.getName());
                 if (ink.icoding.wechat.article.agent.AgentFactory.CODE_WRITER.equals(agent.getName())) {
                     saveDraft(workspace);
                 }
@@ -240,15 +243,26 @@ class PipelineExecutorTest {
                 return new Outcome("完成", 1, "");
             }
         };
-        PipelineExecutor executor = new PipelineExecutor(null, null, capped);
+        PipelineExecutor executor = new PipelineExecutor(null, null, capped, ToolCallBudget.defaults());
         executor.setStageAgentBuilder((code, stage, request, ws) -> {
             AgentClient agent = new AgentClient();
             agent.setName(code);
+            agent.setDescription(stage);
             return agent;
         });
         executor.execute(request(Map.of(), 2), workspace);
 
-        assertThat(limits).isNotEmpty().allMatch(value -> value == DelegateTools.MAX_SUB_AGENT_TOOL_CALLS);
+        // 额度按阶段分档：调研阶段高于写作/配图/审核——实测宽口径调研 25 次调用全部成功却因
+        // 撞上 24 的上限让整轮 PIPELINE 失败（run#46），调研必须单独放宽。
+        assertThat(researchLimits).containsExactly(RESEARCH_CODE);
+        assertThat(otherLimits).containsExactly(WRITING_CODE, ILLUSTRATION_CODE, REVIEW_CODE);
+        assertThat(limits).isNotEmpty().allMatch(value -> value == ToolCallBudget.DEFAULT_RESEARCH
+                || value == ToolCallBudget.DEFAULT_STAGE);
+        assertThat(ToolCallBudget.DEFAULT_RESEARCH).isGreaterThan(ToolCallBudget.DEFAULT_STAGE);
+    }
+
+    private static boolean isResearcher(AgentClient agent) {
+        return RESEARCH_CODE.equals(agent.getName());
     }
 
     @Test
@@ -279,6 +293,8 @@ class PipelineExecutorTest {
     void runnerFailureKeepsTheStalledStageLogInWorkspace() {
         // 事故现场：阶段因为 SSE 停滞/硬超时抛异常。若日志只在运行器返回后才整体追加，
         // 这一次尝试的日志会随异常一起丢掉——运行历史里 EXECUTION_LOG 为空，看不出卡在哪一步。
+        // 调研阶段现在会降级，因此这里观察的是「写作阶段（草稿未落盘、无法降级）的失败」：
+        // 调研阶段实时上报的那一行日志同样必须留在工作区里。
         TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
         AgentRunner stalled = new AgentRunner() {
             @Override
@@ -301,7 +317,7 @@ class PipelineExecutorTest {
                 throw new StageTimeoutException("智能体会话超时（300 秒未结束）");
             }
         };
-        PipelineExecutor executor = new PipelineExecutor(null, null, stalled);
+        PipelineExecutor executor = new PipelineExecutor(null, null, stalled, ToolCallBudget.defaults());
         executor.setStageAgentBuilder((code, stage, request, ws) -> {
             AgentClient agent = new AgentClient();
             agent.setName(code);
@@ -312,7 +328,9 @@ class PipelineExecutorTest {
                 .isInstanceOf(StageTimeoutException.class);
 
         assertThat(workspace.executionLogText()).contains("【调研】调用工具：search_web");
-        assertThat(workspace.toolCallCount()).isEqualTo(1);
+        // 调研阶段降级后写作阶段同样跑起来并上报了 1 次调用：两次「抛异常前已发生的计数」都必须留住，
+        // 这正是失败路径不能只靠返回值统计的原因。
+        assertThat(workspace.toolCallCount()).isEqualTo(2);
     }
 
     @Test
@@ -334,5 +352,83 @@ class PipelineExecutorTest {
         long illustrationRuns = runner.stages.stream().filter(ILLUSTRATION_CODE::equals).count();
         // 首轮配图 1 次 + 因图片类 issues 返工再配图 1 次
         assertThat(illustrationRuns).isEqualTo(2);
+    }
+
+    /** 指定 code 的智能体会话直接中止（other 阶段照常完成并落盘草稿）。 */
+    private static AgentRunner stageDiesWith(String dyingCode, boolean saveDraftBeforeDying, TaskWorkspace workspace) {
+        return new AgentRunner() {
+            @Override
+            public Outcome run(AgentClient agent, String command, List<MemoryMultipartFile> attachments) {
+                return run(agent, command, attachments, null);
+            }
+
+            @Override
+            public Outcome run(AgentClient agent, String command, List<MemoryMultipartFile> attachments,
+                               String logPrefix) {
+                throw new IllegalStateException("会话中止（模拟超限/停滞）");
+            }
+
+            @Override
+            public Outcome runWithLimit(AgentClient agent, String command, List<MemoryMultipartFile> attachments,
+                                        String logPrefix, int maxToolCalls, ProgressListener progress) {
+                if (dyingCode.equals(agent.getName())) {
+                    if (saveDraftBeforeDying) saveDraft(workspace);
+                    throw new IllegalStateException("会话中止（模拟超限/停滞）");
+                }
+                if (WRITING_CODE.equals(agent.getName())) saveDraft(workspace);
+                if (REVIEW_CODE.equals(agent.getName())) {
+                    workspace.submitReview(true, List.of(), List.of(), "ok");
+                }
+                return new Outcome("完成", 1, "");
+            }
+        };
+    }
+
+    private static PipelineExecutor executor(AgentRunner runner) {
+        PipelineExecutor executor = new PipelineExecutor(null, null, runner, ToolCallBudget.defaults());
+        executor.setStageAgentBuilder((code, stage, request, ws) -> {
+            AgentClient agent = new AgentClient();
+            agent.setName(code);
+            return agent;
+        });
+        return executor;
+    }
+
+    @Test
+    void researchStageFailureDegradesInsteadOfFailingTheWholeRun() throws Exception {
+        // run#46 的教训：调研的 25 次检索全部成功，只因超出上限 1 次就让整轮 PIPELINE FAILED，
+        // 而写作阶段完全有能力依据任务要求自行成文。调研失败必须降级，而不是丢掉整次交付。
+        TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
+        ArticleAiService.ScheduledAgentResult result = executor(
+                stageDiesWith(RESEARCH_CODE, false, workspace))
+                .execute(request(Map.of("illustration", 0L, "review", 0L), 2), workspace);
+
+        assertThat(result.draft().title()).isEqualTo("测试标题");
+        assertThat(workspace.degradationCount()).isEqualTo(1);
+        assertThat(result.executionLog()).contains("【调研】阶段中止").contains("未产生调研简报");
+    }
+
+    @Test
+    void writingStageFailureWithoutASavedDraftStillFailsHard() {
+        // 写作阶段是交付的硬前提：没有草稿可交付时不能"降级成功"，必须保持明确失败。
+        TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
+        assertThatThrownBy(() -> executor(stageDiesWith(WRITING_CODE, false, workspace))
+                .execute(request(Map.of("illustration", 0L, "review", 0L), 2), workspace))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("会话中止");
+        assertThat(workspace.degradationCount()).isZero();
+    }
+
+    @Test
+    void writingStageFailureAfterDraftSavedStillDelivers() throws Exception {
+        // 会话在提交草稿之后才中止：文章是完整的，丢掉它等于白白浪费整轮算力。
+        TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
+        ArticleAiService.ScheduledAgentResult result = executor(
+                stageDiesWith(WRITING_CODE, true, workspace))
+                .execute(request(Map.of("illustration", 0L, "review", 0L), 2), workspace);
+
+        assertThat(result.draft().title()).isEqualTo("测试标题");
+        assertThat(workspace.degradationCount()).isEqualTo(1);
+        assertThat(result.executionLog()).contains("【写作】阶段中止");
     }
 }

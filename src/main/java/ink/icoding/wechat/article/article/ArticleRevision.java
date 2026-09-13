@@ -36,6 +36,11 @@ public class ArticleRevision extends PO {
     /** MARKFLOW 版本的 Markdown 源文；缺此列时回滚只能恢复渲染产物、永远拿不回可重排的源文。 */
     @TableField(length = 65535)
     private String contentMarkdown;
+    /** 版本渲染时实际生效的主题色；缺此列时回滚后的重排会用默认色，与回滚到的版式对不上。 */
+    @TableField(length = 20)
+    private String themeAccent;
+    @TableField(length = 20)
+    private String themeDark;
     private String changeSource;
     @TableField(length = 500)
     private String changeSummary;

@@ -2,7 +2,6 @@ package ink.icoding.wechat.article.schedule;
 
 import ink.icoding.llm.agent.AgentClient;
 import ink.icoding.wechat.article.ai.ArticleAiService;
-import ink.icoding.wechat.article.ai.DelegateTools;
 import ink.icoding.wechat.article.ai.ScheduledAgentFactory;
 import ink.icoding.wechat.article.agent.AgentDefinition;
 import ink.icoding.wechat.article.agent.AgentDefinitionMapper;
@@ -34,13 +33,15 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
     private final ScheduledAgentFactory agentFactory;
     private final AgentDefinitionMapper definitionMapper;
     private final AgentRunner runner;
+    private final ToolCallBudget toolCallBudget;
     private StageAgentBuilder stageAgentBuilder;
 
     public PipelineExecutor(ScheduledAgentFactory agentFactory, AgentDefinitionMapper definitionMapper,
-                            AgentRunner runner) {
+                            AgentRunner runner, ToolCallBudget toolCallBudget) {
         this.agentFactory = agentFactory;
         this.definitionMapper = definitionMapper;
         this.runner = runner;
+        this.toolCallBudget = toolCallBudget == null ? ToolCallBudget.defaults() : toolCallBudget;
         this.stageAgentBuilder = (code, stage, request, workspace) -> {
             var context = agentFactory.skillContext(request.accountId(), request.skillIds(), List.of());
             return agentFactory.build(code, stage, context, workspace, request.accountId(),
@@ -65,29 +66,31 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
         List<String> executionLog = workspace.executionLog();
         int toolCalls = 0;
 
-        // ① 调研
+        // ① 调研（可降级：没有简报时写作阶段会自行检索，不该因此让整轮失败）
         String researchCode = resolveCode(request.stageAgents(), "research", AgentFactory.CODE_RESEARCHER);
-        AgentRunner.Outcome research = runStage(researchCode, "RESEARCH", request, workspace,
-                researchCommand(request), "【调研】", executionLog);
+        AgentRunner.Outcome research = runStageOrContinue(researchCode, "RESEARCH", request, workspace,
+                researchCommand(request), "【调研】", executionLog, null);
         toolCalls += research.toolCalls();
         executionLog.add(workspace.hasResearchNotes()
                 ? "【调研】调研简报已落盘（" + workspace.researchNotesText().length() + " 字）"
                 : "【调研】未产生调研简报，写作阶段将依据任务要求自行检索");
 
-        // ② 写作
+        // ② 写作（可降级但须已落盘：会话中止前若已调用 save_article_draft，草稿是完整的，不该丢弃）
         String writingCode = resolveCode(request.stageAgents(), "writing", AgentFactory.CODE_WRITER);
-        AgentRunner.Outcome writing = runStage(writingCode, "WRITING", request, workspace,
-                writingCommand(request, workspace, null), "【写作】", executionLog);
+        AgentRunner.Outcome writing = runStageOrContinue(writingCode, "WRITING", request, workspace,
+                writingCommand(request, workspace, null), "【写作】", executionLog,
+                () -> workspace.draftState().isSaved());
         toolCalls += writing.toolCalls();
         requireDraftSaved(workspace, "写作阶段");
 
-        // ③ 配图（可跳过）
+        // ③ 配图（可跳过；失败可降级：没有配图的草稿仍可交付）
         boolean illustrationSkipped = isSkipped(request.stageAgents(), "illustration");
         if (!illustrationSkipped) {
             String illustrationCode = resolveCode(request.stageAgents(), "illustration",
                     AgentFactory.CODE_ILLUSTRATOR);
-            AgentRunner.Outcome illustration = runStage(illustrationCode, "ILLUSTRATION", request, workspace,
-                    illustrationCommand(request), "【配图】", executionLog);
+            AgentRunner.Outcome illustration = runStageOrContinue(illustrationCode, "ILLUSTRATION", request,
+                    workspace, illustrationCommand(request), "【配图】", executionLog,
+                    () -> workspace.draftState().isSaved());
             toolCalls += illustration.toolCalls();
         } else {
             executionLog.add("【配图】按任务配置跳过");
@@ -101,8 +104,10 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
             int round = 0;
             while (true) {
                 int roundsBefore = workspace.reviewRounds().size();
-                AgentRunner.Outcome review = runStage(reviewCode, "REVIEW", request, workspace,
-                        reviewCommand(request), "【审核】", executionLog);
+                // 审核阶段可降级：审稿人会话中止时按「未提交结论」处理（宽松策略），
+                // 不能让一次审稿失败把已经写好的文章整轮丢掉。
+                AgentRunner.Outcome review = runStageOrContinue(reviewCode, "REVIEW", request, workspace,
+                        reviewCommand(request), "【审核】", executionLog, null);
                 toolCalls += review.toolCalls();
                 if (workspace.reviewRounds().size() == roundsBefore) {
                     // 本轮未调用 submit_review：按通过处理（宽松策略），不得沿用上一轮结论返工
@@ -121,15 +126,17 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
                 round++;
                 workspace.nextRevisionRound();
                 executionLog.add("【审核】第 " + latest.round() + " 轮未通过，进入第 " + round + " 次返工");
-                AgentRunner.Outcome rewrite = runStage(writingCode, "WRITING", request, workspace,
-                        writingCommand(request, workspace, workspace.latestIssuesText()), "【写作】", executionLog);
+                AgentRunner.Outcome rewrite = runStageOrContinue(writingCode, "WRITING", request, workspace,
+                        writingCommand(request, workspace, workspace.latestIssuesText()), "【写作】",
+                        executionLog, () -> workspace.draftState().isSaved());
                 toolCalls += rewrite.toolCalls();
                 requireDraftSaved(workspace, "返工写作阶段");
                 if (!illustrationSkipped && issuesMentionImages(latest.issues())) {
                     String illustrationCode = resolveCode(request.stageAgents(), "illustration",
                             AgentFactory.CODE_ILLUSTRATOR);
-                    AgentRunner.Outcome illustration = runStage(illustrationCode, "ILLUSTRATION", request,
-                            workspace, illustrationCommand(request), "【配图】", executionLog);
+                    AgentRunner.Outcome illustration = runStageOrContinue(illustrationCode, "ILLUSTRATION",
+                            request, workspace, illustrationCommand(request), "【配图】", executionLog,
+                            () -> workspace.draftState().isSaved());
                     toolCalls += illustration.toolCalls();
                 }
             }
@@ -149,14 +156,45 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
                                          String command, String logPrefix, List<String> executionLog) {
         AgentClient agent = buildAgent(code, fallbackStage, request, workspace);
         executionLog.add(logPrefix + "启动智能体：" + agent.getName());
-        // 每个阶段同样受工具调用上限约束（方案 5.5 预算护栏；超限中止并让任务以明确错误失败）。
+        // 每个阶段受工具调用上限约束（方案 5.5 预算护栏；超限中止并让任务以明确错误失败）。
+        // 额度按阶段取：调研阶段高于写作/配图/审核（见 ToolCallBudget——实测宽口径调研的正常检索量
+        // 就会超过 24 次，此前正是调查阶段触顶让整轮任务失败）。
         // 计数与日志都经 progressListener 实时汇入工作区：阶段因停滞/超时失败时，
         // 本次尝试的局部日志会随异常丢弃，只有实时上报的那份留得住（运行历史据此定位卡点）。
         AgentRunner.Outcome outcome = runner.runWithLimit(agent, command, null, logPrefix,
-                DelegateTools.MAX_SUB_AGENT_TOOL_CALLS, workspace.progressListener());
+                toolCallBudget.subAgentLimitFor(fallbackStage), workspace.progressListener());
         // 阶段内的工具失败计入运行级失败数：流水线即使跑完，也不该把「配图失败」记成干净的成功
         workspace.addToolFailures(outcome.toolFailures());
         return outcome;
+    }
+
+    /**
+     * 跑一个「失败可降级」的阶段：阶段会话中止（工具调用超限 / SSE 停滞 / 硬超时）时，
+     * 只要已产出物仍可用（{@code salvageable}）就记录降级并继续后续阶段，而不是让整轮运行失败。
+     *
+     * <p>为什么必须降级：一次 PIPELINE 运行的价值集中在「文章本身」。调研阶段触顶就让整轮失败，
+     * 等于把已经能交付的文章（写作阶段尚未开始）连同调研结果一起丢掉——实测 run#46 正是如此：
+     * 调研的 25 次检索全部成功，只因超出上限 1 次就整轮 FAILED。
+     *
+     * <p>降级是**可见**的：写入执行日志 + 计入 {@link TaskWorkspace#degradationCount()}，
+     * 运行终态因此是 SUCCESS_WITH_WARNINGS 而不是干净的 SUCCESS。
+     *
+     * @param salvageable 失败后可继续的判据；返回 false 时原样抛出（真正不可恢复的失败不掩埋）
+     */
+    private AgentRunner.Outcome runStageOrContinue(String code, String fallbackStage,
+                                                  ArticleAiService.ScheduledAgentRequest request,
+                                                  TaskWorkspace workspace, String command, String logPrefix,
+                                                  List<String> executionLog,
+                                                  java.util.function.BooleanSupplier salvageable) {
+        try {
+            return runStage(code, fallbackStage, request, workspace, command, logPrefix, executionLog);
+        } catch (RuntimeException error) {
+            if (salvageable != null && !salvageable.getAsBoolean()) throw error;
+            String reason = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+            executionLog.add(logPrefix + "阶段中止（" + reason + "），已按现有产出继续后续阶段");
+            workspace.addDegradation();
+            return new AgentRunner.Outcome("", 0, "", 0);
+        }
     }
 
     /** 装配阶段智能体（包级可见，便于单测经 seam 替换，skills-agent-plan 8.1）。 */

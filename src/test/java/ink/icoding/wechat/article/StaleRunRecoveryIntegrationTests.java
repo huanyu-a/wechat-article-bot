@@ -89,7 +89,52 @@ class StaleRunRecoveryIntegrationTests {
         assertThat(runMapper.findRunning(taskId)).isNull();
     }
 
+    @Test
+    void stoppedHeartbeatReapsRunLongBeforeTheTimeThreshold() {
+        // I2：开始仅 1 分钟（时间阈值 3h 远未到），但心跳已停 200 秒 → 属主失联，应即刻中止
+        Long id = insertRunning(LocalDateTime.now().minusMinutes(1), LocalDateTime.now().minusSeconds(200));
+
+        assertThat(executionService.reapStaleRuns()).isGreaterThanOrEqualTo(1);
+
+        assertThat(runMapper.selectById(id).getStatus()).isEqualTo("FAILED");
+    }
+
+    @Test
+    void liveHeartbeatProtectsLongRunningRunAcrossInstances() {
+        // I2 的反例：开始于 24 小时前但心跳新鲜 = 属主实例还活着（多实例下的长任务），绝不能误杀
+        Long id = insertRunning(LocalDateTime.now().minusHours(24), LocalDateTime.now());
+
+        executionService.reapStaleRuns();
+
+        assertThat(runMapper.selectById(id).getStatus()).isEqualTo("RUNNING");
+    }
+
+    @Test
+    void progressFlushPersistsLiveFieldsAndStopsAfterFinish() {
+        // I10：RUNNING 期间也能读出 MODE/EXECUTION_LOG/TOOL_CALL_COUNT，而不是收尾前永远是默认值
+        Long id = insertRunning(LocalDateTime.now());
+
+        assertThat(runMapper.updateProgress(id, "PIPELINE", "【调研】启动智能体", 7, LocalDateTime.now()))
+                .isEqualTo(1);
+        TaskRun running = runMapper.selectById(id);
+        assertThat(running.getMode()).isEqualTo("PIPELINE");
+        assertThat(running.getExecutionLog()).isEqualTo("【调研】启动智能体");
+        assertThat(running.getToolCallCount()).isEqualTo(7);
+        assertThat(running.getHeartbeatAt()).isNotNull();
+
+        TaskRun finished = runMapper.selectById(id);
+        finished.setStatus("SUCCESS");
+        runMapper.finishRun(finished);
+        // 收尾后运行中的快照不得再覆盖终态（AND STATUS='RUNNING' 的 CAS）
+        assertThat(runMapper.updateProgress(id, "SINGLE", "迟到的快照", 99, LocalDateTime.now())).isZero();
+        assertThat(runMapper.selectById(id).getExecutionLog()).isEqualTo("【调研】启动智能体");
+    }
+
     private Long insertRunning(LocalDateTime startedAt) {
+        return insertRunning(startedAt, null);
+    }
+
+    private Long insertRunning(LocalDateTime startedAt, LocalDateTime heartbeatAt) {
         TaskRun run = new TaskRun();
         run.setTaskId(requiredTaskId());
         run.setTriggerType("MANUAL");
@@ -98,6 +143,7 @@ class StaleRunRecoveryIntegrationTests {
         run.setGeneratedCount(0);
         run.setToolCallCount(0);
         run.setStartedAt(startedAt);
+        run.setHeartbeatAt(heartbeatAt);
         runMapper.insert(run);
         return run.getId();
     }

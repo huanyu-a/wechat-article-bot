@@ -251,6 +251,64 @@ class MarkFlowArticleLayoutPersistenceTests {
                 .andExpect(jsonPath("$.data.layoutEngine").value("PROMPT"));
     }
 
+    /**
+     * 主题色必须随文章留存，且**编辑器保存（请求体不带主题字段）不得把它抹掉**。
+     *
+     * <p>渲染产物 HTML 里反推不出主题色（颜色散落在几十条内联样式里），此前它只活在「本轮调用方
+     * 传了什么」的内存态里、落库即丢；于是换主题重排只能传 null，渲染服务按默认色渲染，
+     * 一篇科技蓝的文章重排一次就整篇漂成默认绿——这正是「重排后的版式没有复刻原来的 MarkFlow 渲染」。
+     */
+    @Test
+    void themeSurvivesEditorSaveThatOmitsThemeFields() throws Exception {
+        String authorization = adminToken();
+        String created = mockMvc.perform(post("/api/articles")
+                        .header("Authorization", authorization)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"主题留存验收","contentHtml":%s,"layoutEngine":"MARKFLOW",
+                                 "contentMarkdown":%s,"themeAccent":"#0984e3","themeDark":"#0652dd"}
+                                """.formatted(json(RENDERED), json(MARKDOWN))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.themeAccent").value("#0984e3"))
+                .andExpect(jsonPath("$.data.themeDark").value("#0652dd"))
+                .andReturn().getResponse().getContentAsString();
+        String id = idOf(created);
+
+        // 模拟编辑器保存：正文文本不变、改标题，请求体里**没有**主题字段（老前端/第三方客户端即如此）
+        mockMvc.perform(put("/api/articles/" + id)
+                        .header("Authorization", authorization)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(articleJson("主题留存验收（改标题）", 1, EDITOR_RESERIALIZED, MARKDOWN, "MARKFLOW")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.themeAccent").value("#0984e3"))
+                .andExpect(jsonPath("$.data.themeDark").value("#0652dd"));
+    }
+
+    /** 转为指令式排版（PROMPT）时必须清掉主题色：它只对渲染式产物有意义，留着会让下次误用旧色重排。 */
+    @Test
+    void switchingToPromptLayoutClearsStoredTheme() throws Exception {
+        String authorization = adminToken();
+        String created = mockMvc.perform(post("/api/articles")
+                        .header("Authorization", authorization)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"引擎切换验收","contentHtml":%s,"layoutEngine":"MARKFLOW",
+                                 "contentMarkdown":%s,"themeAccent":"#0984e3","themeDark":"#0652dd"}
+                                """.formatted(json(RENDERED), json(MARKDOWN))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String id = idOf(created);
+
+        mockMvc.perform(put("/api/articles/" + id)
+                        .header("Authorization", authorization)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(articleJson("引擎切换验收", 1, "<p>改成普通正文。</p>", null, "PROMPT")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.layoutEngine").value("PROMPT"))
+                .andExpect(jsonPath("$.data.themeAccent").doesNotExist())
+                .andExpect(jsonPath("$.data.themeDark").doesNotExist());
+    }
+
     private static String json(String value) throws Exception {
         return com.fasterxml.jackson.databind.json.JsonMapper.builder().build()
                 .writeValueAsString(value);

@@ -2,6 +2,7 @@ package ink.icoding.wechat.article.ai;
 
 import ink.icoding.wechat.article.schedule.AgentRunner;
 import ink.icoding.wechat.article.schedule.TaskWorkspace;
+import ink.icoding.wechat.article.schedule.ToolCallBudget;
 import ink.icoding.wechat.article.skill.LayoutEngine;
 import org.junit.jupiter.api.Test;
 
@@ -55,15 +56,17 @@ class DelegateToolsTest {
     }
 
     /**
-     * 整轮工具调用预算（P2-7）：逐项额度（chief 48 / 每次委托 24 / 至多 8 次）叠加上界达 240 次，
-     * 比 SINGLE 的 40 次高一个量级，必须有一道整轮总闸——否则「每次委托都跑满 24 次」这种组合
+     * 整轮工具调用预算（P2-7）：逐项额度（chief 48 / 每次委托 36 / 至多 8 次）叠加上界达 288 次，
+     * 比 SINGLE 的 40 次高一个量级，必须有一道整轮总闸——否则「每次委托都跑满 36 次」这种组合
      * 无人值守时没人拦得住。
      */
     @Test
     void totalToolCallBudgetStopsFurtherDelegations() {
         TaskWorkspace workspace = TaskWorkspace.create(null, LayoutEngine.PROMPT);
         List<String> invoked = new ArrayList<>();
-        // 每次委托跑满单次上限 24 次：5 次即达整轮上限（120），第 6 次必须被拒绝
+        // 每次委托都跑满单次额度，直到整轮累计**达到**上限；此后新的委托必须被拒。
+        // 判据是「累计 >= 上限」，所以放行次数是上限/单次额度**向上取整**（200/36 → 6 次），
+        // 不是整数除法（5 次）——整除的旧额度（120/24）让这两种读法恰好相等，换成 36 才分得开。
         DelegateTools.SubAgentRunner heavy = (code, stage, command, logPrefix) -> {
             invoked.add(code);
             return new AgentRunner.Outcome("完成", DelegateTools.MAX_SUB_AGENT_TOOL_CALLS, "stub");
@@ -85,10 +88,14 @@ class DelegateToolsTest {
         }
 
         assertThat(accepted)
-                .as("整轮上限必须先于委托次数上限生效（24 次/委托 → 5 次即 120）")
-                .isEqualTo(DelegateTools.MAX_TOTAL_TOOL_CALLS / DelegateTools.MAX_SUB_AGENT_TOOL_CALLS);
+                .as("整轮上限必须先于委托次数上限生效（每次跑满 36 次 → 累计到 200 前放行 6 次）")
+                .isEqualTo((DelegateTools.MAX_TOTAL_TOOL_CALLS + DelegateTools.MAX_SUB_AGENT_TOOL_CALLS - 1)
+                        / DelegateTools.MAX_SUB_AGENT_TOOL_CALLS);
         assertThat(last).contains("工具调用总量已达上限");
         assertThat(invoked).hasSize(accepted);
+        // 放行次数不能超过整轮上限：否则这道总闸形同虚设
+        assertThat(accepted * DelegateTools.MAX_SUB_AGENT_TOOL_CALLS)
+                .isGreaterThanOrEqualTo(DelegateTools.MAX_TOTAL_TOOL_CALLS);
     }
 
     @Test
@@ -137,6 +144,33 @@ class DelegateToolsTest {
         assertThat(commands).hasSize(1);
         assertThat(commands.get(0)).contains("调研简报").contains("核心结论：AI 正在普及")
                 .contains("save_article_draft");
+    }
+
+    @Test
+    void researchDelegationUsesTheWiderResearchBudgetWhileOtherStagesKeepTheStageBudget() {
+        // run#46 的直接根因：调研子智能体 25 次调用**全部成功**（search_web ×20 + browse_webpage ×5），
+        // 只因撞上统一的 24 次上限就被判超限。调研阶段必须用更宽的额度，其余阶段维持原值。
+        TaskWorkspace workspace = TaskWorkspace.create(null, LayoutEngine.PROMPT);
+        int calls = DelegateTools.MAX_SUB_AGENT_TOOL_CALLS + 1; // 25：旧上限下必被判超限
+        DelegateTools.SubAgentRunner heavy =
+                (code, stage, command, logPrefix) -> new AgentRunner.Outcome("调研完成", calls, "stub");
+
+        List<ink.icoding.llm.core.tool.Tool> tools = DelegateTools.create(workspace, 2,
+                (code, stage) -> heavy, new ArrayList<>(), ToolCallBudget.defaults());
+        @SuppressWarnings("unchecked")
+        ink.icoding.llm.core.tool.Tool<DelegateTools.DelegateResearchParam> research =
+                (ink.icoding.llm.core.tool.Tool<DelegateTools.DelegateResearchParam>) tools.get(0);
+        @SuppressWarnings("unchecked")
+        ink.icoding.llm.core.tool.Tool<DelegateTools.DelegateWritingParam> writing =
+                (ink.icoding.llm.core.tool.Tool<DelegateTools.DelegateWritingParam>) tools.get(1);
+
+        DelegateTools.DelegateResearchParam researchParam = new DelegateTools.DelegateResearchParam();
+        researchParam.setInstruction("调研 AI 行业");
+        assertThat(research.execute(researchParam)).isEqualTo("调研完成");
+
+        DelegateTools.DelegateWritingParam writingParam = new DelegateTools.DelegateWritingParam();
+        writingParam.setInstruction("写一篇关于 AI 的文章");
+        assertThat(writing.execute(writingParam)).contains("工具调用已达上限");
     }
 
     @Test
