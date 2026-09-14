@@ -1,22 +1,22 @@
 # 交接文档：已知缺陷与未实现清单
 
 - 生成时间：2026-09-11（本轮实施收尾后，并已合并并行会话 `sess_457cd5ec` 的只读现场证据）；**同日晚追加第二批（工具预算分档 / PIPELINE 降级 / MarkFlow 保真 / 主题色留存）；2026-09-12 凌晨再追加 F4（渲染式任务的工具说明与引擎不一致——「精排没复刻」的真正主因）与 F5（预算触顶后产出作废）与 F6（剩余未闭合项）与 F7（渲染降级静默：语法没被识别时产物里留着字面标签而运行仍记 SUCCESS），并对 F4/F5 各做了一轮活体验收（run#63，见 3.5），见 3.5；**2026-09-13 再追加第五轮「组件渲染能力全量核查」——77 项组件逐项对照后端 API 与编辑器前端两条路径，编辑器侧修掉 D30–D39 共 10 类渲染保真缺陷，见 3.9；同日晚追加第六轮「上真浏览器实测」——D30–D39 由 jsdom 结论升级为 14 组真实浏览器实拍对照、R2/R4 两条上游绕过走通真实 API+MySQL+SPA 全链路、第五轮表里剩余 19 条有损逐条归类（并因此补掉保存自检的一处缺口 D40），见 3.10；**同日晚追加第七轮「全量浏览器实拍 + 公式/轮播真实链路取证」——79 个样例全部上真实浏览器逐个判定（pass 70 / na 9 / fail 0 / unverified 0，na 的 9 条逐条复验确认是上游没实现），公式与轮播各自走通「真实渲染 API → 真实 MySQL → 真实 SPA 编辑器」全链路，真实稿件回归扩到 13 篇，并量出软删稿件打开时永远转圈的缺陷 D41，见 3.11**；**2026-09-13 第八轮「组合条件覆盖 + 9 条 `na` 的技能/自检核对」——17 个组合用例（嵌套/属性交织/同组件多次/超长/混排）在真实浏览器里两级判定（上游 ok 8 / nested-unsupported 8 / silently-lost 1，编辑器 17/17 pass、0 fail，组合暴露的差异全在上游）；9 条 `na` 做成逐条「等上游」清单并据此修掉技能/自检侧缺口 D43–D45；只读盘清外部失效资源（影响 5 篇、20 张裂图，未动数据）；修掉 D42（MARKFLOW 成稿把站点域名烧进正文，全库 19 篇）并给出红→绿反证，见 3.12**；**2026-09-13 第九轮「对第八轮的回归复查与收口」——全量门禁、79 样例套件、17 组合套件、9 条 `na` 的上游复验全部重跑刷新（数字与第八轮一致，无上游漂移）；把第八轮的泄漏判据修正自证了一遍（两版跑同一批产物，差异 2/17 条、方向全部变严、0 条变松、0 条编辑器侧误伤）；D42–D45 各补一次红→绿（D45 的技能文案部分受「不改生产数据」约束尚未落库，需下次重启生效）；并核出两处文档与代码不一致已改正，见 3.13**；**2026-09-13 第十轮「组件渲染清单收口」——把第八轮留下的 **22 个「悬空」组件**（引擎注册表 63 个 ID 里，`layout-*` 有 22 个既没验过、也没标「等上游」）补齐成整族 **38 个名字 × 2 种写法 = 76 组**真实实测，**悬空 22 → 0**；终稿对照表给出汇总数字 **组件总数 63 / 两条路径均通过 25 / 等上游 38 / 悬空 0**，并按「真实稿件证过（13 个 ID）/ 最小样例真浏览器（50 个 ID）/ 仅 jsdom（**0**）」三个层级分开计数；9 条「等上游」逐条给出**只改写法、不改判据**的替代方案，**10 条全部在两条路径上通过**（后端 ok 10 / 编辑器 pass 10 / fail 0）；回归全部重跑刷新——**303 例 0 失败（2:48）**、`webui` ✓434ms、79 样例 pass 70 / na 9 / fail 0、17 组合编辑器 17/17 pass，见 3.14**；**2026-09-13 第十一轮「缺口钉死 + 独立交叉验证」——把第九/十轮那处「技能文案未落库」缺口补上**源码侧自动化证据**（新增 `SkillSeederMarkflowContentTest` 5 例，**不连库**，钉住 `layout-*` 全族 / `case-flow` 行首 `-` / `:::hint` 只有容器写法三段与「38 名字 / 76 组 / 五种写法」三个数字；顺带更正源码文案里 16→38、32→76、四种→五种、hint 透传形态四处与实测不符的表述），并在 §八 第 7 条给出**只读**的「源码 ↔ 库中内容」复验片段（SQL 五个 `LOCATE` + `CHAR_LENGTH`，预期 `db_len=6649`、五个 `LOCATE > 0`）与 `POST /api/skills/preview` 的 curl；**判定该缺口不阻塞验收**（依据：系统提示确实取 `SKILL.CONTENT`，但受影响的写法在上游本就不支持，改文案只影响模型选型、不影响渲染能力；且保存侧自检已生效、44 篇真实稿件禁写命中全 0），优先级由 P0 下调为 P1。对「等上游 38 个 `layout-*`」做**独立通道**交叉验证（裸响应体 / 引擎包静态结构 / 服务端 guide 三条互相独立，9 个 ID × 2 写法 = 18 组**全部确认、0 存疑**，另有 3 个已知支持写法作对照组、0 误判；38 个 ID 的出处与复现步骤已写清），并给表 B 的 40 条非注册语法定性（编辑器侧 35 pass / 5 na / **0 fail**，无需按「组件」验收）。回归 **308 例 0 失败（3:10）**、`webui` ✓407ms，见 3.15**；**2026-09-13 第十二轮「终稿落地 + 证据可复现」——不加新判据，只做两件收尾：① 产出**面向用户**的终稿 `docs/render-acceptance-report.md`（一句话结论「**能验收**」、63 / 25 / 38 / 悬空 0、公式与轮播逐项证据、已知局限、需用户做的唯一动作是重启一次应用）与**面向工程**的复现手册 `docs/dev/render-verification.md`（7 项前置条件 + 10 行套件总览 + 逐条可复制命令 + 预期数字 + `target/probe/` 会丢文件清单与归档建议 + 9 条已知坑 + 5 条局限）；② 把整条生成链**当轮从头重跑**（后端产物重打 → 探针 dist 重编 → 5 个浏览器套件 → 5 个汇总脚本与终稿表 → 独立交叉验证），**逐条判定与第十一轮完全一致、无上游漂移**（79 样例 70/9/0、17 组合 上游 8/8/1 + 编辑器 17/17、10 替代写法 10/10、76 组 `layout-*` 76 not-rendered / 76 na、终稿表 63/13/50/38/25/25/悬空 0、交叉验证 18/18）。回归 **308 例 0 失败（2:45）**、`webui` ✓405ms；**计时口径专项核对**（全部 `N:NN` 逐一与各自日志对齐，无跨轮混用）与**一致性核对六项全过**（63 / 38 / 25 / 悬空 0 / 测试 308 / `SKILL` 库内仍 5635 字符），见 3.16**；**2026-09-13 第十三轮「拿自己写的复现手册当新人演练」——用全新 shell、不带既有环境变量，逐字照抄第十二轮那份手册跑一遍：**探针与汇总命令 21/21 可直接复制执行、预期数字逐条相符**（79 样例 70/9/0、17 组合 8/8/1 + 17 pass、10 替代写法 10/10、76 组 76 not-rendered / 76 na、终稿表 63/13/50/38/25/25/0、交叉验证 18/18/0/0、覆盖 44 篇 39/31、截图 79/17/10/76/14）；同时用 `git clone` 造了个真干净副本做反证——**clone 场景 10 类探针套件一条都跑不了**（`git ls-files target/probe` = 0 个文件；无 `.env` 导致 205 例里 44 个 Error；无 `node_modules`；且 HEAD 的测试类 36 vs 工作树 45，手册与终稿报告本身今天也 clone 不到），这条「手册目前只对拿到完整工作树的人成立」已写进手册**第零节**并给出「需先补齐」四步清单（只写建议、未搬文件）；本轮修掉 **5 条文档缺陷**（重定向目录不存在 / 缺 `.env` 前置条件 / `PYTHONIOENCODING` 表述与实测不符 / 缺 `npm ci` / 串行命令易被并行），并对**稿件 43 公式 / 44 轮播**做了两条路径各自独立的端到端演练（后端 HTTP 200 + 产物 10266 / 1437 字符；编辑器 `.katex` 5 个高度 [22,22,22,45,53]、`<svg>` 600×200 + 动画 1 + foreignObject 3 + 图 3/3）；终稿报告按「非工程师可读」逐条检查并改写 4 处（去掉裸缺陷编号、解释 jsdom/渲染盒/viewBox 等术语、补后端路径数字、给「能验收」加边界）。回归 **308 例 0 失败（2:46）**、`webui` ✓386ms，见 3.17**
-- 续（2026-09-13 晚 ~ 2026-09-14）：**第十四 ~ 三十四轮**。探针脚本与基准入库（3.18）、干净 clone 复现演练与
+- 续（2026-09-13 晚 ~ 2026-09-14）：**第十四 ~ 三十五轮**。探针脚本与基准入库（3.18）、干净 clone 复现演练与
   重启用例复现性（3.19）、用户逐条标注的 11 条渲染缺陷归属判定并逐条修复（3.20、3.23）、
   真实应用界面终验（3.22）、把验收拉回用户自己那篇 #38（3.24、3.26）、段首空白定点修复与制表符等宽展开（3.27、3.28）、
   往返稳定性与列宽两道**带退出码的常规回归闸**（3.29）、全库 21 条验收断言的分类与反例自检（3.30）、
-  九步链退出码补齐与脚本入库（3.31、3.33）、**第三十四轮表格修法**（3.35）。
+  九步链退出码补齐与脚本入库（3.31、3.33）、**第三十四轮表格修法**（3.35）、
+  **第三十五轮用户七条指令一次收口 + 粘贴路段首空白修法 + 累积改动提交推送**（3.36）。
   结论页仍是 `docs/render-acceptance-report.md`，复现手册是 `docs/dev/render-verification.md`。
-- 适用代码：基线 commit `5f88ca5`；其上又有 `f27380c`、`520938e`、`b6d5975` 三个提交。
+- 适用代码：基线 commit `5f88ca5`；其上又有 `f27380c`、`520938e`、`b6d5975`、**`b591c40`**（2026-09-14 第三十五轮）四个提交。
   ⚠️ **`f27380c` 里那句「`5f88ca5` 已推送 `huanyu-a main`」与现状不符**：远端叫 **`huanyu`**
-  （`https://github.com/huanyu-a/wechat-article-bot.git`），且本地 `main` 相对跟踪引用 `huanyu/main`
-  **ahead 2**（`520938e`、`b6d5975` 未推；本轮未 fetch，远端实际状态未核）。
-- **本轮（第三十四轮）及此前的多轮改动仍在工作树中（未提交）**：产品代码
-  `webui/src/editorExtensions.js` / `style.css` / `views/ArticleEditorView.vue`（合计 **+321 / −14**）；
-  探针脚本 `tools/render-verify/**`（已跟踪 17 个改动 + **41 个未跟踪**，含 `run-suite.sh`、
-  `round29_gate_audit.mjs`、`summarize-r16.mjs` 等被结论反复引用的几支）；四份文档。
-  `git status --porcelain` 实测 **65 行** = 已跟踪 **24** + 未跟踪 **41**。
-  **要不要提交、推不推，等用户一句话**（见 §3.27③ A 表第 1 行与 §3.35⑥）。
+  （`https://github.com/huanyu-a/wechat-article-bot.git`）。
+  **`b591c40` 已推送到 `huanyu/main`**（`f27380c..b591c40`，EXIT=0），推送后
+  `git rev-list --left-right --count huanyu/main...main` = **`0 0`**、`git status --porcelain` = **0 行**。
+- **工作树状态（2026-09-14 第三十五轮起）：干净。** 第三十五轮之前的累积改动（第十五 ~ 三十四轮）
+  已一次性提交并推送（`b591c40`，66 个文件；产品代码 `webui/src/editorExtensions.js` /
+  `style.css` / `views/ArticleEditorView.vue` 合计 **+346 / −14**，另有探针脚本与四份文档）。
+  该提交的门禁与安全扫描逐条见 §3.36⑦。**当前没有待提交的改动。**
 - 一句话：**已修的缺陷不再需要重查（第二节给了索引与证据）；真正还欠的原本是第三节那 13 项——3 项卡在上游（agent4j / 网关）、10 项本仓库缺口。2026-09-11 本轮已把 10 项本地缺口（I1–I10）全部落地（见 3.2 各条的「已修复」），并在同日晚的第二批里补掉了 run#46 触顶事故、MarkFlow 精排版式保真与主题色留存；2026-09-12 凌晨定位并修复了「精排没复刻」的最后一环（F4：MARKFLOW 任务复用着指令式排版的工具说明，模型据此把模板 HTML 当 Markdown 源文提交），仅剩 U1–U3 需对外提诉求、I7 受本机网络阻塞。**自动化链路已活体跑通**：修复后 PIPELINE（run#63，task#2「每日科技早报」）一次跑完全部四阶段、`degradations:0`、文章 17 正常落库且是真精排。
 
 ## 〇、怎么读这份文档
@@ -2710,10 +2710,25 @@ FROM SKILL WHERE ID = 4;
 | ③ | `webui/node_modules` | clone 里没有；需 `npm ci`（用仓库自带 lockfile） | 构建与所有浏览器套件 |
 | ④ | **尚未提交的工作树改动** | clone（HEAD `f27380c`）测试类 **36** 个 vs 工作树 **45** 个；`ToolCallBudget` / `SkillBindingValidator` / `LlmLease` / `SkillSeederMarkflowContentTest` / `ScheduledArticleToolsDraftTests` / `ArticleLocalAssetUrlTests` 在 HEAD 上**都不存在** | **一切**——连手册与终稿报告本身今天也 clone 不到（都是未跟踪文件） |
 
+> **③ 与 ④ 的状态更新（2026-09-14 第三十五轮）**：③ 是「clone 里要 `npm ci`」，属于正常前置，不算缺口。
+> **④ 已经关掉**：探针脚本与文档在第十四轮搬进 `tools/render-verify/`，产品代码与其余改动在第三十五轮
+> 一次性提交并推送（**`b591c40` → `huanyu/main`**，`git rev-list --left-right --count huanyu/main...main` = `0 0`）。
+> **但「干净 clone 一条命令跑到底」仍然不成立**——第三十一轮已查明并如实记在
+> `docs/dev/render-verification.md` §3.14：`run-suite.sh` 的起点是探针 dist 重建，
+> **不含 `gen/` 那几支出网的生成器**，所以 `target/probe/components/*` 与 `component_matrix.json`
+> 必须先按手册 §3.2 / §3.4 打出来。**这条缺口没有因为提交而消失。**
+
 ⇒ **诚实结论**：手册的「照本文能独立重跑」这条标准，**目前只对「拿到完整工作树的人」成立**；
 对「只 clone 了仓库的人」**不成立**。这不是可以含糊过去的事，已写进手册**第零节**（放在最前面，
 而不是藏在末尾），并给出「需先补齐」的四步清单与「脚本入库、产物截图不入库」的建议
 （**本轮仍按要求只写建议、未搬动或新增任何脚本**）。
+
+> **第三十五轮更新（2026-09-14）**：上面「四步清单」里的 **①（脚本与输入清单）已在第十四轮落地**
+> （搬进 `tools/render-verify/`）、**④（工作树改动）已在第三十五轮落地**（提交并推送 `b591c40`）；
+> ②（`.env`）与 ③（`npm ci`）本来就是 clone 后的正常前置，不算缺口。
+> **但结论本身没有翻转**——「干净 clone 一条命令跑到底」仍不成立，因为 `run-suite.sh` 的起点是探针 dist 重建、
+> **不含 `gen/` 那几支出网的生成器**，`target/probe/components/*` 与 `component_matrix.json` 必须先手工打出来。
+> 这也是第三十一轮复查后如实记在 `docs/dev/render-verification.md` §3.14 的那一条。
 
 #### ② 完整工作树上的照抄演练：21/21，预期数字逐条相符
 
@@ -3730,6 +3745,11 @@ node tools/render-verify/browser/r16-live-editor.mjs 38 --width-match  # 对照�
   > **产品代码相对上一轮没有新增改动**（本轮一行都没改，见 §3.26④）。
 - **`pom.xml` 未被改动**；没有新增依赖；没有删除任何文件。
 - **需要您一句话**：提交 / 先不提交。
+  > **✅ 已由用户本人关掉（2026-09-14 第三十五轮）**：用户原话「1，提交并推送」。
+  > 已于 2026-09-14 18:12 执行：`b591c40` 提交、推送到 `huanyu/main`，推送后
+  > `git rev-list --left-right --count huanyu/main...main` = **`0 0`**、`git status --porcelain` = **0 行**。
+  > 本节上面那串「36 行 / +2220 −39」是第二十五轮的实况，**保留原文不改写**；第三十五轮提交时的实况是
+  > **66 个文件（24 个已跟踪 +5294 / −55，42 个新增探针脚本）**，见 §3.36⑦。
 
 #### ② 您当时那条 `:::infographic` 到底是怎么写的
 
@@ -3905,6 +3925,9 @@ node tools/render-verify/browser/r16-live-editor.mjs 38 --width-match  # 对照�
 
 `§3.25` 的三件事（工作树是否提交 / `:::infographic` 当时的具体写法 / 重启后前端可能仍是旧包）**状态不变**，
 仍等您一句话。其中 ① 的现状数字已按当前工作树更新（见 §3.25①）。
+> **2026-09-14 第三十五轮补记**：① **已由用户关掉**（「1，提交并推送」，已执行，见 §3.25①）。
+> ② **本轮又实测了一次，仍然复现不出**（用户第二次给出带空行的写法，真实渲染 API 上完全正常，
+> 见 §3.36③）。③ **仍开着**——本轮是靠手工重建前端 + 重启绕过的，构建结构没有动。
 
 #### ⑥ 本轮新增的可复跑脚本（都在受版本控制的 `tools/render-verify/` 下）
 
@@ -5637,7 +5660,20 @@ export const PastedLeadingWhitespace = Extension.create({
 - **推送目标**：远端叫 **`huanyu`**（`https://github.com/huanyu-a/wechat-article-bot.git`）。
   ⚠️ 本文档 §1 那句「`5f88ca5` 已推送 `huanyu-a main`」里的名字写错了——
   `huanyu-a` 是 **GitHub 账号名**，**远端名是 `huanyu`**（`f27380c` 里的原话就是这么写的，本处更正）。
-  推送前本地 `main` 相对 `huanyu/main` **ahead 2**（`520938e`、`b6d5975`），推送后应变成 **ahead 0**（实测见提交后的 `git status -sb`）。
+  推送前本地 `main` 相对 `huanyu/main` **ahead 2**（`520938e`、`b6d5975`）。
+- **已执行（2026-09-14 18:12）**：
+  - `git add -A` → **66 个文件入暂存区**（`66 files changed, 15964 insertions(+), 55 deletions(-)`）；
+    ⚠️ `15964` 这个总数里**绝大部分是 42 支新增探针脚本自身的内容**，与上面「已跟踪 24 个文件 +5294 / −55」的口径不是同一件事。
+  - `git commit` → **`b591c40`**（`fix(render): 编辑器保真三项（段首空白·产物表列宽·合成段样式）+ 粘贴路修法；验收闸补退出码与自检`）。
+  - `git push huanyu main` → `f27380c..b591c40  main -> main`，**EXIT=0**。
+  - 推送后实测：`git rev-list --left-right --count huanyu/main...main` = **`0 0`**（不领先、不落后）；
+    `git status --porcelain` = **0 行**（工作树干净）。
+- **提交前门禁（本轮现跑，不是引用旧数字）**：
+  - `./.mvn/mvn-local.sh -o test` → **Tests run: 308, Failures: 0, Errors: 0, Skipped: 0 · BUILD SUCCESS**（4:16）。
+  - `(cd webui && npm run build)` → **✓ 408ms**，`ArticleEditorView-CGOKQBSD.js` 545.20 kB（仅既有的 >500 kB 体积警告）。
+  - `bash tools/render-verify/browser/r35-paste-fix-audit.mjs` → **EXIT=0**（复跑一次确认，见 §3.36⑤）。
+- **提交后仍有未提交内容吗**：只有一处**文档补记**（`docs/render-acceptance-report.md` 里
+  「修复目前只在工作树里，尚未提交」这句按推送结果改写），随后单独补一个 docs 提交。
 
 
 ---
@@ -5715,7 +5751,9 @@ export const PastedLeadingWhitespace = Extension.create({
 > 保留原文不动；当前状态看下面这条。**
 
 - **2026-09-14 第十五 ~ 三十四轮的全部改动**：`b6d5975`（第十四轮文档）之上的工作树改动，
-  已由**第三十五轮**按用户「1，提交并推送」一次性提交并推送。逐条见 §3.36⑦。
+  已由**第三十五轮**按用户「1，提交并推送」一次性提交并推送：
+  **`b591c40`**（`f27380c..b591c40 main -> main`）→ 推送后 `huanyu/main...main` = **`0 0`**、`git status --porcelain` = **0 行**。
+  逐条见 §3.36⑦。
 - **上一轮已提交并推送**：commit `5f88ca5`（2026-09-11），推送到 `huanyu-a/wechat-article-bot` 的 `main`。该提交含 63 个文件（22 新增 / 41 修改）——除四期修复外，也把此前多轮未提交的改动（ToolCallArgumentGuard、StaleRunPolicy/Reaper、DelegateTools 整轮预算、articles/agents 资源可往返等）一并纳入，因为它们是同一批未提交的工作树状态。
 - **本轮（I1–I10 修复 + 第二批 F1–F5 + F7 + F8）尚未提交**：改动仍在工作树中（未 `git commit`、未 push）。新增主类 `common/LlmLease`、`common/LlmLeaseMapper`、`skill/SkillBindingValidator`、`schedule/ToolCallBudget`；修改 `common/InFlightGate`、`schedule/TaskExecutionService`（**F5/F7 的运行终态**）、`schedule/TaskRun`、`schedule/TaskRunMapper`、`schedule/StaleRunPolicy`、`schedule/CoordinatorExecutor`、`schedule/PipelineExecutor`、`schedule/AgentInvoker`（**F5 的收尾工具宽限与可执行超限提示、F8 的 `deliverableSubmitted` 判据**）、`schedule/TaskWorkspace`（**F7 的 `stages_summary.renderWarnings`**）、`ai/ArticleAiService`、`ai/SafeWebService`、`ai/ArticleMediaTools`、`ai/DelegateTools`（**F8 的 24→36 / 120→200 常量同步**）、`ai/ScheduledArticleTools`（**F4 的 `SaveMarkflowDraftTool`/`SaveMarkflowDraftParam`、F7 的 `markflowSyntaxHints`/`renderWarnings`、F8 的 `<timeline>` 提示**）、`agent/AgentProtocols`（预算提示）、`skill/MarkFlowRenderService`（**F7 的 `detectLeakedSyntax`/`parseWarnings`/`RenderResult.warnings`、F8 的 `detectDroppedBlocks` 判据校准**）、`article/ArticleService`（**F8 的重渲染降级写进版本说明**）、`article/ArticleMapper`（主题两列）、`article/ArticleController`、`article/ArticleContentPolicy`、`webui/src/editorExtensions.js`、`webui/.../ArticleEditorView.vue`、`resources/application.yaml`（**F8 的 `tool-calls` 四个值**）。
 - 新增/扩充测试：`common/LlmLeaseMapperIntegrationTests`、`skill/SkillBindingValidatorTest`、`schedule/ToolCallBudgetTest`（7 例）、`schedule/AgentInvokerTest`（14 例）、`schedule/PipelineExecutorTest`（15 例）、`ai/ScheduledArticleToolsDraftTests`（**当前 22 例**）、`skill/MarkFlowRenderServiceTest`（**当前 18 例**）、`schedule/TaskRunCompletionTest`（8 例）、`article/ArticleRerenderTests`（13 例）、`article/MarkFlowArticleLayoutPersistenceTests`（8 例）、`ai/BrowseWebpageToolTests`，并扩充 `common/InFlightGateTest`、`schedule/StaleRunPolicyTest`、`StaleRunRecoveryIntegrationTests`、`ai/DelegateToolsTest`、`schedule/TaskWorkspaceTest`。

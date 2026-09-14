@@ -393,6 +393,11 @@ docker exec momo-mysql-dev mysql -uroot -pchange-me --default-character-set=utf8
 > `target/probe/` 里 `git ls-files` 实测 **0 个文件**，clone 场景**必然复现不了全部 10 类探针套件**；
 > 且当时这些改动**尚未提交**（clone 的 HEAD 早于第五～十三轮，测试类文件 36 vs 45）。
 > **第十四轮已把这条事实消掉**——脚本与输入清单入库到 `tools/render-verify/`，见 §3.10。
+> **第三十五轮（2026-09-14）把「尚未提交」这半句也消掉**：累积改动已一次性提交并推送
+> （`b591c40` → `huanyu/main`，推送后 `huanyu/main...main` = `0 0`）。
+> ⚠️ 但**「干净 clone 一条命令跑到底」仍不成立**：`run-suite.sh` 的起点是探针 dist 重建，
+> **不含 `gen/` 那几支出网的生成器**，`target/probe/components/*` 与 `component_matrix.json` 必须先手工打，
+> 见 §3.14。
 
 ### 3.10 第十四轮「探针入库 + 活体前端取证」的结果
 
@@ -963,7 +968,9 @@ node tools/render-verify/browser/r35-paste-fix-audit.mjs      # 退出码 0 = �
 > （`editorExtensions.js` 的 `PastedLeadingWhitespace`）。**判据与量法见本手册 U19**。
 > 部署这一步**必须自己做**：改完前端跑
 > `cd webui && npm run build -- --outDir ../target/classes/static --emptyOutDir`，再重启应用；
-> 否则 8081 发的还是旧 chunk（第三十五轮实测：不部署时是 `ArticleEditorView-CGjhQ8ZC.js`）。
+> 否则 8081 发的还是旧 chunk（第三十五轮实测：不部署时是 `ArticleEditorView-CGjhQ8ZC.js`，
+> 部署后是 `ArticleEditorView-CGOKQBSD.js`）。
+> 该修法连同第十五 ~ 三十四轮的累积改动已于 2026-09-14 提交并推送（`b591c40` → `huanyu/main`）。
 
 **本轮实测（2026-09-13，Chrome/138.0.7204.100，视口 1600×1200，图片 2/2）**：
 
