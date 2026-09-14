@@ -12,19 +12,37 @@
  * 用法：
  *     (cd webui && npx vite build --config ../tools/render-verify/browser/vite.config.mjs)
  *     node tools/render-verify/browser/run-set-browser.mjs alt
+ *     node tools/render-verify/browser/run-set-browser.mjs alt --selftest   # 闸自检，不开浏览器、不写产物
  * 产物：target/probe/browser/alt_result.json、shots/alt/<id>.png
+ *
+ * 退出码（**第二十九轮 E1 补**，此前这一支没有退出码——`4/9`、`5/9` 的 `EXIT=0` 与「用例都收到了」无关）：
+ *   0 = 失败项 0；1 = 条数与该集合的用例数不符、有截图没截到、有图没加载出来。
+ *   判据见 `gates.mjs` 的 `收集器判据`；判定口径一个字节没动，补的只是退出码。
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { OUT, BROWSER_OUT, PROBE_DIST } from '../paths.mjs'
 import { createServer } from 'node:http'
 import { resolve, join, extname } from 'node:path'
 import { launchBrowser, openPage } from './cdp.mjs'
+import { 判据, 收集器判据, 收集器自检 } from '../gates.mjs'
 
+const ARGS = process.argv.slice(2)
 const PROBE = OUT
-const SET = process.argv[2] || 'alt'
+// 取集合名时要把 `--selftest` 之类混在参数里的东西滤掉（与 `summarize-alt.mjs` 同款写法）
+const SET = ARGS.find((item) => item === 'alt' || item === 'registry') || 'alt'
 const SETDIR = resolve(PROBE, SET)
 const DIST = PROBE_DIST
 const SHOTS = resolve(BROWSER_OUT, 'shots/' + SET)
+
+if (ARGS.includes('--selftest')) {
+  const 清单 = JSON.parse(readFileSync(join(SETDIR, SET + '.json'), 'utf8'))
+  const 存档 = resolve(BROWSER_OUT, SET + '_result.json')
+  const 已跑 = existsSync(存档) ? JSON.parse(readFileSync(存档, 'utf8')) : null
+  process.exitCode = 收集器自检('4/9 5/9 run-set-browser ' + SET, '用例', 清单.cases.length, 已跑
+    ? { 条数: 已跑.samples.length, 截图失败: 已跑.shotFailures,
+        图片失败: 已跑.page.images.failed, 图片总数: 已跑.page.images.total }
+    : { 条数: 清单.cases.length, 截图失败: 0, 图片失败: 0, 图片总数: 0 })
+} else {
 
 const meta = JSON.parse(readFileSync(join(SETDIR, SET + '.json'), 'utf8'))
 const payload = meta.cases.map((item) => {
@@ -40,6 +58,8 @@ const payload = meta.cases.map((item) => {
   }
 })
 console.log('用例数:', payload.length)
+
+const 判 = 收集器判据(meta.cases.length, '用例')
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' }
 const server = createServer((request, response) => {
@@ -87,6 +107,7 @@ const imageState = await page.evaluate(`(async () => {
   })
 })()`)
 console.log('图片:', imageState)
+const 图片 = JSON.parse(imageState)
 await new Promise((done) => setTimeout(done, 800))
 
 let shotFailures = 0
@@ -136,3 +157,9 @@ await page.close()
 close()
 server.close()
 console.log('\n结果:', resolve(BROWSER_OUT, SET + '_result.json'))
+
+process.exitCode = 判据('run-set-browser ' + SET + '（' + meta.cases.length + ' 用例 · 截图失败 '
+  + shotFailures + ' · 图片失败 ' + 图片.failed + '）', 判, {
+  条数: results.length, 截图失败: shotFailures, 图片失败: 图片.failed, 图片总数: 图片.total,
+}) ? 1 : 0
+}

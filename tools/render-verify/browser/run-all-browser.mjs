@@ -12,18 +12,37 @@
  * 用法：
  *     (cd webui && npx vite build --config ../tools/render-verify/browser/vite.config.mjs)
  *     node tools/render-verify/browser/run-all-browser.mjs
+ *     node tools/render-verify/browser/run-all-browser.mjs --selftest   # 闸自检，不开浏览器、不写产物
  * 产物：target/probe/browser/all_result.json、shots/all/<id>.png
+ *
+ * 退出码（**第二十九轮 E1 补**，此前这一支没有退出码——`2/9 EXIT=0` 与「79 条都收到了」无关）：
+ *   0 = 失败项 0；1 = 条数不是 79、有截图没截到、有图没加载出来。判据见 `gates.mjs` 的 `收集器判据`。
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { OUT, BROWSER_OUT, PROBE_DIST } from '../paths.mjs'
 import { createServer } from 'node:http'
 import { resolve, join, extname } from 'node:path'
 import { launchBrowser, openPage } from './cdp.mjs'
+import { 判据, 收集器判据, 收集器自检 } from '../gates.mjs'
+
+const ARGS = process.argv.slice(2)
 
 const PROBE = OUT
 const COMPONENTS = resolve(PROBE, 'components')
 const DIST = PROBE_DIST
 const SHOTS = resolve(BROWSER_OUT, 'shots/all')
+
+if (ARGS.includes('--selftest')) {
+  // 自检不需要探针 dist，也不开浏览器：只读样例清单（应有条数）+ 上一轮的产物（好输入）。
+  const 清单 = JSON.parse(readFileSync(resolve(PROBE, 'component_matrix.json'), 'utf8'))
+  const 应有 = (清单.rows || 清单).length
+  const 存档 = resolve(BROWSER_OUT, 'all_result.json')
+  const 已跑 = existsSync(存档) ? JSON.parse(readFileSync(存档, 'utf8')) : null
+  process.exitCode = 收集器自检('2/9 run-all-browser', '样例', 应有, 已跑
+    ? { 条数: 已跑.samples.length, 截图失败: 已跑.shotFailures,
+        图片失败: 已跑.page.images.failed, 图片总数: 已跑.page.images.total }
+    : { 条数: 应有, 截图失败: 0, 图片失败: 0, 图片总数: 0 })
+} else {
 
 if (!existsSync(DIST)) throw new Error('dist 不存在，先跑 vite build')
 if (!existsSync(join(DIST, 'probe_all.html'))) throw new Error('dist/probe_all.html 不存在，vite 入口没配全')
@@ -39,6 +58,8 @@ const payload = rows.map((row) => ({
   html: readFileSync(join(COMPONENTS, row.id + '.html'), 'utf8'),
 }))
 console.log('样例数:', payload.length)
+
+const 判 = 收集器判据(rows.length, '样例')
 
 // ---------- 1. 静态服务 ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' }
@@ -114,6 +135,7 @@ const imageState = await page.evaluate(`(async () => {
   })
 })()`)
 console.log('图片等待结果:', imageState)
+const 图片 = JSON.parse(imageState)
 await new Promise((done) => setTimeout(done, 800))
 
 // ---------- 3. 逐行截图（裁到那一行，左右两栏同框） ----------
@@ -178,3 +200,10 @@ await page.close()
 close()
 server.close()
 console.log('\n结果:', resolve(BROWSER_OUT, 'all_result.json'))
+
+process.exitCode = 判据('2/9 run-all-browser（全量 ' + rows.length + ' 样例 · 截图失败 ' + shotFailures
+  + ' · 图片失败 ' + 图片.failed + '）', 判, {
+  条数: results.length, 截图失败: shotFailures,
+  图片失败: 图片.failed, 图片总数: 图片.total,
+}) ? 1 : 0
+}

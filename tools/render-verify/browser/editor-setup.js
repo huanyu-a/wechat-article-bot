@@ -28,12 +28,13 @@ export function extensionSet(variant) {
     m.FigureCaption, m.Figure,
     Image.configure({ inline: false, allowBase64: false }),
     Link.configure({ openOnClick: false }),
-    TableKit.configure({ table: { resizable: true } }),
+    TableKit.configure({ table: { resizable: true, ...(m.PreservedTableView ? { View: m.PreservedTableView } : {}) } }),
     TextStyle, Color, BackgroundColor, FontSize, LineHeight, m.ParagraphStyle,
     TextAlign.configure({ types: ['heading', 'paragraph', 'blockquote', 'styledSection', 'styledDiv', 'styledInlineDiv', 'figure', 'figureCaption'] }),
     m.PreservedInlineStyle, m.PreservedMarkStyle,
     ...optional(m, 'PreservedClass'), ...optional(m, 'Subscript'), ...optional(m, 'Superscript'),
     m.PreservedTableStyle, m.PreservedRenderId,
+    ...optional(m, 'SyntheticBlockStyle'),
   ]
 }
 

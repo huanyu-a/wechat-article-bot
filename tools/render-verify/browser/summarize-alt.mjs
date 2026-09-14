@@ -11,14 +11,25 @@
  *     再判 `pass`（文字逐字一致 + 结构特征一个不少 + 有非零盒子 + 颜色还在）/ `fail`。
  *
  * 用法：node tools/render-verify/browser/summarize-alt.mjs [alt|registry]
+ *       node tools/render-verify/browser/summarize-alt.mjs [alt|registry] --selftest
  * 产物：target/probe/browser/<SET>_summary.md、<SET>_summary.json
+ *
+ * 退出码（**第二十九轮 E1 补**，此前这一支没有退出码——`9c/9d EXIT=0` 与 pass 数无关）：
+ *   0 = 失败项 0；1 = **编辑器层**有 `fail`（逐条打印是哪一例、为什么）。
+ *   ⚠️ **后端层的 `not-rendered` 不计入失败项**：注册表全族 76 组后端全是 not-rendered，
+ *      那是「这一族在渲染服务里只有注册条目、没有语法分支」这一已确立的结论，
+ *      把它算成本项目的红灯，等于让这道闸永远红着。本支要验收的是编辑器层。
+ *   ⚠️ 编辑器层的 `na`（参照侧本身就是坏产物）同样不算失败——没有可判的对象。
+ *   ⚠️ 判定口径一个字节没动，补的只是退出码。
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { OUT, BROWSER_OUT } from '../paths.mjs'
 import { resolve } from 'node:path'
+import { 判据, 自检, 失败, 克隆 } from '../gates.mjs'
 
 const PROBE = OUT
-const SET = process.argv[2] || 'alt'
+const ARGS = process.argv.slice(2)
+const SET = ARGS.find((item) => item === 'alt' || item === 'registry') || 'alt'
 const raw = JSON.parse(readFileSync(resolve(BROWSER_OUT, SET + '_result.json'), 'utf8'))
 const meta = JSON.parse(readFileSync(resolve(PROBE, SET, SET + '.json'), 'utf8'))
 const caseById = new Map(meta.cases.map((item) => [item.id, item]))
@@ -111,6 +122,44 @@ for (const sample of raw.samples) {
 const backendCounts = rows.reduce((acc, row) => { acc[row.backend.verdict] = (acc[row.backend.verdict] || 0) + 1; return acc }, {})
 const editorCounts = rows.reduce((acc, row) => { acc[row.editor.verdict] = (acc[row.editor.verdict] || 0) + 1; return acc }, {})
 
+// ===========================================================================
+// 9c / 9d 的**判据**（纯函数；主流程与 `--selftest` 共用）。
+// 与 9b 同口径：只看**编辑器层**的 `fail`。理由见文件头的退出码说明。
+//
+// ⚠️ **分母锚**（第三十二轮加）：应有条数不取 `rows.length`（那是从 `<SET>_result.json` 来的），
+// 而是取**另一份产物** `<SET>/<SET>.json` 的 `cases`（由 `gen/round10_alternatives.py` /
+// `gen/round10_registry_closure.py` 写的用例清单）——两个脚本各写一份，数对不上就红。
+// 空表是这一条的特例（0 ≠ 应有）。
+// ===========================================================================
+const 应用例数 = meta.cases.length
+
+const 判 = ({ rows: 表, 应有 }) => {
+  const 清单 = 表.filter((row) => row.editor.verdict === 'fail')
+    .map((row) => 失败('fail ' + row.id, row.editor.reason))
+  if (表.length !== 应有) 清单.push(失败('用例数', 表.length + ' 条，应为 ' + 应有 + ' 条'
+    + '——与 `' + SET + '/' + SET + '.json` 的用例清单对不上（分母变小/变大，'
+    + '编辑器层的 pass / na / fail 分布也一起失真）。0 条是这一条的特例'))
+  return 清单
+}
+
+if (ARGS.includes('--selftest')) {
+  const 坏 = 克隆(rows)
+  坏[0].editor.verdict = 'fail'
+  坏[0].editor.reason = '（自检造）编辑器侧颜色丢失（期望 rgb(255, 0, 0)）'
+  const 坏后端 = 克隆(rows)
+  坏后端.forEach((row) => { row.backend.verdict = 'not-rendered' })   // 后端全没渲染：**不该**算本项目红灯
+  process.exitCode = 自检('9' + (SET === 'alt' ? 'c' : 'd') + ' summarize-alt ' + SET, 判, [
+    { 名: '当前存档（' + rows.length + ' 例）', 数据: { rows, 应有: 应用例数 }, 期望: 0,
+      备注: '编辑器 pass ' + (editorCounts.pass || 0) + ' / na ' + (editorCounts.na || 0) + ' / fail ' + (editorCounts.fail || 0) },
+    { 名: '把第 1 例的编辑器层改成 fail', 数据: { rows: 坏, 应有: 应用例数 }, 期望: 1, 备注: 坏[0].id },
+    { 名: '把全部例子的后端层改成 not-rendered', 数据: { rows: 坏后端, 应有: 应用例数 }, 期望: 0,
+      备注: '后端没渲染**不该**算本项目红灯（这正是判据不含后端层的原因）' },
+    { 名: '空表（退化输入）', 数据: { rows: [], 应有: 应用例数 }, 期望: 1, 备注: '空输入不许判绿' },
+    { 名: '分母变小：只留 1 例（第三十二轮加的用例）', 数据: { rows: 坏.slice(0, 1), 应有: 应用例数 }, 期望: 1,
+      备注: '1 例 vs 应有 ' + 应用例数 + ' 例' },
+  ])
+} else {
+
 const TITLES = { alt: '「等上游」9 条的替代写法', registry: '注册表 layout-* 全族（38 个名字 × 2 种写法）' }
 const lines = []
 lines.push(`# 第十轮 · ${TITLES[SET] || SET}（两条路径判定）`)
@@ -151,3 +200,7 @@ writeFileSync(resolve(BROWSER_OUT, SET + '_summary.md'), lines.join('\n'), 'utf8
 writeFileSync(resolve(BROWSER_OUT, SET + '_summary.json'), JSON.stringify({ backendCounts, editorCounts, rows }, null, 1), 'utf8')
 console.log(lines.slice(0, 30).join('\n'))
 console.log('\n后端汇总:', JSON.stringify(backendCounts), '编辑器汇总:', JSON.stringify(editorCounts))
+
+process.exitCode = 判据('9' + (SET === 'alt' ? 'c' : 'd') + ' summarize-alt ' + SET
+  + (SET === 'alt' ? '（等上游替代 10）' : '（注册表全族 76）'), 判, { rows, 应有: 应用例数 }) ? 1 : 0
+}

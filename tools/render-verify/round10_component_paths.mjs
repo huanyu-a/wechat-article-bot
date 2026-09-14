@@ -13,10 +13,22 @@
  *
  * 输出：target/probe/round10_component_paths.md / .json
  * 用法：node tools/render-verify/round10_component_paths.mjs
+ *       node tools/render-verify/round10_component_paths.mjs --selftest   # 闸自检，不写产物
+ *
+ * 退出码（**第二十九轮 E1 补**，此前这一支没有退出码——`9e EXIT=0` 与「悬空 0 个」无关）：
+ *   0 = 失败项 0；1 = 下列任一：**表 A 行数 ≠ 注册表 ID 数**、**有悬空组件**、
+ *       **样例清单与真浏览器跑出来的行数对不上**、**编辑器层有 `fail`**。
+ *   ⚠️ **上游层的数字不进判据**：本表里 `layout-*` 全族 76 组后端全是 `not-rendered`，
+ *      那是「这一族在渲染服务里只有注册条目、没有语法分支」这一已确立的结论，
+ *      与 9b/9c/9d 同口径——把它算成本项目的红灯，等于让这道闸永远红着。
+ *   ⚠️ 判定口径一个字节没动，补的只是退出码。
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { OUT, SPEC } from './paths.mjs'
+import { 判据, 自检, 失败, 克隆 } from './gates.mjs'
+
+const ARGS = process.argv.slice(2)
 
 // 除 registry 外全部读自产物目录（target/probe，gitignored）；registry 是组件全集的
 // 定义基准，读受版本控制的 spec/，这样「63 个组件」不会随本机产物漂移。
@@ -151,6 +163,72 @@ const upstreamRows = rowsA.filter((row) => row.upstream).length
 const backendOk = rowsA.filter((row) => row.backend === 'ok').length
 const editorPass = rowsA.filter((row) => row.editor === 'pass').length
 
+// 「收集完整性」这个词在这支脚本里的具体含义：**样例清单不能悄悄少人**。
+//
+// ⚠️ 这里踩过一个坑，记下来（第二十九轮 E1 的自检当场抓到）：
+//    第一版写的是「表 A 认领的样例数 + 表 B 的行数 == 样例总数」。**这是个恒真式**——
+//    表 A 认领数和表 B 都是从同一个 `matrixRows` 数出来的互补两半，删掉一条样例两边一起少，
+//    等式永远成立：自检里「删掉一个样例」那条喂进去，它照样判绿（EXIT=0）。
+//    改法是**换一个来源对账**：`matrixRows` 来自 `component_matrix.json`（样例清单），
+//    而行数拿去和 `browser/all_summary.json`（真浏览器跑完 79 条之后的判定表，另一个脚本写的另一份产物）
+//    比。两边分别来自「清单」与「实测」，少一条就对不上。
+const 汇总行数 = allSummary.rows.length
+
+// ===========================================================================
+// 9e 的**判据**（纯函数；主流程与 `--selftest` 共用）。口径见文件头的退出码说明。
+// ===========================================================================
+const 判 = ({ 注册ID数, 表A, 表B, 悬空, 样例总数, 汇总行数: 汇总行, 编辑器fail }) => {
+  const 清单 = []
+  if (表A.length !== 注册ID数) {
+    清单.push(失败('表 A 行数', 表A.length + ' 行，注册表 ' + 注册ID数 + ' 个 ID——'
+      + (表A.length < 注册ID数 ? '有 ID 没落进表' : '表里有不存在的 ID')))
+  }
+  if (悬空.length) {
+    清单.push(失败('悬空组件 ' + 悬空.length + ' 个',
+      悬空.map((row) => row.registryId).join('、') + ' —— 既没验过、也没标「等上游」'))
+  }
+  if (样例总数 !== 汇总行) {
+    清单.push(失败('样例清单与实测行数对不上',
+      'component_matrix.json ' + 样例总数 + ' 条（表 B ' + 表B.length + ' 行）'
+      + ' vs all_summary.json ' + 汇总行 + ' 行——有样例没被浏览器跑到，或有行找不到出处'))
+  }
+  if (编辑器fail.length) {
+    清单.push(失败('编辑器层 fail ' + 编辑器fail.length + ' 条', 编辑器fail.join('、')))
+  }
+  return 清单
+}
+
+const 编辑器fail = [
+  ...rowsA.filter((row) => row.editor === 'fail').map((row) => row.registryId),
+  ...rowsB.filter((row) => row.editor === 'fail').map((row) => row.sample),
+]
+
+if (ARGS.includes('--selftest')) {
+  const 少一行 = 克隆(rowsA).slice(0, rowsA.length - 1)
+  const 有悬空 = 克隆(rowsA)
+  const 悬空行 = 有悬空.find((row) => row.backend === 'ok') || 有悬空[0]
+  悬空行.backend = '—'
+  悬空行.editor = '—'
+  const 少B一行 = 克隆(rowsB).slice(0, rowsB.length - 1)
+  const 一条编辑器fail = 克隆(编辑器fail).concat(['（自检造）某个不存在的样例'])
+  const 基础 = { 注册ID数: registry.length, 表A: rowsA, 表B: rowsB, 悬空: dangling,
+    样例总数: matrixRows.length, 汇总行数, 编辑器fail }
+  process.exitCode = 自检('9e round10_component_paths', 判, [
+    { 名: '当前存档（表 A ' + rowsA.length + ' 行 / 表 B ' + rowsB.length + ' 行）',
+      数据: 基础, 期望: 0,
+      备注: '悬空 ' + dangling.length + ' 个，样例清单 ' + matrixRows.length + ' 条 = 实测 ' + 汇总行数 + ' 行' },
+    { 名: '表 A 少一行（注册 ID 没落进表）', 数据: { ...基础, 表A: 少一行 }, 期望: 1,
+      备注: 少一行.length + ' 行 vs 注册表 ' + registry.length },
+    { 名: '表 A 出现一个悬空组件', 数据: { ...基础, 悬空: 克隆(dangling).concat([悬空行]) }, 期望: 1,
+      备注: 悬空行.registryId },
+    { 名: '样例清单少一条（清单与实测对不上）',
+      数据: { ...基础, 样例总数: matrixRows.length - 1, 表B: 少B一行 }, 期望: 1,
+      备注: (matrixRows.length - 1) + ' 条 vs 实测 ' + 汇总行数 + ' 行' },
+    { 名: '编辑器层多一条 fail', 数据: { ...基础, 编辑器fail: 一条编辑器fail }, 期望: 1,
+      备注: '上游层的 not-rendered **不该**算本项目红灯（这正是判据不含上游层的原因）' },
+  ])
+} else {
+
 const lines = []
 lines.push('# 第十轮 · 组件渲染能力对照表终稿（引擎组件全集 × 两条路径）')
 lines.push('')
@@ -254,3 +332,9 @@ console.log({
   registryTotal: registry.length, tierA, tierB, upstreamRows, backendOk, editorPass,
   dangling: dangling.length, tableA: rowsA.length, tableB: rowsB.length,
 })
+
+process.exitCode = 判据('9e round10_component_paths（注册表 ' + registry.length + ' 个 ID · 悬空 0 · 样例 '
+  + matrixRows.length + ' 条 = 实测 ' + 汇总行数 + ' 行）', 判,
+  { 注册ID数: registry.length, 表A: rowsA, 表B: rowsB, 悬空: dangling, 样例总数: matrixRows.length,
+    汇总行数, 编辑器fail }) ? 1 : 0
+}

@@ -6,11 +6,22 @@
  * 把它算成「编辑器缺陷」是错的；反过来，上游画对了而编辑器丢了，才是本项目的问题。
  *
  * 用法：node tools/render-verify/browser/summarize-combos.mjs
+ *       node tools/render-verify/browser/summarize-combos.mjs --selftest   # 闸自检，不写产物
  * 产物：target/probe/browser/combo_summary.md、combo_summary.json
+ *
+ * 退出码（**第二十九轮 E1 补**，此前这一支没有退出码——`9b EXIT=0` 与 pass 数无关）：
+ *   0 = 失败项 0；1 = **编辑器层**有 `fail`（逐条打印是哪一例、为什么）。
+ *   ⚠️ **上游层的 `nested-unsupported` / `silently-lost` 不计入失败项**：那是渲染服务的行为，
+ *      本项目要验收的是「上游画对的，编辑器有没有丢」（编辑器层），
+ *      把上游的问题算成本项目的红灯，等于让这道闸永远红着、谁也看不出新问题。
+ *   ⚠️ 判定口径一个字节没动，补的只是退出码。
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { OUT, BROWSER_OUT } from '../paths.mjs'
 import { resolve } from 'node:path'
+import { 判据, 自检, 失败, 克隆 } from '../gates.mjs'
+
+const ARGS = process.argv.slice(2)
 
 const PROBE = OUT
 const raw = JSON.parse(readFileSync(resolve(BROWSER_OUT, 'combo_result.json'), 'utf8'))
@@ -113,6 +124,46 @@ for (const sample of raw.samples) {
 const upstreamCounts = rows.reduce((acc, row) => { acc[row.upstream.verdict] = (acc[row.upstream.verdict] || 0) + 1; return acc }, {})
 const editorCounts = rows.reduce((acc, row) => { acc[row.editor.verdict] = (acc[row.editor.verdict] || 0) + 1; return acc }, {})
 
+// ===========================================================================
+// 9b 的**判据**（纯函数；主流程与 `--selftest` 共用）。
+//
+// 只看**编辑器层**的 `fail` —— 理由写在文件头的退出码说明里：上游没画出来的组合不算本项目的问题。
+//
+// ⚠️ **分母锚**（第三十二轮加）：应有条数不取 `rows.length`（那是从 `combo_result.json` 来的），
+// 而是取**另一份产物** `combos/combos.json`（由 `gen/round8_combos.py` 写的用例清单）。
+// 两个脚本各写一份，数对不上就红——「分母悄悄变小但每条都 pass」在这条判据下不再是绿的。
+// 空表是这一条的特例（0 ≠ 17）。
+// ===========================================================================
+const 应用例数 = cases.length
+
+const 判 = ({ rows: 表, 应有 }) => {
+  const 清单 = 表.filter((row) => row.editor.verdict === 'fail')
+    .map((row) => 失败('fail ' + row.id, row.editor.reason))
+  if (表.length !== 应有) 清单.push(失败('用例数', 表.length + ' 条，应为 ' + 应有 + ' 条'
+    + '——与 `combos/combos.json` 的用例清单对不上（分母变小/变大，'
+    + '编辑器层的 pass / fail 分布也一起失真）。0 条是这一条的特例'))
+  return 清单
+}
+
+if (ARGS.includes('--selftest')) {
+  const 坏 = 克隆(rows)
+  坏[0].editor.verdict = 'fail'
+  坏[0].editor.reason = '（自检造）可见文字不一致：参照 500 字 / 编辑器 480 字'
+  const 坏上游 = 克隆(rows)
+  坏上游[1].upstream.verdict = 'silently-lost'   // 上游问题：**不该**被判成本项目的红灯
+  坏上游[2].upstream.verdict = 'nested-unsupported'
+  process.exitCode = 自检('9b summarize-combos', 判, [
+    { 名: '当前存档（' + rows.length + ' 例）', 数据: { rows, 应有: 应用例数 }, 期望: 0,
+      备注: '编辑器 pass ' + (editorCounts.pass || 0) + ' / fail ' + (editorCounts.fail || 0) },
+    { 名: '把第 1 例的编辑器层改成 fail', 数据: { rows: 坏, 应有: 应用例数 }, 期望: 1, 备注: 坏[0].id },
+    { 名: '把两例的上游层改成没渲染', 数据: { rows: 坏上游, 应有: 应用例数 }, 期望: 0,
+      备注: '上游问题**不该**算本项目红灯（这正是判据不含上游层的原因）' },
+    { 名: '空表（退化输入）', 数据: { rows: [], 应有: 应用例数 }, 期望: 1, 备注: '空输入不许判绿' },
+    { 名: '分母变小：只留 1 例（第三十二轮加的用例）', 数据: { rows: 坏.slice(0, 1), 应有: 应用例数 }, 期望: 1,
+      备注: '1 例 vs 应有 ' + 应用例数 + ' 例' },
+  ])
+} else {
+
 const lines = []
 lines.push('# 第八轮 · 组合用例（嵌套 / 重复 / 超长 / 混排）两级判定')
 lines.push('')
@@ -192,3 +243,6 @@ writeFileSync(resolve(BROWSER_OUT, 'combo_summary.md'), lines.join('\n'), 'utf8'
 writeFileSync(resolve(BROWSER_OUT, 'combo_summary.json'), JSON.stringify({ upstreamCounts, editorCounts, rows }, null, 1), 'utf8')
 console.log(lines.slice(0, 60).join('\n'))
 console.log('\n上游汇总:', JSON.stringify(upstreamCounts), '编辑器汇总:', JSON.stringify(editorCounts))
+
+process.exitCode = 判据('9b summarize-combos（17 组合）', 判, { rows, 应有: 应用例数 }) ? 1 : 0
+}

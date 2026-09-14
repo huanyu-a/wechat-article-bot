@@ -25,7 +25,12 @@
 
 **只调渲染 API（读）**，不落库、不改任何生产数据。
 用法：python tools/render-verify/gen/round11_crosscheck.py
+      python tools/render-verify/gen/round11_crosscheck.py --selftest   # 闸自检，不联网、不写产物
 产物：target/probe/round11_crosscheck.txt / .json
+
+退出码（**第二十九轮 E1 补**，此前这一支没有退出码——`9f EXIT=0` 与「0 存疑」无关）：
+0 = 失败项 0；1 = 抽样里出现「存疑」组，或对照组出现假阳性（即检测器本身有问题），或退化输入。
+口径见 `judge()` 的 docstring；判定逻辑一个字节没动，补的只是退出码。
 """
 import hashlib
 import json
@@ -73,6 +78,57 @@ def get_guide():
 def strip_tags(html):
     return re.sub(r'\s+', '', re.sub(r'<[^>]+>', '', html))
 
+
+def judge(summary):
+    """9f 的**判据**（纯函数；主流程与 `--selftest` 共用）。返回失败项清单。
+
+    两句话本来就是本脚本结论段里印出来的，这个函数只是把它们接到退出码上，**没有新增判据**：
+      - 「对照组 0 条误判」不成立 ⇒ 检测器有假阳性，整份结论作废；
+      - 「存疑 0 组」不成立 ⇒ 本轮的独立复核与第十轮的全量结论（76 组全 not-rendered）矛盾，
+        这正是本脚本存在的意义，必须红。
+    另加一条退化保护：0 组 / 0 对照组时判红 —— 一个在空输入上判绿的闸等于恒真式。
+    """
+    fails = []
+    if not summary['groups']:
+        fails.append('抽样 0 组——这个检测器在空输入上必须是红的')
+    if not summary['controls']:
+        fails.append('对照组 0 条——没有对照的检测器无法自证它不是「一律判未渲染」')
+    if summary['doubtful']:
+        fails.append('抽样里有 %d 组被判成「上游已渲染」，与第十轮的 76 组全量结论矛盾'
+                     % summary['doubtful'])
+    if summary['controlFalsePositives']:
+        fails.append('对照组有 %d 条被判成「上游未渲染」——检测器有假阳性，本轮结论作废'
+                     % summary['controlFalsePositives'])
+    return fails
+
+
+def selftest():
+    """`--selftest`：拿**同一把判据**跑几条已知好 / 已知坏的输入。不联网、不写产物。"""
+    cases = [
+        ('当前存档（9 ID × 2 写法 = 18 组，对照组 3 条）',
+         {'groups': 18, 'doubtful': 0, 'controls': 3, 'controlFalsePositives': 0}, 0),
+        ('抽样里混进 1 组「上游已渲染」',
+         {'groups': 18, 'doubtful': 1, 'controls': 3, 'controlFalsePositives': 0}, 1),
+        ('对照组有 1 条误判（检测器假阳性）',
+         {'groups': 18, 'doubtful': 0, 'controls': 3, 'controlFalsePositives': 1}, 1),
+        ('退化输入：0 组 / 0 对照组',
+         {'groups': 0, 'doubtful': 0, 'controls': 0, 'controlFalsePositives': 0}, 1),
+    ]
+    print('[闸自检] 9f round11_crosscheck')
+    ok = True
+    for label, data, want in cases:
+        count = len(judge(data))
+        got = 1 if count else 0
+        ok = ok and got == want
+        print('  %s：失败项 %d（期望%s） %s' % (
+            label, count, '**判红**' if want else '判绿', '[OK]' if got == want else '[!!] 闸写松了'))
+    print('-> 闸是活的：坏输入判红、好输入不误报。' if ok
+          else '-> **自检不通过**：本支的判据与上面任一条不符，必须查。')
+    return 0 if ok else 1
+
+
+if '--selftest' in sys.argv:
+    sys.exit(selftest())
 
 out = []
 out.append('# 第十一轮 · 等上游 38 个 layout-* 的独立交叉验证（9 个抽样）')
@@ -241,6 +297,11 @@ out.append('第十轮的 76 组全量结论用同一批 ID 清单（`component_r
 out.append('两轮之间清单**逐字相同**（通道 B 的 `listsMatch=true` 即此意）。')
 out.append('')
 
+# 「总结」这一份既写进 JSON、也喂给 judge()——**同一个数**，不是两处各算一遍。
+summary = {'ids': len(SAMPLE), 'groups': len(rows),
+           'upstreamNotRendered': len(confirmed), 'doubtful': len(doubtful),
+           'controls': len(control_rows), 'controlFalsePositives': len(control_bad)}
+
 open(os.path.join(OUT, 'round11_crosscheck.txt'), 'w', encoding='utf-8').write('\n'.join(out))
 open(os.path.join(OUT, 'round11_crosscheck.json'), 'w', encoding='utf-8').write(json.dumps({
     'bundle': {'sha256': bundle_sha, 'chars': len(bundle), 'quotedLayoutLiterals': len(quoted),
@@ -249,9 +310,7 @@ open(os.path.join(OUT, 'round11_crosscheck.json'), 'w', encoding='utf-8').write(
     'guide': {'http': guide_status, 'chars': len(guide), 'hits': guide_hits,
               'hitNames': guide_hit_names},
     'sample': SAMPLE, 'rows': rows, 'controls': control_rows, 'liveBundle': live_info,
-    'summary': {'ids': len(SAMPLE), 'groups': len(rows),
-                'upstreamNotRendered': len(confirmed), 'doubtful': len(doubtful),
-                'controls': len(control_rows), 'controlFalsePositives': len(control_bad)},
+    'summary': summary,
 }, ensure_ascii=False, indent=1))
 
 print('bundle sha256 =', bundle_sha[:32])
@@ -270,3 +329,12 @@ for row in control_rows:
           % (row['id'], row['htmlChars'], row['elementHits'], row['colonHits'], row['verdict']))
 print('summary: groups=%d notRendered=%d doubtful=%d controlFP=%d'
       % (len(rows), len(confirmed), len(doubtful), len(control_bad)))
+
+fails = judge(summary)
+print('--- 闸：9f round11_crosscheck（9 ID × 2 写法 = 18 组 · 存疑 0 · 对照组假阳性 0）---')
+print('失败项 %d' % len(fails))
+for item in fails:
+    print('   [!!] ' + item)
+if not fails:
+    print('   [OK] 无失败项')
+sys.exit(1 if fails else 0)

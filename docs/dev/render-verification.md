@@ -20,7 +20,8 @@
 ## 零、`git clone` 下来能跑到什么程度 —— 先读这一节
 
 第十三轮的实测方法：`git clone <本仓库> /tmp/clone`，然后**逐字照抄本文第三节的命令**。
-**那一轮结论是「一支套件都跑不了」；第十四轮把脚本入库之后，这条已经不成立。**
+**那一轮结论是「一支套件都跑不了」；第十四轮把脚本入库之后，这条已经不成立；
+第十五轮真的用干净 clone 重跑了一遍，逐条数字见 §3.11①。**
 
 | 你手上是什么 | 能复现什么 |
 | --- | --- |
@@ -87,6 +88,14 @@
 | X | 独立交叉验证 | 用**另一条通道**复核「38 个 `layout-*` 上游没实现」 | 否 | 外部渲染 API + 引擎包 | `target/probe/round11_crosscheck.txt/.json` |
 | S | 真实稿件套件 | 公式/轮播/在库稿在**真实 SPA** 里画没画出来 | **是** | 8081 + MySQL + `webui/dist` | `browser/articles_result.json`、`shots/articles/*.png` |
 | L | 活体前端套件（第十四轮新增） | 应用**实际对外提供**的那份前端画没画出来（与 S 量的是两份不同构建） | **是** | 8081 + `target/classes/static` | `browser/live_app_result.json`、`shots/live/*.png` |
+| U | 第十六轮：用户逐条标注的 11 条 | 每条语法**原样**打一次渲染 API，再灌进真实编辑器，逐条判定「渲染服务还是本项目编辑器」 | 否 | 外部渲染 API + 本机 Chrome | `target/probe/r16/*`、`browser/r16_result.json`、`shots/r16/zoom/*.png` |
+| U′ | 第二十四轮：在**用户自己的文章 #38** 上逐条复验 | 那 8 条批注的症状**现在还在不在**（同一篇文章 / 同一窗口宽度 / 改前 bundle 与改后 bundle 各跑一遍 / 与后端产物同尺子对三列） | **是**（要 8081 起着） | 8081 + 本机 Chrome | `browser/r24_article38_*_result.json`、`browser/r24_inject_*_result.json`、`shots/r24-article38/<label>/` |
+| U″ | 第二十五轮：**保存出口幂等性**（用户原话「看到的样子保存后还在不在」） | 拦下的 `PUT` 里的 `body.contentHtml` **原样**灌回，量**同一组 11 条探针**并与拦截那一刻的活 DOM 逐条对照；三条输入路径各一遍 | **是**（要 8081 起着） | 8081 + 本机 Chrome | `browser/r25_roundtrip_*_result.json`、`browser/r25_*_saveexit.html`、`browser/r25_dom_*/`、`r25_whitespace_probe.json`、`r25_preservewhitespace_trial.json` |
+| U‴ | 第二十五轮：**存量影响面**（只读） | 库里还有多少篇正文带着旧往返指纹 / 缺声明；「重新渲染存量」这条路的前置条件满足几篇 | 否 | MySQL（**全程只读**） | `browser/r25_stock_scan.json` |
+
+> U 与 M/C/A/R 的区别：M/C/A/R 的输入是**我们自己按 guide / bundle spec 造的样例**，
+> U 的输入是**用户在实际编辑器里写的原文**（原样照录，不改写）——所以它同时是「用户报障的取证套件」。
+> 判定口径与假阳性清单见 `known-issues-handoff.md` §3.20。
 
 判定的三层证据强度（术语沿用第十轮）：
 **A 级 = 真实稿件里真的写过 + 那篇在真实 SPA 里回归过**；
@@ -209,6 +218,49 @@ node tools/render-verify/browser/verify-live-app.mjs 43 44    # 活体前端（�
 
 每个脚本会起一个临时静态服务 + 无头 Chrome，逐行截图，截图本身就是断言的一部分。
 
+#### 3.4.1 探针浏览器的收尾办法（第二十九轮补进手册）
+
+**一句话：本次启动专用 `--user-data-dir` → 退出时全机匹配这个路径收进程；下次启动前先扫一遍残留。**
+
+`target/probe/browser/cdp.mjs` 里的三步（这是**唯一**的权威实现，照抄即可）：
+
+1. **起**：每次 `launchBrowser()` 都用 `mkdtempSync(join(tmpdir(), 'probe-chrome-'))` 新造一个
+   user-data-dir，并通过 `--user-data-dir=` 传给它。前缀 `probe-chrome-` 就是**本支的身份证**。
+2. **收**：`close()` → `killTree()` 按这个**本次专用路径**全机匹配后 `Stop-Process -Force`。
+   ⚠️ **不能拿 `spawn()` 返回的 pid 去 kill**：Chrome 的启动器进程会另起真正的浏览器进程再自己退出，
+   `close()` 时那个 pid 早已是死进程，真正的浏览器一个都收不掉（Windows 上实测）。
+3. **清残留**：`launchBrowser()` 第一行是 `await sweepLeftovers()`——启动前先数一遍
+   `probe-chrome-` 的残留，**有几只报几只**并清掉，再继续。避免上一次异常退出攒下几千个。
+
+> ⚠️ **这三步只管「进程」，不管「目录」**（第三十三轮回归复查查明，**只记录、未修**）：
+> `cdp.mjs` 里造出来的 `%TEMP%\probe-chrome-*` **从来没有人删**——`killTree()` 只 `Stop-Process`，
+> 全文件 `rmSync` 出现 **0 次**。后果是每跑一次浏览器套件就往系统临时目录里留一个几十 MB 的 profile：
+> 第三十三轮清理前实测 **7 个目录、约 105 MB**。这不是第三十二轮引入的（`git show HEAD:…/cdp.mjs` 里同样如此），
+> 本轮按边界**只记录不顺手修**，登记在 `docs/dev/known-issues-handoff.md` §3.34⑦，
+> 与 §3.33⑤ 的 D4（清理链静默）同源，可一并拍板。
+
+**全机匹配的 PowerShell 片段（必须同时限定可执行名）**：
+
+```powershell
+$p = 'probe-chrome-'
+Get-CimInstance Win32_Process | Where-Object {
+  $_.Name -in @('chrome.exe','msedge.exe','crashpad_handler.exe') -and
+  $_.CommandLine -and $_.CommandLine.Contains($p)
+} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+```
+
+> ⚠️ **`$_.Name -in …` 这一半不能省**（第二十九轮实测踩过）：**只按 `CommandLine.Contains($p)`
+> 判定会「自己数自己」**——发这条查询的 `powershell.exe`，命令行里原样嵌着 `'probe-chrome-'` 这个
+> 字符串，于是它把自己也数进去：**计数永远留 1**（那 1 个就是正在执行的 powershell 本身），
+> 而清理脚本还会 `Stop-Process` 打到自己、半路把自己干掉，剩下的进程反而清不完。
+> 本轮用 `target/probe/r29/_sweep_diag.mjs` 逐轮打印 PID/PPID/Name 坐实：第 1 轮后 9 个
+> `chrome.exe` 全灭，剩下那只 Name 是 `powershell.exe`、PID 每轮都换。
+
+**自检**（想验证这套还在起作用就跑它，`target/probe/r29/_sweep_check.mjs`）：造一只带前缀的孤儿 +
+一只**不带**前缀的对照浏览器，调 `launchBrowser()`，判据是
+**孤儿清成 0 / 对照那只有没有误伤（必须还活着）**。本轮实测 `EXIT=0`（孤儿 12 → 0、对照 10 存活），
+九步链跑完 `probe-chrome-` 残留 **0**、机器上 `chrome.exe` 总数 **0**。
+
 **期望输出**（截图落点在同一行打印的文字里）：
 
 | 套件 | 期望截图 | 期望数量 |
@@ -222,12 +274,19 @@ node tools/render-verify/browser/verify-live-app.mjs 43 44    # 活体前端（�
 
 ### 3.5 汇总判定（纯文件处理，不联网）
 
+> ⚠️ **顺序陷阱（第十五轮干净 clone 实测踩到）**：`round10_component_paths.mjs` 会读
+> `target/probe/round10_article_coverage.json`，而那份产物由 **§3.7** 产出——它在本文档里排在**后面**。
+> 严格照本文从上往下跑，这一条会以
+> `Error: ENOENT: no such file or directory ... round10_article_coverage.json` 失败。
+> **修法**：先跑 §3.7 的只读导出与 `round10_article_coverage.py`，再回到这里跑最后一条。
+> （只跑前四条不受影响。）
+
 ```bash
 node tools/render-verify/browser/summarize-all.mjs
 node tools/render-verify/browser/summarize-combos.mjs
 node tools/render-verify/browser/summarize-alt.mjs alt
 node tools/render-verify/browser/summarize-alt.mjs registry
-node tools/render-verify/round10_component_paths.mjs      # ← 终稿对照表，要在上面几条之后跑
+node tools/render-verify/round10_component_paths.mjs      # ← 需要 §3.7 的 round10_article_coverage.json
 ```
 
 **期望输出（第十二轮实测，第十三轮**照抄重跑，逐条逐字相符**）**
@@ -397,6 +456,650 @@ Maven `frontend-maven-plugin` 在 `prepare-package` 阶段写进 `target/classes
 
 ---
 
+### 3.11 第十五轮「干净 clone 复现 + 收尾核验」的结果
+
+#### ① 干净 clone 照本文第三节跑一遍 —— 逐条数字
+
+方法：`git clone <本仓库> wechat-article-bot-r15clone`（HEAD = `b6d5975`），
+**不复制任何 `target/` 产物**，按第一节补 `webui/node_modules`（`npm ci`，7 秒 / 106 包）后逐条执行第三节。
+
+| 套件 | clone 实测 | 与工作仓库既有判定 |
+| --- | --- | --- |
+| W `webui` 构建 | **✓ built in 418ms** | — |
+| M 79 个最小样例 | `79 0 1`（79 条 / 0 异常 / 1 warning） | 一致 |
+| C / A / R 后端产物 | `[('combos',17),('alt',10),('registry',76)]` | 一致 |
+| M′ 79 样例（真 Chrome） | **pass 70 / na 9 / fail 0**，截图 79 张 | 一致 |
+| C′ 17 组合 | 上游 `ok 8 / nested-unsupported 8 / silently-lost 1`；编辑器 **pass 17** | 逐字节相同 |
+| A′ 10 替代 | 后端 **ok 10**；编辑器 **pass 10** | 逐字节相同 |
+| R′ 76 组 `layout-*` | 后端 **not-rendered 76**；编辑器 **na 76**，截图 76 张 | 逐字节相同 |
+| S 真实稿件 | 14 篇：**13 ready + 1 不 ready（第 5 篇，已知软删）** | 一致（唯一差异见下） |
+| L 活体前端 43/44 | 43 → `.katex` 5/5、高度 `[22,22,22,45,53]`；44 → `svg` 1 可见、`[[600,200]]`、图 3/3 | 逐字段相同 |
+| P 终稿对照表 | `{registryTotal:63, tierA:13, tierB:50, upstreamRows:38, backendOk:25, editorPass:25, dangling:0}` | 一致 |
+| X 独立交叉验证 | `groups=18 notRendered=18 doubtful=0 controlFP=0` | 一致 |
+| S′ 真实稿件覆盖 | 44 篇 / 70 项里 **39 命中 31 无** / 6 种禁写全 0 | 逐字节相同 |
+
+**两处非路径差异（如实记录，都不影响判定）**：
+
+1. `browser/all_summary.json` 与 `round10_component_paths.json` **行序不同**（79 行集合完全相同，
+   首个位置差异在第 46 行：`blk-case-flow` ↔ `blk-slider-selfclose`）。原因是这两份汇总按
+   `target/probe/components/` 的**目录列举顺序**排列，而 clone 里这些文件是新建的，NTFS 列举顺序与工作仓库不同。
+   **判定数字一格未变**；要逐字节可复现的话，给汇总脚本加一次按 id 排序即可（未改，属可选优化）。
+2. `browser/articles_result.json` 里**第 38 篇的内嵌图从 `0/0` 变成 `2/2`**（clone 连跑两次都是 `2/2`）。
+   其余 13 篇逐篇一致。第 38 篇的两张图确实能加载，因此 clone 这次读到的值更准；
+   工作仓库那份是更早一轮的读数。**不影响任何判定**（该套件判的是 `editor.ready`）。
+
+**G（后端全量测试）在没补 `.env` 的 clone 里跑不了**，实测报错与文档预期一致：
+`Could not resolve placeholder 'ENV.MYSQL_TEST_URL'`（大批 integration test 报 Error）。
+补上 `.env` 即可，不是脚本问题——这正是第一节前置条件第 8 条要拦的情况。
+
+#### ② 干净 clone 暴露的一处文档缺陷（已在本轮修好上面那条）
+
+严格按本文顺序执行时，§3.5 的最后一条 `round10_component_paths.mjs` 会因缺少
+`target/probe/round10_article_coverage.json`（由**后面的** §3.7 产出）而 `ENOENT` 失败。
+§3.5 已加显式顺序警告。**这不是脚本缺陷，是文档的步骤顺序自相矛盾。**
+
+#### ③ 重启到底会不会退回旧前端 —— 实测
+
+| 动作 | 结果 |
+| --- | --- |
+| 记录 `target/classes/static` 全部 **39 个文件**的 sha256 → 跑 `./.mvn/mvn-local.sh -o test-compile`（= `spring-boot:run` 在 Maven 侧实际执行的最后阶段） | **39 个文件逐字节不变**；日志确认 `resources:resources` 确实执行了，但 `src/main/resources/static` 目录**不存在**，没有东西能覆盖 `target/classes/static` |
+| 再真正停止应用（PID 21344）→ `./.mvn/mvn-local.sh -o spring-boot:run`（新 PID 66136，3.5 秒起来） | 哈希仍**逐字节不变**，8081 提供的仍是 `index-ChPmeBR_.js` |
+
+**结论：普通重启不会退回旧前端。** 真正的复发条件是**先清理再启动**：
+第十五轮在干净 clone 里实测 `test-compile` 之后 `target/classes/static` **根本不存在**——
+也就是说 `mvn clean` + `spring-boot:run` 起来的是一个**没有前端**的应用（页面空白），
+要等下一次 `package` 才会由 `frontend-maven-plugin` 构建出来。
+
+#### ④ 这一条的修复方案（**本轮只出方案，未改任何构建配置**）
+
+| 方案 | 改动位置 | 效果 | 风险 | 回滚 |
+| --- | --- | --- | --- | --- |
+| **A. 构建期对齐**（推荐）：把 `build-webui` 的 `<phase>` 从 `prepare-package` 改成 `compile`（或给 `spring-boot:run` 绑一个 `executions` 到 `process-classes`） | `pom.xml` 的唯一一处 `<phase>` | 之后任何 `spring-boot:run` 都自带最新前端，从根上消掉这一类故障 | 每次启动都跑一次前端构建（约 0.4 秒，可接受）；若本机无 Node 会让 `spring-boot:run` 直接失败——**这正是要拍板的地方** | 改回 `prepare-package` |
+| **B. 启动自检**：应用启动时检查 `classpath:static/index.html` 是否存在/是否比 `webui/src` 旧，缺失或陈旧就打 WARN（或直接拒绝启动） | 新增一个 `ApplicationRunner`；不动 `pom.xml` | 故障从「用户看到空白页」变成「启动日志里一句明确的 WARN」，排查成本大降 | 只是告警，不自动修；要能真修就得再挂构建 | 删掉该类 |
+| **C. 只改文档**：在 README/复现手册写明「`mvn clean` 之后启动前必须先跑一次前端构建」 | 文档 | 零代码风险，立刻可做 | 靠人记；第十五轮已经证明「记」不住 | 无 |
+| **D. 兜底脚本**（可与 A/B 并存）：提供一个 `dev-start.sh`，内部先 `npm run build -- --outDir ../target/classes/static` 再 `spring-boot:run` | 新增脚本 | 与 A 等效，但不动 Maven 生命周期 | 多一个入口，别人仍可能直接 `spring-boot:run` | 删脚本 |
+
+**建议**：A + B 一起做（A 治根、B 兜底），C 无论如何都该做。**这几项都属结构改动，等用户拍板后再动。**
+
+#### ⑤ 保存侧自检对 38 个 `layout-*` 的全量覆盖（不是抽样）
+
+第十五轮用反射直接调生产代码 `ScheduledArticleTools.markflowSyntaxHints`，
+对注册表里 **38 个名字 × 2 种写法 = 76 组**逐条断言「至少产出一条提示」，并用 **19 个受支持容器**做对照组：
+
+```
+registryLayoutNames=38
+containerForm_withoutHint=0 []
+tagForm_withoutHint=0 []
+supportedControlGroup_size=19 falsePositives=0 []
+VERDICT=FULL-COVERAGE
+```
+
+实现方式是**按前缀整族拦**（容器式落到「不支持的容器语法」那条通用提示；标签式由
+`UNSUPPORTED_LAYOUT_TAG = <\s*layout-[a-z][a-z-]*\b` 命中），所以不存在「漏列某个名字」的可能。
+原始输出 `target/probe/r15/layout_guard_coverage.txt`，脚本 `tools/render-verify/gen/LayoutGuardCoverage.java`。
+
+复现方式（**在仓库根目录**，先确保 `target/classes` 是新的）：
+
+```bash
+./.mvn/mvn-local.sh -o test-compile
+./.mvn/mvn-local.sh -o -q dependency:build-classpath -Dmdep.outputFile=target/probe/r15_cp.txt
+"/c/Program Files/Java/jdk-17/bin/java" -Dfile.encoding=UTF-8 \
+  -cp "target/classes;$(cat target/probe/r15_cp.txt)" \
+  tools/render-verify/gen/LayoutGuardCoverage.java
+# 期望末行：VERDICT=FULL-COVERAGE
+```
+
+> ⚠️ 同时查清一件**措辞不准确**的事：这条自检是**提示而非拒绝**——
+> `ScheduledArticleTools.save()` 不会因此抛错，只是把改写建议放进工具返回值的 `warnings` 里
+> （另打一条 `log.warn`）。**且它只覆盖智能体走 `save_article_draft` 的路径；编辑器 REST 保存路径没有这项检查。**
+> `docs/render-acceptance-report.md` 第五节已按此更正。
+
+#### ⑥ 全库 44 篇里那 39 处命中，编辑器侧能不能渲染
+
+三个既有产物做连接（不新打 API、不写库）：`round10_article_coverage.json` × `browser/all_summary.json`
+× `browser/articles_result.json`：
+
+- **39 项全部有「最小样例 + 真实浏览器」的判定，且判定全部为 `pass`**（`editorPass=39`，非 pass **0** 项）；
+- 其中 **7 项**（`md-link`、`md-image`、`blk-title`、`in-em-hl`、`ctn-case-flow`、`ctn-steps-h`、`ctn-steps-v`）
+  命中的文章**都不在**真 SPA 回归过的 13 篇里 → 证据强度停在 **B 级**，如实标注；
+- 6 种禁写写法的命中数**全为 0**。
+
+产物：`target/probe/r15/coverage_editor_verdict.md` / `.json`，
+脚本 `tools/render-verify/gen/round15_coverage_editor_verdict.py`
+（用法：`PYTHONUTF8=1 python tools/render-verify/gen/round15_coverage_editor_verdict.py`；
+它读的三份输入分别是 §3.4 的 `browser/*.json`、§3.5 的 `all_summary.json` 与 §3.7 的覆盖产物，
+**先把那三步跑完**）。
+
+### 3.12 第十六轮：用户逐条标注的 11 条（套件 U）
+
+输入是**用户在真实编辑器里原样标注的 11 段 MarkFlow 源码**，不改写、不「修得好看一点」
+（原话与源码都在 `tools/render-verify/gen/round16_editor_reported.py` 的 `CASES` 里）。
+
+```bash
+# U1 —— 后端产物：11 段原样打真实渲染 API（需要令牌；只读，不落库）
+python tools/render-verify/gen/round16_editor_reported.py
+# 产物：target/probe/r16/r16-{01..11}-*.md/.html、r16.json
+
+# U2 —— 编译探针 dist（与 §3.3 同一条命令，改了编辑器代码就必须重跑）
+(cd webui && npx vite build --config ../tools/render-verify/browser/vite.config.mjs)
+
+# U3 —— 真实浏览器：产物灌进编辑器往返，逐行量计算样式（与 §3.4 的套件**串行**跑）
+node tools/render-verify/browser/run-r16-browser.mjs
+node tools/render-verify/browser/summarize-r16.mjs
+# 期望首屏：后端侧 10/11 recognised；编辑器侧 1/11 逐属性一致（口径说明见 §3.20②⑤）
+
+# U4（可选）—— 1:1 对照截图，肉眼看「哪一侧真缺了东西」
+node tools/render-verify/browser/r16-shot-zoom.mjs r16-01-changelog r16-07-summary r16-08-checklist r16-11-steps-horizontal
+# 产物：target/probe/browser/shots/r16/zoom/<id>.{after,reference}.png
+
+# U5（可选）—— 三条被结论引用的单点诊断，排查时按需跑
+node tools/render-verify/browser/r16-dump-live-table.mjs r16-06-title-da01 r16-11-steps-horizontal
+node tools/render-verify/browser/r16-measure-heights.mjs r16-07-summary
+node tools/render-verify/browser/r16-width-equiv-test.mjs r16-09-table-card
+# 产物：stdout（JSON）
+
+# U6（可选）—— §R10 的反向自查（第二十轮新增）：`|` 是引擎约定还是实现缺陷
+# 只调渲染 API，不需要应用起着、不需要浏览器；跑一次约 13 秒
+python tools/render-verify/gen/round20_field_block_scalar.py
+# 产物：target/probe/r16/r10_by_design.json（4 组件 × 3 写法）
+#       target/probe/r16/r10_blockscalar.json（11 组块标量边界）
+
+# U7（可选）—— 真实应用界面上的 11 条验收（第二十二轮新增）
+# **要求应用在 127.0.0.1:8081 起着**（其余套件只读落盘产物，这一支是真的开应用）
+# 默认模式：应用层伪造 GET 返回 → 应用自己 setContent → 这就是用户打开文章的路径
+node tools/render-verify/browser/r16-live-editor.mjs 38 --width-match
+# 另两条**输入路径**（结果与上面**不一样**，见 §3.22⑤ / §3.23①；第二十三轮补了 --type）：
+node tools/render-verify/browser/r16-live-editor.mjs 38 --paste       # 合成 ClipboardEvent
+node tools/render-verify/browser/r16-live-editor.mjs 38 --paste-real  # 真剪贴板 + 真 Ctrl+V
+node tools/render-verify/browser/r16-live-editor.mjs 38 --type        # 真 input 事件逐行手打源文
+# 产物：target/probe/browser/r16_live{,_widthmatch,_paste,_pastereal,_type}_result.json
+#       target/probe/browser/shots/r16-live/<mode>/<id>.{png,zoom.png}
+#       （<mode> = setcontent | widthmatch | paste | paste-real | typed；分子目录是因为
+#         第二十二轮四种模式共用一个目录会互相覆盖，第二十三轮改的）
+
+# U7-判（第二十二轮新增）—— 纯离线比对「真实界面」与「探针页」，不开浏览器、不打 API：
+node tools/render-verify/browser/r16-compare-probe-vs-live.mjs            # 默认读 --width-match 那份
+node tools/render-verify/browser/r16-compare-probe-vs-live.mjs r16_live_result.json   # 异宽那份
+# exit 0 = 70 组探针全一致；exit 1 = 有差异（逐组打印差在哪）；exit 3 = 产物缺失
+
+# U8（可选）—— 保存出口幂等性：用户原话「我在编辑器里看到的样子，保存之后还在不在」（第二十五轮新增）
+# **要求应用在 127.0.0.1:8081 起着**。三步：拦下 PUT 取出 body.contentHtml → 原样 setContent 灌回
+# → 量同一组 11 条探针，并与拦截那一刻的活 DOM 逐条对照。判据：逐条相同 = 所见即所存。
+node tools/render-verify/browser/r25-save-exit-roundtrip.mjs 38 --inject all --label after
+node tools/render-verify/browser/r25-save-exit-roundtrip.mjs 38 --inject all --paste --label after
+node tools/render-verify/browser/r25-save-exit-roundtrip.mjs 38 --inject all --type  --label after
+# --inject <单个文件名> 灌一条用例；--bundle <dist> 换前端包；产物落 target/probe/browser/r25_*
+# ⚠️ 三种路径的**覆盖度不同**：手打时 `:::` 保持字面文本、不生成 section，
+#    会有 3 条探针量不到（记 null，**不计入「相同」**），别把 11/11 读成全覆盖。
+
+# U8-定位（可选，只在上面出现差异时跑；两支都**只在页面内存里改，从不保存、不写库**）
+node tools/render-verify/browser/r25-whitespace-probe.mjs        # 哪一类空白在第一次解析时就丢
+node tools/render-verify/browser/r25-preservewhitespace-trial.mjs # 候选修法 preserveWhitespace:'full' 的副作用
+
+# U9（可选）—— 存量影响面（第二十五轮新增）：**纯 DB、不开浏览器、全程只读**
+node tools/render-verify/round25_stock_scan.mjs
+# 产物：target/probe/browser/r25_stock_scan.json（判据都是 CONTENT_HTML 的纯函数，可自己重跑）
+
+# U10（**回归闸**，第二十六轮新增）—— 窄列表格的**列宽**在保存出口里还在不在
+# **要求应用在 127.0.0.1:8081 起着**。跑完 **exit 0 = 通过**、exit 1 = 不过（打印差在哪一列）。
+# 判据：① 出口每一列的宽度声明 = 入口那一列的宽度声明；② 出口再灌回去再存一次，逐字不变。
+# 内置**闸的自检**：拿第二十五轮存档的旧编辑器出口（两列都塌成 min-width: 25px）
+# 喂给同一套解析规则，必须判 FAIL——否则说明这条闸被写松到「怎么塌都算过」。
+node tools/render-verify/browser/r26-table-colwidth-exit.mjs
+node tools/render-verify/browser/r26-table-colwidth-exit.mjs --bundle target/probe/r26/before-dist  # 换前端包
+# 产物：target/probe/browser/r26_colwidth_exit.json 与 r26_colwidth_exit_<样本>_saveexit.html
+# ⚠️ 样本 `yi-hand`（手写表格，窄列**只有** `<col style="width:90px">`）是**记录项、不参与退出码**：
+#    它考的是本轮新量到的**入口缺口**（编辑器入口只认 `data-colwidth` / `colwidth` / `<col width>`
+#    三种属性写法，读不到 `<col style>`），**产物侧暴露为 0**（249 个渲染产物里带列宽的只有 2 个，
+#    且都带属性写法）。要不要补，见 `known-issues-handoff.md` §3.27② 与 §3.27③ 的待拍板单一列表。
+
+# U11（第二十七轮新增）—— 段首空白的**暴露面**与**三条输入入口**，外加两次复跑的对账
+
+# U11-a（**纯文件 + 只读 DB，不开浏览器**）—— 段首制表符到底有多少
+# 扫描口径与 preserveLeadingWhitespace() **逐字同构**（遍历每个元素 → 第一个含可见字符的文本节点 →
+# 看它的前导 [ \t]；pre/code/textarea/script/style/svg 整棵跳过）。第二十七轮实测：
+# 249 个产物主口径里含段首空白的 5 个文件 / 9 处、**含制表符 0 处**；全部 403 个产物文件 **0 个**；
+# 38 篇存量正文里 4 篇 / 36 处、**含制表符 0 篇**。
+node tools/render-verify/round27_leading_ws_scan.mjs
+node tools/render-verify/round27_leading_ws_scan.mjs --check <某个.html>   # 只跑口径本身，不碰数据库
+# 产物：target/probe/browser/r27_leading_ws_scan.json
+
+# U11-b（**要求 8081 起着**，端口 9364/9366）—— 四条输入入口各量「实时 DOM / 保存出口 / 再打开」三列
+node tools/render-verify/browser/r27-entry-paths.mjs --label after
+node tools/render-verify/browser/r27-entry-paths.mjs --label before --bundle target/probe/r26/before-dist
+# ⚠️ `Input.dispatchKeyEvent` **必须先点一下编辑器**（脚本里的 `focusEditor()`），否则 Ctrl+A / Backspace /
+#    空格 / Tab 全部静默失效，量到的其实是「注入时的原内容」——第一次跑就是这么拿到一屏假数据的。
+# 产物：target/probe/browser/r27_entry_paths_{before,after}.json
+
+# U11-c（**纯离线**）—— 两份结果 JSON 逐叶子值对账，**不做归一、不做容差**
+node tools/render-verify/round27_c_compare.mjs <基线.json> <复跑.json> [<基线2.json> <复跑2.json> …]
+
+# U12（**回归闸**，第二十八轮新增）—— 「打开 → 保存 → 再打开」的**往返稳定性**
+# **要求应用在 127.0.0.1:8081 起着**。跑完 **exit 0 = 通过**、exit 1 = 不过（打印差在哪条样本的哪个位置）。
+# 判据：① 把保存出口原样灌回去之后（走应用自己的 setContent）与**保存那一刻**的 DOM **逐叶子值相同**；
+#       ② 再存一次、再灌一次仍与第一次往返后相同；③ 每条样本**自己声明要保住的量**仍然成立。
+# 「逐叶子值」＝元素叶子(标签+逐属性原文) / 文本叶子(文本节点原文)，路径按「第几个子节点」拼；
+# **唯一**的规范化是 style 属性值内部**声明按字典序排列**，其余一个字节都不放宽。
+# 内置**闸的自检**：① 离线拿第二十六轮之前的存档实测（段首缩进 0px）套判据③，必须判 FAIL；
+#                   ② `--bundle` 换修复前的整包前端实跑，必须 exit 1。
+node tools/render-verify/browser/r28-roundtrip-gate.mjs --label after
+node tools/render-verify/browser/r28-roundtrip-gate.mjs --label round26-before --bundle target/probe/r26/before-dist
+# 产物：target/probe/browser/r28_roundtrip_<label>.json ＋ r28_dom_<label>/<样本>.<第几圈>.html
+# ⚠️ **这条闸有盲区，写在这里免得后人以为它包打天下**：旧前端在「打开」和「再打开」时**都**丢段首空白，
+#    A 与 B 两边一致地丢 ⇒ **判据① 在修复前的 bundle 上照样通过**。抓住这类 bug 的是**判据③**。
+#    反向跑实测坐实：`--bundle …/before-dist` 下六条样本判据① 0 条叶子差异、判据② 全过，
+#    而判据③ 恰好报 4 处失败（`lead-space` / `lead-tab` 各 2 处，缩进 0px）。
+
+# U13（第二十八轮新增）—— 第 9 条「粘贴 HTML 的段首空白」的**暴露面与代价**（**本轮不改代码**）
+# **要求 8081 起着**，端口 9371。回答两个问题：① 从网页复制粘贴这条路上，段首空白是真丢还是只是看着像丢；
+# ② 如果改 `transformPastedHTML`，会不会碰到别的粘贴内容（表格 / 代码块 / 公式 / SVG）。
+# 真 Ctrl+C 读剪贴板 text/html 原文（7 种写法）＋ 真 Ctrl+V 落进编辑器（7 份真载荷 ＋ 2 份手写载荷）＋
+# 249 个产物过一遍候选修法 ＋ 6 个代表载荷「原样 vs 先过变换」逐叶子比。内置自检：切出来的真函数
+# 在页面里跑三条样例断言，不过 **exit 4**。
+node tools/render-verify/browser/r28-paste-html-probe.mjs
+# 产物：target/probe/browser/r28_paste_html_probe.json
+# 第二十八轮结论：**建议不修**——7 份真复制载荷里只有 1 份（`prewrap`）会被修法改写，
+# 而那份本来就靠 `white-space: pre*` 存活（prosemirror-model/dist/index.js:2844 `localPreserveWS`）。
+# 依据全文见 `docs/dev/known-issues-handoff.md` §3.29②。
+
+# U14（第二十九轮新增）—— 「什么样的剪贴板 HTML 复制进来会丢段首空白」的**可跑判据**（纯离线，不开浏览器）
+# 判据：一份剪贴板 HTML，只要「段首有 [ \t]」且「不含 white-space: pre*」，就会触发。
+# 「段首空白」用的是与实现同构的那把共享尺子（`round27_leading_ws_scan.mjs` 的 `leadingRuns()`），
+# 另补一路「根级文本口径」（复制选区常常不带外层块标签）。
+node tools/render-verify/round29_clipboard_html_check.mjs <文件.html> [...]   # 也可 --dir <目录> / --stdin / --selftest
+# 退出码：有触发 10 / 全部不触发 0 / 用法错 2
+# 内置自检：跑在第二十八轮存档的 7 份**真**剪贴板载荷上，处数必须逐条对得上（本轮 7/7 ✅）。
+node tools/render-verify/round29_clipboard_html_check.mjs --selftest
+
+# U14-采（第二十九轮新增）—— 真实来源采样：真选中 → 真 Ctrl+C → 读剪贴板 text/html（**需 8081 起着**，端口 9373）
+# 8 个公开网页 + 11 个同浏览器的合成对照；载荷原文落 target/probe/r29/clip/，可离线复判。
+node tools/render-verify/browser/r29-clipboard-sampler.mjs
+node tools/render-verify/browser/r29-clipboard-sampler.mjs --url <网址> [--选择器 <css>]   # 单点；产物另存 _single.json
+# 产物：target/probe/browser/r29_clip_samples.json
+# ⚠️ 采样器必须先 `Browser.grantPermissions`（不限定 origin），否则 `navigator.clipboard.read()`
+#    要么直接挂到超时、要么 `NotAllowedError: Read permission denied`。
+# 第二十九轮结果：19/19 采到载荷，**判「触发」的 0 份**——根因是 Blink 写剪贴板**之前**就并掉了
+# `white-space: normal` 内容的段首 [ \t]（同一页里 `pre-wrap` 那份则同时保住了空白和 pre 声明）。
+# 判据的**正例**用 `target/probe/r29/clip/z-判据正例_*.html` 钉住：把真实载荷里被并掉的两个空格加回去，
+# 其余一字不动 → 判据翻成「触发」。所以这条路对「从浏览器网页复制」基本无效，
+# 对**自己直接写 text/html 的应用**（编辑器 / 笔记软件）才可能成立。详见 §3.29③。
+
+# U15（第二十九轮新增）—— **全库验收断言的分类 ＋ 反例自检**（纯离线：不开浏览器、不连库、不打渲染 API）
+# 逐条回答三个问题：属于哪一类（甲｜只比两侧一致 / 乙｜与外部真值对照 / 丙｜自声明期望值 / 丁｜根本没有判据）、
+# 能不能判红（有没有非零退出码）、**拿仓库里真实存在过的坏版本喂给它，它判了什么**。
+# 判 PASS 的就是松的。退出码 0 = 每条断言的实际表现都与它自己声明的相符（1 = 表该更新了）。
+node tools/render-verify/round29_gate_audit.mjs [--json]
+# 产物：target/probe/browser/r29_gate_audit.json
+# ⚠️ **本表是「今天的绿灯有多少是真绿」的唯一入口**。结论：21 条断言里能判红的只有 9 条（43%）；
+#    更要紧的是——**九步链 15 个步骤里只有 1/9 的构建真正能判红**，其余 14 步（2/9~9g）全部没有退出码，
+#    「EXIT=0」＝脚本没抛异常，不含任何通过/不通过信息。真正带判据的闸全在九步链**之外**。
+# 依据与工程项（E1~E3）全文见 `docs/dev/known-issues-handoff.md` §3.30。
+# ⚠️ **上面这段是第二十九轮的实况。第三十轮已把 E1~E3 补完**：九步链 14 步的退出码全部接上、
+#    `round27_c_compare` / `r27-entry-paths` 也接回，本表现改为**逐行真喂坏输入看退出码**。
+#    重跑后：**能判红 18/21（86%）**。当前口径见 §3.14 与 `known-issues-handoff.md` §3.31①。
+
+# U15-b（第二十九轮新增）—— 三条甲类闸的**反例自检**（纯离线，与各自主流程**共用同一把尺子**）
+# 甲类＝「只比两侧一致」，对「两侧一致地错」天然免疫。这三条闸的**定位不改**（改了就不是在量它原本量的事），
+# 但它们各自补了 `--selftest`，用来证明两件事：**不误报** ＋ **对值级差异会判红**——
+# 把「已知盲」和「尺子瞎了」分开。
+node tools/render-verify/browser/r25-save-exit-roundtrip.mjs --selftest          # 判据①
+node tools/render-verify/browser/r16-compare-probe-vs-live.mjs --selftest        # 探针页 vs 真实界面
+# `r26-leading-ws-effect.mjs --selftest`（第二十九轮收紧判据②③时一起立的）见 §3.12 的 U12 段。
+# 三条都 **EXIT=0**。`r26-leading-ws-samples.mjs --compare` 同样属甲类，但它的职责是**不变量**
+# （证修法不改动 79 个样例的可观测行为），`--compare` 喂坏量测会如实判红，所以只补了头部说明。
+
+# U16（**回归闸**，第三十四轮新增）—— 表格修法的**反作用**：手写表格会不会被标记类误伤
+# **要求应用在 127.0.0.1:8081 起着**，端口 9374。跑完 **exit 0 = 手写表格没被误伤且指纹判据是活的**。
+# 判据：③ 工具栏「插入 3×3 表格」的保存出口**原样灌回去**（= 用户重开这篇文章）后，
+#       `table.className` 里**没有** `mf-preserved`、网格线仍是 `1px`；
+#       ④ **同源正向对照**：同一份出口只多一个 `border-collapse:collapse`，类**必须**出现。
+#       一负一正同跑——只有 ③ 时，「没打类」也可能只是脚本走空了。
+node tools/render-verify/browser/r34-table-handmade-regression.mjs
+# 产物：target/probe/r34/table_handmade_regression.json / .txt
+# ⚠️ 判据是**产物指纹**（表级 style 里有没有 `border-collapse: collapse`），**不是**「<table> 上有没有 style」——
+#    后者 TipTap 自己也会写（手写表格的出口就是 `<table style="min-width: 75px;">`），
+#    第一版判据（`preservedStyle` 非空）就是这么把手写表格误伤成「网格线整片画没」的（逐格边框 1px → 0px）。
+
+# U17（第三十四轮新增）—— 表格「比原项目高」的**逐项取证**与标记类指纹的**离线扫描**
+
+# U17-a（**要求 8081 起着**）—— 六个面（原项目 / 编辑器 / 裸容器 / 消融组 / 候选修法 / 字体）＋ 全产物 sweep
+node tools/render-verify/browser/r34-table-metrics.mjs                        # 单用例四面对照 + 候选修法（主场）
+node tools/render-verify/browser/r34-table-metrics.mjs --sweep [--only <id>]  # 全部产物过一遍候选修法
+# 预期数字（第三十四轮实测）：单用例 原项目 **197** / 编辑器 **212**（改前 347.09）/ 裸容器 **212**；
+#   sweep **PASS 11 · WARN 0 · FAIL 0**；表级 `table-layout` 改前 `fixed` → 改后 `auto`；
+#   采样格边框 `1px 1px 1px 1px` → **`0px 0px 1px 0px`**（与原项目逐字符相同）；
+#   列宽 四等分 `[157,157,157,157]` → `[105.67,165.64,133.83,223.86]`（原项目 `[105.02,165.13,136.34,222.52]`）。
+# ⚠️ 锚是**裸容器**而不是「改前」：拿「改前」当基准，量到的 `fixed` + `1px` 边框**其实是兜底样式本身**，
+#    不是产物真值。脚本自带**锚洁净闸**（裸容器被污染就整条判 FAIL，不拿脏基准去判别人）；
+#    把锚故意污染回第一版的样子 → 实测翻成 **PASS 4 · FAIL 7**，七条全报「锚被污染」。
+# 产物：target/probe/r34/table_metrics.json / table_sweep.json
+
+# U17-b（**纯离线**，只读落盘产物）—— 拿什么当「这是渲染服务产物表」的指纹
+node tools/render-verify/r34_table_fingerprint_scan.mjs
+# 预期数字：有表格的产物 **14** 个，表级 style 带 `border-collapse` 的 **14/14**，且每格都自带 style
+#   （`r16-09` 20/20、`cmb-long-table` 84/84）；手写表格 `min-width: 75px;` **一条不占**。
+# 产物：target/probe/r34/table_fingerprint_scan.txt / .json
+
+# U18（第三十四轮订正）—— 9g 的差异条目基线**由「一个总上限」改成「逐例上限」**
+# 原先只钉总数（`<= 152`）时，「甲例涨 20、乙例降 20」总数不变、闸照样判绿——而这两件事含义完全相反。
+# 现在 `browser/summarize-r16.mjs` 里是 `每例上限` 映射（总和即总上限），另加第 6 条自检用例
+# 「总数不变、差异在两条用例之间搬家」：**只钉总数时判绿、钉到例之后判红**（实测）。
+node tools/render-verify/browser/summarize-r16.mjs --selftest   # 六条用例全过、EXIT=0
+# 当前逐例上限与该轮被修订那一例（`r16-09-table-card` 5 → 25）的逐条归因写在脚本文件头。
+
+# U19（第三十五轮新增）—— 粘贴 HTML 的**段首空白修法**：反例自检 ＋ 真函数未动 ＋ 暴露面（纯离线，不开浏览器）
+# 修法本体在 `webui/src/editorExtensions.js` 的 `PastedLeadingWhitespace`（`transformPastedHTML` 一行挂到粘贴路）。
+# 本支只回答三件事：① 旧包判红 / 新包判绿（**唯一自变量是前端包**，同一份载荷、同一支脚本两次实跑）；
+# ② 真函数**字节未动**（把新增那段切掉后切块 sha 与第二十八轮记录逐字相同）＋ 段首空白在敏感子树外的暴露面；
+# ③ 源码级四个行号（调用点 / 拖动同路 / `preserveWhitespace` 开关 / `readHTML`）都在。
+node tools/render-verify/browser/r35-paste-fix-audit.mjs      # 退出码 0 = 三件事全过
+# 前置输入（缺了会 exit 2）：`target/probe/browser/r27_entry_paths_r35-before.json`（旧包）
+#   与 `..._r35-after.json`（新包）——分别由下面两条命令产出：
+#   node tools/render-verify/browser/r27-entry-paths.mjs --bundle target/probe/r35/before-dist --label r35-before
+#   node tools/render-verify/browser/r27-entry-paths.mjs --label r35-after
+# 第三十五轮实测：旧包实时缩进 **[0,0,0]** / 出口无 `&nbsp;`（判红 ✅）；
+#   新包 **[6.72, 26.88, 0]** / 出口 `<p>&nbsp;&nbsp;LEAD-SP</p>` / 再打开仍 [6.72,26.88,0]（判绿 ✅）；
+#   另外四条路（setcontent / pastePlain / pasteHtmlFixed / type）**15 个相位逐字节未变**；
+#   真函数切块 sha 前 16 位 **`bae2e6188257bd6f`**（第二十八轮记录的同一个值，1590 字节）；
+#   段首 `[ \t]` 在敏感子树之外的暴露面：352 个产物里 57 个文件 / 91 处。
+# 产物：target/probe/r35/paste_fix_audit.json / .txt
+# ⚠️ **部署这一步不能省**：`spring-boot:run` 不跑 `prepare-package`，改完前端必须自己把产物送进去
+#    （`npm run build -- --outDir ../target/classes/static --emptyOutDir`），否则界面还是旧包——
+#    第三十五轮实测：改完不部署时 8081 发的是 `ArticleEditorView-CGjhQ8ZC.js`，部署+重启后才是 `CGOKQBSD.js`。
+
+> **判据为什么要单独一支**：改判据不该重跑浏览器。第二十二轮的结论正是靠反复改判据收敛的——
+> 异宽时 **13/70** 组有差（全部是 47px 宽度派生值），`--width-match` 下 **0/70**
+> （两种跑法都另有 1 组只差图片加载时序，已单列不计入）。**`--width-match` 那份退出码 0。**
+> 该脚本会主动过滤三类已知假阳性：图片加载时序、宽度派生值、tiptap 应用层痕迹
+> （`draggable`、`<div class="tableWrapper">`、行内 style 属性顺序）。
+>
+> `--dom` 加一段 **DOM 字符串**比对。⚠️ **它不是承重判据**：探针页量的是 `editor.getHTML()`
+> （保存出口），真实界面量的是 `dom.innerHTML`（实时 DOM 出口），两边出口不同，
+> 实测 **0/11**；抹掉 ProseMirror 编辑期管道（`ProseMirror-separator` / `ProseMirror-trailingBreak` /
+> `contenteditable` / `tableWrapper`）后 **10/11**。**两个数字都不该拿来当结论**，
+> 承重的是上面那张计算样式表。剩下那 1 条是真差异，见 §3.22②。
+
+> **U7 不写库**：脚本在应用脚本之前 patch 掉 `fetch`/`XMLHttpRequest`（非 GET 的 `/api/*` 本地伪造 200），
+> 网络栈上再用 CDP `Fetch` 域拦一层，跑完回读文章 `revision`/`updatedAt` 逐字比对，
+> 收尾还故意敲一次键逼出自动保存来自证拦截生效。**换文章 ID 也可以**（默认 38），
+> 但那一篇在跑之前会被读两遍（改前 / 改后），别拿正在编辑的稿子跑。
+
+> **U4 / U5 各支已进版本控制**，因为它们的输出被写进了结论：第 6 条的 `liveCols`
+> （`min-width:25px` + `width:90px`）、第 11 条的 `borderCollapse/borderSpacing/minWidth`、
+> 第 7/8 条「480px 最小高度是测量假象」、第 9 条「余下那条高度差是两栏宽度不等引起的」
+> 都直接取自这里。按本目录的摆放原则，**被结论引用的脚本
+> 不能在 clone 里缺席**，否则「换台机器复现」到这几条就断。
+> 纯排查稿 `target/probe/r16/dump-summary-row.mjs`、`diag-plugin.mjs`、`row3-*.mjs`、
+> `pane-inner-widths.mjs` 留在 gitignored 目录，用完即弃。
+> 要长期留存的是 `gen/round16_editor_reported.py`、`gen/round18_infographic_variants.py`、
+> `gen/round20_field_block_scalar.py`、`browser/probe_r16.js`、`probe_r16.html`、
+> `run-r16-browser.mjs`、`summarize-r16.mjs`、`r16-shot-zoom.mjs`、`r16-dump-live-table.mjs`、
+> `r16-measure-heights.mjs`、`r16-width-equiv-test.mjs`、`r16-probes.js`、
+> `r16-live-editor.mjs`、`r16-compare-probe-vs-live.mjs` **十四支**。
+> 其中 `r16-probes.js` 与 `probe_r16.js` 是**一对**：前者放探针定义、后者放「怎么摆两栏」，
+> 第二十二轮拆开的理由见 `tools/render-verify/README.md`。
+
+> **第二十三轮补的三件事**（都在 §3.23）：
+> ① **三条输入路径的量法**——`setContent` / 粘贴 / 手打**结果不同**（同宽探针差异 0 / 47 / 65 组；
+>   11 条用例的容器 `<section>` 合计 51 / 32 / **0**），判据与逐条结论在 `known-issues-handoff.md` §3.23①；
+>   用户实际走哪条路由**他那篇文章的存库正文**定案，不靠推断。
+> ② **第 4 条 `:::quote-card` 已修**——修的是 `webui/src/editorExtensions.js` 的
+>   `syntheticParagraphStyle`（合成段落里的行内内容整层脱离文档流时不给段落间距）。
+>   验高低的量法用 `r16-measure-heights.mjs`（**不是** `r16-live-editor.mjs`：
+>   后者的 `editor` 侧只带计算样式项，`kind:children` 的「卡片构成」探针 `count` 恒为 0，拿不到几何）。
+> ③ **差异条目口径钉死**——`summarize-r16.mjs` 现在把
+>   `Σ details[].differences[].notes.length` 算成 `diffEntries` 写进 `r16_summary.json` 并打在 `.md` 表头。
+>   **不要手数 `.md` 的条目**：它每组最多打 12 条（`notes.slice(0, 12)`），手数会少算 3 条（152 数成 149）。
+
+> **第二十四轮补的两件事**（都在 `known-issues-handoff.md` §3.24）：
+> ① **验收对象换成用户自己的文章 #38**（真实窗口宽度，不用 `--width-match` 造同宽）——
+>   新脚本 `browser/r24-article38-symptoms.mjs`：`--label <名>` 给产物打标、
+>   `--bundle <dir>` 用 CDP `Fetch.fulfillRequest` **整包替换前端**（拿改前 bundle 跑出「改前」列）、
+>   `--inject <caseId>` 把某条用例的产物灌成 #38 的正文（走应用自己的 `setContent`）、
+>   `--paste`（配合 `--inject`）走粘贴。**换的确实是两份 bundle** 靠打印
+>   `performance.getEntriesByType('resource')` 里的 chunk 名自证（改前 `ArticleEditorView-BfXgtpun.js` /
+>   改后 `ArticleEditorView-BFvBiRez.js`）。⚠️ 整包替换时**所有非 `/api` 非静态资源路径都要映射到 bundle 的
+>   `index.html`**，否则第二次导航会被应用自己的 `index.html` 接走、静默加载**修好的** bundle，两边量出来一样。
+> ② **保存出口实测**——`--paste` 路径下在写保护拦下 `PUT` 时留 `body.contentHtml` 数 `<section>`：
+>   **32 层 ＝ 实时 DOM 的 32 层**（产物 51），把第二十三轮那句「`getHTML()` 也一样少」由推理变成实测。
+
+> **第二十五轮补的三件事**（结论都在 `known-issues-handoff.md` §3.26）：
+> ① **第二十四轮④的量法有盲区**：它是「拿今天新产的 HTML 灌成正文再量」，量出来当然等于产物，
+>   只能证明「编辑器不再丢声明」，**证不了「用户看到的样子存下去还在不在」**。
+>   U8 补的就是这一刀：把拦下的 `PUT` 里的 `body.contentHtml` **原样**灌回、量**同一组 11 条探针**、
+>   与拦截那一刻的活 DOM 逐条对照（整段 DOM 还要**重排 `style` 声明顺序**后才逐字节比——
+>   浏览器序列化 `#fff`→`rgb(255, 255, 255)`、`#e2e8f0`→`rgb(226, 232, 240)` 并会重排声明，
+>   这是**去掉「同语义不同字节」的噪声，不是放宽判据**）。
+>   **`setContent` / 粘贴两条路径结论一致：幂等**；手打那条有差异，但收窄实验证明
+>   **丢在「第一次解析」（还没保存就丢了），保存出口本身仍是幂等的**（①解析后 vs ②重灌后 10/10 相同）。
+>   根因是 `setContent` 默认 `parseOptions = {}` 走塌缩空白的解析路径。**未改代码**：
+>   显式打开 `preserveWhitespace:'full'` 能救回段首空白，但会**动整篇块结构**（顶层块 14→15、`dy` 整体位移、
+>   块高 280.69 → 87.75 / 1548.69），副作用已记在 §3.26① 交用户拍板。
+> ② **同题对照才能定「是谁丢的」**：同一份探针输入分别喂改前 / 改后 bundle 各逼一次保存出口，逐字节比。
+>   结论是**两类**不是一类——列宽塌成 25px 确实是**旧编辑器保存时丢的**；changelog 缺容器**不是**
+>   （旧编辑器出口里 `border-radius:12px` / `rgb(226,232,240)` / `1px solid` 计数与改后**完全相同**），
+>   属「正文停在更早的渲染版本」。**改判了第二十四轮「旧编辑器把 changelog 边框丢了」那句，范围收窄到 #38 那一份数据。**
+> ③ **存量影响面只看一个字段**：`round25_stock_scan.mjs` 的每条判据都只是 `ARTICLE.CONTENT_HTML` 的纯函数
+>   （不信今天的时间点、不启浏览器，谁都能重跑）。38 篇未删除文章里命中任意一条的 **2 篇（5.3%）**；
+>   但 `rerender()` 的两个硬前置条件（MARKFLOW + 有 Markdown）恰好**这两篇都不满足**——
+>   「重渲染存量」这条现有路径**碰不到任何一个能修的对象**。
+
+> **第二十六轮补的两件事**（结论都在 `known-issues-handoff.md` §3.26 A / §3.27）：
+> ① **段首空白真的修掉了**，而且是本书判据先立后测跑出来的。窄修法落在
+>   `webui/src/editorExtensions.js` 的 `preserveLeadingWhitespace()`（只替换**每个块里第一个含可见字符的文本节点**的
+>   前导 `[ \t]` → `&nbsp;`；`pre`/`code`/`textarea`/`script`/`style`/`svg` 一律不碰，
+>   纯空白文本节点也不碰——否则会凭空造出可见空白），接在 `ArticleEditorView.vue` 的两处 `setContent` 上。
+>   **不走 `parseOptions`**：那条路只有 `wsOptionsFor(type, preserveWhitespace, base)` 一档布尔 / `'full'`，
+>   没有「只作用于前导」的粒度（第二十五轮已用源码否决）。
+>   两条判据都过：**段首空白存活 1/7 → 7/7**、**79 套样例的块结构/几何逐条不变 0 条不同**
+>   （顶层块 203、`section` 338、`htmlChars` 129351、`textLength` 3316 四项合计改前改后逐字相同）。
+>   ⚠️ 量「改后」那一列必须让 8081 真的发新包：`webui/dist` 建好不等于 8081 在发它。
+> ② **①②③④⑤⑥⑦⑧⑨⑩⑪ 之外的第十二处回归面（列宽）进了常规套件**：`r26-table-colwidth-exit.mjs`
+>   是**带退出码的闸**（U10），不是一次性对照实验；它自带反例自检（旧编辑器出口必须被判 FAIL）。
+>   **顺带量到一个此前没人查过的侧问题**：`data-colwidth` **只是入口写法，出口不保留它**——
+>   出口侧出现 0 次；保命的是 TipTap 自己输出的 `colwidth="90"` 属性与 `<col style="width: 90px;">`。
+
+> **第二十七轮补的三件事**（结论都在 `known-issues-handoff.md` §3.28）：
+> ① **上一轮那处代价收掉了**：`preserveLeadingWhitespace()` 里「1 个 `\t` → 1 个 `&nbsp;`」改成
+>   **按制表位等宽展开**（`TAB_SIZE = 8`，与 `.ProseMirror` 的 `tab-size` 一致；`"\t  "` = 10 列、`" \t"` = 8 列）。
+>   ⚠️ **改 `TAB_SIZE` 必须同时改 CSS 的 `tab-size`**，否则缩进宽度会跟着偏。
+>   先量暴露面才决定改法：段首制表符在 249 个产物、403 个产物文件、38 篇存量正文里**出现 0 次**（U11-a），
+>   所以「含制表符就不替换」那条路净亏损，被否决。三条判据全过：**存活 7/7**、
+>   **79 套样例 0 条不同**、制表符首字符落点 **224.89 → 224.88**（差 0.01px，半角空格逐值不变）。
+> ② **判据的「输入入口」这一维补齐了**（U11-b）：`setContent` / 粘贴 HTML / 粘贴纯文本 / 手打 四条路
+>   各给「实时 DOM / 保存出口 / 再打开」三列。两个可复用的结论：**`text/html` 走 DOMParser（空白折叠）、
+>   `text/plain` 走 prosemirror-view 的文本解析器（保留前导空白）**；以及修复挂在 `setContent` 上，
+>   但**顺带修好了「粘贴纯文本 → 保存 → 再打开」与「手打 → 保存 → 再打开」**这两条往返丢失。
+> ③ **产品代码变了就全文重验**（U11-c 就是为此加的离线对账器）：#38 十一条四列表**改前/改后两列各 125 个叶子值逐项全同**；
+>   七套回归照旧与第廿一轮快照一致（四份摘要**逐字节相同**，`r16_summary` 仍只差自算字段 `diffEntries=152`，
+>   `r16_result` 仍只差 `r16-04-quote-card` 那个 `<p style="margin: 0px;">`）。
+
+> **第二十八轮补的三件事**（结论都在 `known-issues-handoff.md` §3.29；**本轮没改产品代码**）：
+> ① **整圈钉成一道带退出码的常规闸**（U12）：三条判据（往返稳定 / 二次往返仍稳定 / **入口保真**）＋
+>   反例自检（离线存档 ＋ `--bundle` 旧整包），过 **exit 0**、不过 **exit 1**。
+>   ⚠️ **必须知道它的盲区**：只比「两次测量自洽」的判据（①）**抓不住**「打开和再打开都丢」这类 bug——
+>   反向跑实测旧 bundle 上判据① 照样 0 差异通过，抓住它的是**判据③ 入口保真**。别把①当万能。
+> ② **第 9 条的「修不修」有了完整依据**（U13）：结论**建议不修**。7 种缩进写法里真复制载荷只有 1 份
+>   （`prewrap`）会被候选修法改写，而那一份本来就靠 `white-space: pre*` 存活
+>   （`prosemirror-model/dist/index.js:2844` → `localPreserveWS = true`）；249 个产物过一遍修法只有
+>   4 个文件 / 8 处被改写，命中 `table/pre/code/katex/svg` 的 **0 处**。**收益为 0，代价是动一条没坏的全局路径。**
+> ③ **探针浏览器进程泄漏已修**（`browser/cdp.mjs`）：Windows 上 Chrome 的启动器会另起浏览器进程再自己退出，
+>   `browser.kill()` 打空 ⇒ 一轮跑下来机器上攒过 **1828 个 `chrome.exe`**，把 CDP 事件压到超时、
+>   量出来的全是环境噪声。现在 `close()` 按本次启动专用的 `--user-data-dir` **全机匹配**收进程（`spawnSync` 等它收完），
+>   跑完自检残留 **0 个**。⚠️ **跑浏览器套件前先看这一条**：若发现 `probe-chrome-*` 进程堆积，先清干净再量。
+>   ⚠️ **第三十三轮补充**：它只收**进程**、**不收目录**——`cdp.mjs:34` 的 `mkdtempSync(tmpdir(),'probe-chrome-')`
+>   每跑一次浏览器套件就在系统临时目录留下一个 profile（实测攒到 7 个 / 约 105 MB），全文件 `rmSync` 出现 **0 次**。
+>   同类还有 `round27_c_compare.mjs:114` 的 `r27c-*`（每次 `--selftest` 漏一个）。两处都**只记录、未修**，
+>   见 `known-issues-handoff.md` §3.34⑦。
+
+> **第三十四轮补的四件事**（结论都在 `known-issues-handoff.md` §3.35；**本轮改了产品代码**，所以整条链当轮重跑）：
+> ① **用户点名的第 9 条（表格）修法**：`style.css` 那套给**手写表格**用的兜底（`table-layout:fixed`、
+>   单元格 `1px` 边框、`line-height` 继承 `1.95`）会把渲染服务写下的表格排版整片盖住。修法是打开正文时
+>   把产物 `<table>` 的 `preservedStyle` 原样贴回并打标记类 `mf-preserved`，兜底那三条改成**只对没有这个类的表格生效**
+>   （`editorExtensions.js` 的 `applyPreservedTableStyle()` / `PreservedTableView` + `style.css` 两条规则）。
+>   两条判据动手前写死：① 几何朝原项目靠；② 手写表格**逐字节不受影响**。
+> ② **判据的锚是「裸容器」不是「改前」**（U17-a）——这一处是本轮最值得复用的方法要点：
+>   拿「改前」当基准，量到的 `fixed` + `1px` 边框**其实是兜底样式自己**，不是产物真值。
+>   锚定裸容器后判据是可证伪的一句话：**打类后的逐边边框必须与裸容器逐字符相同**。
+>   ⚠️ 第一版 sweep 的 `make(withClass)` **只有一个参数**，调用处却写 `make(false, false)`——
+>   第二个实参被静默忽略，那个所谓「裸容器」也带 `.ProseMirror`，7 个产物被误报成「网格线被画没」。
+>   修法是加 `withProseMirror` 形参并把「锚洁净」做成判据的一部分（锚脏就整条 FAIL），修后 7 个 FAIL 全翻 PASS。
+> ③ **标记类的判据是产物指纹，不是「有没有 style」**：TipTap 给手写表格自己就会写
+>   `<table style="min-width: 75px;">`，所以第一版「`preservedStyle` 非空就按产物表处理」会误伤手写表格
+>   （`.mf-preserved th,td{border:0}` 把网格线整片画没）。指纹取**表级 style 里有没有 `border-collapse: collapse`**
+>   （`PRODUCT_TABLE_STYLE`），纯离线取证 14/14 命中、手写表格一条不占（U17-b）。
+> ④ **回归**：九步链 **16 步 / 1 步非零**（仍只有 6/9——`#35`、`#16` 的 13 张外链图 13/13 返回 404，外部图床失效，
+>   **保留红灯不豁免**）；9g 由 1 → 0（差异 172 > 152，**11 例里只有 `r16-09-table-card` 变了 5 → 25**，
+>   其余 10 例一条不差；成因是本支参照栏（探针页的 `.probe-canvas.ProseMirror`）**不是原项目**、
+>   被兜底样式污染成 `fixed` + `25.35px`，修法让编辑器栏不再吃兜底 ⇒ 原本被「两边一起脏」抹平的差如实显形）；
+>   9h 由 1 → 0（第 15 行跨代混喂改成同代成对喂 ＋ 第 5 行补记逐例锚）。
+>   部署用仓库既有的手工补救命令（`rm -rf target/classes/static && cp -r webui/dist target/classes/static`），
+>   **不是**改构建配置。
+
+> **第三十五轮补：段首空白在「粘贴」这条路上也修好了**（用户原话「粘贴 HTML 时段首空白丢失要修」）。
+> 第二十六轮的窄修法只挂在 `setContent`（打开文章）那一条路上；粘贴走的是
+> `prosemirror-view` 的 `parseFromClipboard()`，它自己的 `preserveWhitespace: !!(asText || sliceData)`
+> 会在解析那一刻把段首 `[ \t]` 并掉。修法是给 `transformPastedHTML` 挂同一个函数
+> （`editorExtensions.js` 的 `PastedLeadingWhitespace`）。**判据与量法见本手册 U19**。
+> 部署这一步**必须自己做**：改完前端跑
+> `cd webui && npm run build -- --outDir ../target/classes/static --emptyOutDir`，再重启应用；
+> 否则 8081 发的还是旧 chunk（第三十五轮实测：不部署时是 `ArticleEditorView-CGjhQ8ZC.js`）。
+
+**本轮实测（2026-09-13，Chrome/138.0.7204.100，视口 1600×1200，图片 2/2）**：
+
+| 项 | 值 |
+| -- | -- |
+| 后端侧 | 11 条里 **10** 条语法被正常识别（第 9 条 `:::table style="card" title=` 因 `title` 被丢判 DEFECT） |
+| 编辑器侧 | 11 条里 **1** 条逐属性一致（第 2 条 `:::subscribe`）——这是**含已知假阳性**的口径 |
+| 差异条目总数 | **174 → 152**（改动前 → 改动后） |
+| 修好的可见症状 | 第 7/8 条的圆点与方框恢复（summary 可见元素 19→31、infographic 12→18）、第 11 条的表级声明（`border-collapse:separate` / `border-spacing:12px 0` / `min-width:600px`）全部贴回、第 6 条列宽 `344.5/344.5 → 599/90`（产物是 `637/90`） |
+| 第 9 条的收尾（第十七轮） | 行高差异 6→2 后余下 2 条**都不是编辑器缺陷**：1 条是表头取样错位，1 条经 `r16-width-equiv-test.mjs` **双向证伪**为两栏内容盒差 38px 引起的多折一行（见 `known-issues-handoff.md` §3.20⑤c） |
+| 未修 / 等上游 | 上游渲染缺陷 **§R5–§R9**（5 条），另 **§R10（P3）**：第 10 条在第十八轮从「未复现、不立项」改判为立项，**第二十轮又对这条改判本身做反向自查**，证明缺 `\|` 属「写法不合引擎的字段级块标量约定」，遂把 §R10 **降级为「文档未覆盖 + 静默失败」，不主张渲染 bug**（脚本 `gen/round20_field_block_scalar.py`，数字见 `target/probe/r16/r10_by_design.json` + `r10_blockscalar.json`） |
+
+**改动前后的红绿对照**（每一条都是同一支探针、同一台浏览器，不是推断）见
+`docs/dev/known-issues-handoff.md` §3.20③。**改完之后 M/C/A/R 全部重跑，数字逐项不变**（§3.20⑥）。
+
+### 3.13 自查「8081 现在发的是不是最新包」（**重启应用之后跑这一节**）
+
+**为什么需要**：改了 `webui/src/` 之后，「源码改了」与「用户打开 8081 看到的」之间有两道独立的坎——
+① 前端要**重新构建**（`npx vite build`）；② 构建产物要进 `target/classes/static/`（`spring-boot:run`
+**不经过** Maven 的 `prepare-package`，见 §3.10②）。任何一道没跨过，用户看到的就还是旧界面，而探针可能全绿。
+
+**一条命令判生死**——下面这段把「8081 实际服务的那份」与「源产物」「目标产物」三者做**哈希比对**，
+再在服务出的 chunk 里 grep 本轮的关键标识。三者哈希一致且标识命中 ⇒ 用户看到的就是最新包。
+
+```bash
+# 1) 8081 现在引用了哪些 chunk
+curl -s http://127.0.0.1:8081/ | grep -o 'assets/[A-Za-z0-9_.-]*\.\(js\|css\)' | sort -u
+
+# 2) 逐文件比对：8081 实际服务 vs 源 webui/dist vs 目标 target/classes/static
+for f in index-m7nGXL7H.js index-DQb2H7fJ.css ArticleEditorView-BfA0z7Us.js; do
+  curl -s -o /tmp/served "http://127.0.0.1:8081/assets/$f"
+  printf '%-32s 8081=%s dist=%s classes=%s\n' "$f" \
+    "$(sha256sum /tmp/served | cut -c1-16)" \
+    "$(sha256sum "webui/dist/assets/$f" | cut -c1-16)" \
+    "$(sha256sum "target/classes/static/assets/$f" | cut -c1-16)"
+done   # 三个哈希必须两两相同
+
+# 3) 关键标识必须在服务出的 chunk 里（示例：第十六轮的四条修复）
+curl -s http://127.0.0.1:8081/assets/ArticleEditorView-BfA0z7Us.js \
+  | grep -o -e syntheticBlockStyle -e preservedTableStyle -e data-colwidth -e ProseMirror-separator | sort | uniq -c
+curl -s http://127.0.0.1:8081/assets/index-DQb2H7fJ.css | grep -o 'img\.ProseMirror-separator{[^}]*}'
+```
+
+**2026-09-14 实跑结果（第十八轮）**：四个文件三处哈希**两两相同**，四个标识**全部命中**——
+
+| 文件 | 8081 服务 | 源 `webui/dist` | 目标 `target/classes/static` |
+| --- | --- | --- | --- |
+| `index-m7nGXL7H.js` | `0fedc56ddfeb3efe` | 同 | 同 |
+| `index-DQb2H7fJ.css` | `206c31387a2e8d9e` | 同 | 同 |
+| `ArticleEditorView-BfA0z7Us.js` | `37749c42564f131f` | 同 | 同 |
+| `ArticleEditorView-CHS7y3f9.css` | `5efbda46a46afe0e` | 同 | 同 |
+
+**时序佐证**（哈希之外的第二条独立证据）：源码 `webui/src/editorExtensions.js` mtime `09-13 23:40:18`
+→ `webui/dist/…BfA0z7Us.js` 构建 `23:52:13` → `target/classes/static/…` 落地 `23:58:42`。**产物晚于源码**，
+故不可能出现「源码改了、8081 还在发旧包」。
+
+> **注意第 2 步的文件名要换**：chunk 名带内容哈希，**每次构建都会变**。上面的名字是本次构建的，
+> 换构建后先用第 1 步拿到新名字。同理，第 3 步 grep 的标识名也要换成**你这次改动引入的名字**
+> （只 grep 历史名字，会得到「旧包也命中」的假绿）。
+>
+> **已知的例外**：`mvn clean` 之后只跑 `spring-boot:run`，`target/classes/static/` **根本不存在**，
+> 应用起来是空白界面——这不是「旧包」而是「无包」，见 §3.11③④。
+
+### 3.14 常设命令链（**第三十轮入库**，一条命令跑完九步 + 收尾审计）
+
+> ⚠️ **编号更正（第三十一轮复查）**：本节最初写成 `§3.13`，与上面那节
+> 「3.13 自查 8081 现在发的是不是最新包」**撞了号**（同一份文档里两个 `### 3.13`）。
+> 第三十一轮盘点文档与代码一致性时发现并改成 **§3.14**；README 与交接文档里的交叉引用同步更正。
+>
+> ⚠️ **在此之前，这条链根本不在版本控制里**：它只存在于 gitignored 的
+> `target/probe/r29/_run_suite.sh`，干净 clone 之后**没有这一步**——而「九步全绿」是本项目
+> 对外最常引用的一句话。第三十轮把它搬进来，并各步的退出码一并补完（见下）。
+>
+> ⚠️ **但它不是「干净 clone 一条命令跑到底」**（第三十一轮查明，如实记下）：链的起点是
+> `1/9` 探针 dist 重建，**不含 `gen/` 那几支出网的生成器**（`component_matrix.py` 等）。
+> 所以 `2/9`~`9g` 读的 `target/probe/components/*`、`component_matrix.json` 必须**已经存在**；
+> 干净 clone 里要先照 §3.2 / §3.4 把上一级的产物打出来，再跑本节这条链。
+> 详见下面「这条链的起点在哪」。
+
+#### 这条链的起点在哪（第三十一轮复查补记）
+
+`run-suite.sh` 里 **没有任何一行引用 `target/probe/r29/_run_suite.sh` 或那个目录**
+（`target/probe/r29` 只在脚本第 4 行的说明注释里出现过一次），所以「搬进版本控制」这层是干净的。
+但它**只覆盖了九步链本身，不覆盖链的前置产物**——逐支读一遍输入，硬前置是这六份：
+
+| 前置产物 | 由谁产出 | 链里有没有 |
+| --- | --- | --- |
+| `target/probe/components/*.html` ＋ `component_matrix.json` | `gen/component_matrix.py`（**出网**，打真实渲染 API） | ❌ 没有（§3.2） |
+| `target/probe/combos/` | `gen/round8_combos.py`（**出网**） | ❌ 没有 |
+| `target/probe/alt/` | `gen/round10_alternatives.py`（**出网**） | ❌ 没有 |
+| `target/probe/registry/` | `gen/round10_registry_closure.py`（**出网**） | ❌ 没有 |
+| `target/probe/r16/` | `gen/round16_editor_reported.py`（**出网**） | ❌ 没有 |
+| `target/probe/round10_article_coverage.json` | `gen/round10_article_coverage.py`（**要先手工导出 TSV**，见 §3.7） | ❌ 没有 |
+
+结论：**「干净 clone 里有一条命令能跑完九步链」这句话，第三十轮之后成立；但「一条命令从零复现全部产物」不成立**
+——那需要出网打渲染 API（要令牌），第三十一轮**没有扩链**，只把这句话的真实边界写在这里。
+取一份现成的 `target/probe/` 产物树之后，`run-suite.sh` 是可以独立跑通的（本轮实测，见 §3.14 下方的实测结果）。
+
+```bash
+# 前置：应用在 127.0.0.1:8081 起着（6/9、7/9 要真应用）。探针 dist 由 1/9 自己重建。
+bash tools/render-verify/run-suite.sh
+bash tools/render-verify/run-suite.sh --no-build    # 跳过 1/9 的探针 dist 重建
+# 日志：target/probe/run_suite.log
+# 退出码：0 = 每一步都是 0；1 = 有步骤非零（末尾逐个列出）。
+```
+
+链的组成（**串行，不要并行**）：`1/9` 探针 dist 重建 → `2/9` 全量样例 79 → `3/9` 组合条件 17 →
+`4/9` 等上游替代 10 → `5/9` 注册表全族 76 → `6/9` 真实稿件 14 → `7/9` 活体前端 43/44 →
+`8/9` r16 本体 11 → 汇总层 `9a`~`9g` → **收尾审计 `9h`**：
+
+```bash
+node tools/render-verify/round29_gate_audit.mjs          # = 链里的 9h
+node tools/render-verify/round29_gate_audit.mjs --json   # 另落 target/probe/browser/r29_gate_audit.json
+# 退出码：0 = 每条断言的实际表现都与它自己声明的相符；1 = 表该更新了
+```
+
+**这一步回答的是「今天的绿灯有多少是真绿」**：它逐条给全库 21 条验收断言分类
+（甲｜只比两侧一致 / 乙｜与外部真值对照 / 丙｜自声明期望值 / 丁｜没有判据）、标出谁能判红，
+并且**真的喂一份坏输入**去看它判了什么——浏览器各支跑自己的 `--selftest`（不开浏览器），
+汇总层与两条离线比较器把产物**复制**到临时目录改坏一处再跑
+（`RENDER_VERIFY_PROBE_DIR` 这个环境变量就是为这件事开的口子，见 `paths.mjs`；**真产物一个字节不动**）。
+
+> ⚠️ **口径分界线（第三十轮）**：九步链 **15 个步骤在第二十九轮及以前只有 1/9 的构建真正能判红**，
+> 其余 14 步（2/9~9g）**没有退出码**——那时的 `EXIT=0` 只表示「脚本没抛异常」，不含任何通过/不通过判据。
+> **第三十轮把 14 步的退出码全部补齐**（判定口径一个字没改，只是把脚本本来就在打印的 fail 数接到退出码上），
+> 并把 `round27_c_compare`（E2）与 `r27-entry-paths`（E3）的退出码也接回。
+> **从第三十轮起，「九步全绿」才可以按字面读。** 历史汇报里的那些数字本身仍然是真的
+> （用例数、pass/na/fail 分布、截图、逐条差异表都在），收窄的只是「`EXIT=0` ⇒ 这一步通过」这个推论；
+> `docs/render-acceptance-report.md` §五 第 12 条加了一条注记说明当时那个数字的真实含义，**历史结论不重写**。
+>
+> **第三十轮的实测结果**：16 步里 **6/9 是真红**（`EXIT=1`）——`#16` / `#35` 正文引用的 13 个外链图
+> （`robocopmao.github.io`）**13/13 全部返回 404**（站点根 `/` 仍是 200，图没了），属**外部图床失效**，
+> 不是本项目缺陷。**保留红灯，不豁免、不放宽判据**；其余 15 步 `EXIT=0`。
+
+---
+
 ## 四、第十二轮数字快照（本轮全部当轮重跑，未复用旧值）
 
 | 项 | 值 | 日志/产物 |
@@ -511,13 +1214,50 @@ Maven `frontend-maven-plugin` 在 `prepare-package` 阶段写进 `target/classes
 16. **写代码注释时别把反引号放进模板字符串**：`verify-live-app.mjs` 里的 `MEASURE` 是一整段模板字符串，
     注释里出现 `` `name: 'rawSvg'` `` 会直接让 Node 报 `SyntaxError: Unexpected identifier`。
     这类脚本调试成本高（要跑起来才知道），写的时候留意。
+17. **汇总产物不是逐字节可复现的**：`all_summary.json` / `round10_component_paths.json` 按
+    `target/probe/components/` 的**目录列举顺序**排列，clone 里这些文件是新建的，NTFS 列举顺序与
+    原工作仓库不同 → **79 行集合相同、行序不同**。判定数字一格不变；要比对就比 id→判定 的映射，
+    别直接 diff 文件。（第十五轮实测，见 §3.11①）
+18. **干净 clone 照 §3.5 跑会 ENOENT**：`round10_component_paths.mjs` 依赖 §3.7 才产出的
+    `round10_article_coverage.json`，而 §3.7 在文档里排在后面。§3.5 已加顺序警告。
+19. **`mvn clean` 之后直接 `spring-boot:run`，应用没有前端**：`src/main/resources/static` 不存在，
+    所以 `process-resources` 覆盖不了也补不出 `target/classes/static`；第十五轮在干净 clone 里实测
+    `test-compile` 后该目录**根本不存在**。普通重启（不 clean）**不会**退回旧前端——实测 39 个文件
+    逐字节不变。修复方案见 §3.11④（**需用户拍板，本轮未改构建配置**）。
+20. **探针浏览器收不干净，且「数残留」的写法本身会自证为 1**（第二十九轮）：两件事一起踩的。
+    ① **不能拿 `spawn()` 的 pid 收**——Chrome 启动器先起真浏览器、自己再退出，`close()` 时那个 pid
+    已经是死进程；唯一稳的标识是本次启动专用的 `--user-data-dir`（`mkdtempSync(…, 'probe-chrome-')`）。
+    ② **只按 `CommandLine.Contains('probe-chrome-')` 数/清会数到自己**——发查询的 `powershell.exe`
+    命令行里嵌着这个字符串，于是计数永远留 1、清理脚本还会把自己 `Stop-Process` 掉。**必须同时限定
+    `$_.Name -in @('chrome.exe','msedge.exe','crashpad_handler.exe')`**。完整片段与自检见 §3.4.1。
+21. **退出码非零 ≠ 判据判红**（第三十二/三十三轮反复踩）：本套件各脚本把判词打成 `[闸] …` 行并以
+    **非零退出码**表示不通过；但**脚本自己崩了**（`TypeError` / `ENOENT` / `spawnSync` 起不来）同样是非零。
+    引用「某一步非零」之前**先看那一步有没有留下 `[闸]` 行**。第三十三轮实测的正例：
+    `round10_component_paths.mjs` 在「浏览器实测比清单少一行」和「`all_summary` 空表」两种输入下
+    都是在 `:148` 的 `verdict.backend` 上 `TypeError` 崩溃，退出码 1、**没有任何判词**——
+    与「闸抓住了坏输入」是两回事。明细见 `docs/dev/known-issues-handoff.md` §3.33③ / §3.34②③。
+22. **每次跑浏览器套件会往 `%TEMP%` 留一个 profile 目录**（第三十三轮查明，未修）：`cdp.mjs` 只清进程、
+    不删 `probe-chrome-*` 目录；同一趟 9h 还会因 `round27_c_compare.mjs:114` 多留一个 `r27c-*`。
+    攒着会占盘（实测 7 个约 105 MB），**定期手动清或等拍板修**，见 §3.4.1 的 ⚠️ 与 §3.34⑦。
+23. **`#38` 的正文会被用户改，套件的前置条件会因此失效**（第三十四轮实测）：`r24-article38-symptoms.mjs`
+    有一道「编辑器挂上正文」的前置判据 `minText = INJECT ? 10 : 1000`（可见字符数 > 1000），
+    而 2026-09-14 16:24 之后 `#38` 的正文只剩 **196 个可见字**（`revision=20`、`CONTENT_HTML` **6,211** 字符；
+    revision 17 时还是 32,583 字符 / 1,727 字）。**这不是探针写的**：那三次 `MANUAL`/「手动编辑」落库
+    在两次探针运行之间，且每个探针脚本对非 GET 都有应用层 + 网络层双层拦截、跑完回读 `revision` 未变；
+    但也没法从服务端确认操作者是谁——详见手册 §六 第 23 条与 `known-issues-handoff.md` §3.35⑦。
+    于是不带 `--inject` 直接跑会在 80 次轮询后打印「编辑器就绪: false」并 `exit 2`——
+    **那不是编辑器坏了，是前置条件不成立**。要量这一篇就带 `--inject <caseId>`（阈值降到 10），
+    或者先跟用户确认这篇正文还要不要保持这个形状。`round25_stock_scan.mjs` 的存量判据也读同一个字段，
+    它的结论同样随这篇正文变化（重跑它即可刷新）。
 
 ---
 
 ## 七、这套方法本身的局限（如实写）
 
 - **外部依赖上游**：63 个注册 ID 里 **38 个 `layout-*` 上游没实现**，本项目的应对是
-  「技能文案禁用 + 保存自检拦截 + 给出替代写法」，**不是**把它们渲染出来——这不在本项目可控范围内。
+  「技能文案禁用 + 保存自检给出改写提示 + 给出替代写法」，**不是**把它们渲染出来——这不在本项目可控范围内。
+  （是**提示不是拒绝**：保存仍然成功；且只覆盖智能体 `save_article_draft` 路径，
+  编辑器人工保存路径没有这项检查。全族 76 组逐名核验见 §3.11⑤。）
 - **`layout-*` 的结论是「当前构建的行为」**：上游改版后需要按 §3.6 重跑，不能当永久结论。
 - **A 级证据只覆盖 13 / 63 个 ID**：其余 50 个停在 B 级（最小样例 + 真实浏览器）。
   B 级已经是真浏览器实测，不是 jsdom，但「真实稿件里被用于成稿」这一层没到。
@@ -525,6 +1265,10 @@ Maven `frontend-maven-plugin` 在 `prepare-package` 阶段写进 `target/classes
   不计入 pass 也不计入 fail——这一点容易被误读成「编辑器和上游一样坏」。
 - ~~**技能文案的库内版本仍落后于源码**（5635 vs 6649），需重启应用一次才落库，见 §八 第 7 条。~~
   **第十四轮重启后已落库（`CHAR_LENGTH` = 6649、与源码一致），该项关闭。**
+- **「全库 44 篇里被用到的写法，编辑器侧都能渲染」是 B 级结论**（第十五轮补，见 §3.11⑥）：
+  39 项命中的判定全部为 `pass`，但其中 **7 项**（`md-link`、`md-image`、`blk-title`、`in-em-hl`、
+  `ctn-case-flow`、`ctn-steps-h`、`ctn-steps-v`）命中它们的文章**都不在**真 SPA 回归过的 13 篇里，
+  等于缺「真实成稿在编辑器里打开」这一层。要升级只能让调度轮次真的产出用到这些写法的成稿。
 - **「两条路径都正确」有两层，别混起来读**：本文前面的判定（S 套件）量的是**最新构建的编辑器产物**；
   而用户打开应用时看到的是**应用实际提供的那份**。这两者可以不是同一次构建（§六 第 13、14 条）。
   第十四轮的复核把两者都量了（L 套件），结论一致；但**以后每次改编辑器扩展都要两条都跑**，

@@ -16,18 +16,35 @@
  * 用法：
  *     (cd webui && npx vite build --config ../tools/render-verify/browser/vite.config.mjs)
  *     node tools/render-verify/browser/run-combo-browser.mjs
+ *     node tools/render-verify/browser/run-combo-browser.mjs --selftest   # 闸自检，不开浏览器、不写产物
  * 产物：target/probe/browser/combo_result.json、shots/combo/<id>.png
+ *
+ * 退出码（**第二十九轮 E1 补**，此前这一支没有退出码——`3/9 EXIT=0` 与「17 条都收到了」无关）：
+ *   0 = 失败项 0；1 = 条数不是 17、有截图没截到、有图没加载出来。判据见 `gates.mjs` 的 `收集器判据`。
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { OUT, BROWSER_OUT, PROBE_DIST } from '../paths.mjs'
 import { createServer } from 'node:http'
 import { resolve, join, extname } from 'node:path'
 import { launchBrowser, openPage } from './cdp.mjs'
+import { 判据, 收集器判据, 收集器自检 } from '../gates.mjs'
+
+const ARGS = process.argv.slice(2)
 
 const PROBE = OUT
 const COMBOS = resolve(PROBE, 'combos')
 const DIST = PROBE_DIST
 const SHOTS = resolve(BROWSER_OUT, 'shots/combo')
+
+if (ARGS.includes('--selftest')) {
+  const 清单 = JSON.parse(readFileSync(join(COMBOS, 'combos.json'), 'utf8'))
+  const 存档 = resolve(BROWSER_OUT, 'combo_result.json')
+  const 已跑 = existsSync(存档) ? JSON.parse(readFileSync(存档, 'utf8')) : null
+  process.exitCode = 收集器自检('3/9 run-combo-browser', '组合用例', 清单.cases.length, 已跑
+    ? { 条数: 已跑.samples.length, 截图失败: 已跑.shotFailures,
+        图片失败: 已跑.page.images.failed, 图片总数: 已跑.page.images.total }
+    : { 条数: 清单.cases.length, 截图失败: 0, 图片失败: 0, 图片总数: 0 })
+} else {
 
 const meta = JSON.parse(readFileSync(join(COMBOS, 'combos.json'), 'utf8'))
 const payload = meta.cases.map((item) => ({
@@ -39,6 +56,8 @@ const payload = meta.cases.map((item) => ({
   html: readFileSync(join(COMBOS, item.id + '.html'), 'utf8'),
 }))
 console.log('组合用例数:', payload.length)
+
+const 判 = 收集器判据(meta.cases.length, '组合用例')
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' }
 const server = createServer((request, response) => {
@@ -86,6 +105,7 @@ const imageState = await page.evaluate(`(async () => {
   })
 })()`)
 console.log('图片:', imageState)
+const 图片 = JSON.parse(imageState)
 await new Promise((done) => setTimeout(done, 800))
 
 let shotFailures = 0
@@ -135,3 +155,9 @@ await page.close()
 close()
 server.close()
 console.log('\n结果:', resolve(BROWSER_OUT, 'combo_result.json'))
+
+process.exitCode = 判据('3/9 run-combo-browser（' + meta.cases.length + ' 组合 · 截图失败 ' + shotFailures
+  + ' · 图片失败 ' + 图片.failed + '）', 判, {
+  条数: results.length, 截图失败: shotFailures, 图片失败: 图片.failed, 图片总数: 图片.total,
+}) ? 1 : 0
+}

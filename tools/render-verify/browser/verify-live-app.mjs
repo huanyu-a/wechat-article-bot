@@ -8,18 +8,77 @@
  * 而 `webui/dist` 已经是 9-13，于是「探针全绿、用户打开却是坏的」。
  *
  * 用法：node tools/render-verify/browser/verify-live-app.mjs [articleId ...]
+ *       node tools/render-verify/browser/verify-live-app.mjs --selftest   # 闸自检，不开浏览器、不写产物
  * 产物：target/probe/browser/live_app_result.json、shots/live/<id>.png
+ *
+ * 退出码（**第二十九轮 E1 补**，此前这一支没有退出码——`7/9 EXIT=0` 与「打开了、也没残留公式源码」无关）：
+ *   0 = 失败项 0；1 = 下列任一：**结果集为空**、**某篇编辑器没挂载（`ready:false`）**、
+ *       **某篇可见文字里残留公式源码**、**前端 chunk 指纹缺项**（跑的不是带修复的那份前端）。
+ *   这三项本来就是每轮汇报里逐字写出来的（「ready=true」「公式源码残留=false」「rawSvg/rawMath/preservedEmptySpan」），
+ *   本支只是把那三句话接到退出码上，**没有新增判据**。
  */
-import { writeFileSync, mkdirSync } from 'node:fs'
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { launchBrowser, openPage } from './cdp.mjs'
 import { BROWSER_OUT } from '../paths.mjs'
+import { 判据, 自检, 失败, 克隆 } from '../gates.mjs'
 
 const LIVE = 'http://127.0.0.1:8081'
 const SHOTS = resolve(BROWSER_OUT, 'shots/live')
-mkdirSync(SHOTS, { recursive: true })
 
-const TARGETS = process.argv.slice(2).length ? process.argv.slice(2).map(Number) : [43, 44]
+const ARGS = process.argv.slice(2)
+const 数值参数 = ARGS.map(Number).filter((value) => Number.isFinite(value))
+const TARGETS = 数值参数.length ? 数值参数 : [43, 44]
+
+// ---- 前端 chunk 指纹必须齐的三项：只存在于带修复的 `webui/src/editorExtensions.js` 里 ----
+const 指纹项 = ['hasRawSvg', 'hasRawMath', 'hasPreservedEmptySpan']
+
+// ===========================================================================
+// 7/9 的**判据**（纯函数；主流程与 `--selftest` 共用）。
+// ===========================================================================
+const 判 = ({ 结果集, 指纹 }) => {
+  const 清单 = []
+  if (!结果集.length) {
+    清单.push(失败('结果集为空', '一篇都没打开——这个闸在这种输入上必须是红的'))
+  }
+  for (const 条 of 结果集) {
+    if (!条.editor?.ready) {
+      清单.push(失败('#' + 条.id + ' 编辑器没挂载', 'ready=false：' + (条.editor?.reason || '（未给出理由）')))
+    } else if (条.editor.katexSourceLeak) {
+      清单.push(失败('#' + 条.id + ' 残留公式源码', '可见文字里出现 $$ / \\frac / \\begin{ / \\sum_ ——公式没渲染，是原样文本'))
+    }
+  }
+  const 缺 = 指纹项.filter((键) => 指纹?.[键] !== true)
+  if (缺.length) {
+    清单.push(失败('前端 chunk 指纹缺项', 缺.join('、') + ' 不为 true；当前 chunk '
+      + (指纹?.editorChunk || '（没抓到）') + ' —— 跑的可能不是带修复的那份前端'))
+  }
+  return 清单
+}
+
+if (ARGS.includes('--selftest')) {
+  const 存档 = resolve(BROWSER_OUT, 'live_app_result.json')
+  const 当前 = existsSync(存档) ? JSON.parse(readFileSync(存档, 'utf8')) : null
+  const 样本 = 当前
+    ? { 结果集: 当前.results.map((条) => ({ id: 条.id, editor: 条.editor })), 指纹: 当前.fingerprint }
+    : { 结果集: [{ id: 43, editor: { ready: true, katexSourceLeak: false } }], 指纹: { hasRawSvg: true, hasRawMath: true, hasPreservedEmptySpan: true } }
+  const 没挂载 = 克隆(样本)
+  没挂载.结果集[0].editor.ready = false
+  const 漏源码 = 克隆(样本)
+  漏源码.结果集[0].editor.katexSourceLeak = true
+  const 旧前端 = 克隆(样本)
+  旧前端.指纹.hasPreservedEmptySpan = false
+  process.exitCode = 自检('7/9 verify-live-app', 判, [
+    { 名: (当前 ? '当前存档（' : '（无存档，用合成样本）') + 样本.结果集.length + ' 篇）',
+      数据: 样本, 期望: 0, 备注: 'chunk ' + (样本.指纹.editorChunk || '—') },
+    { 名: '把第一篇改成 ready=false', 数据: 没挂载, 期望: 1, 备注: '#' + 没挂载.结果集[0].id },
+    { 名: '把第一篇改成残留公式源码', 数据: 漏源码, 期望: 1, 备注: '#' + 漏源码.结果集[0].id },
+    { 名: '指纹缺 hasPreservedEmptySpan（旧前端）', 数据: 旧前端, 期望: 1, 备注: '跑的不是带修复的那份' },
+    { 名: '结果集为空（退化输入）', 数据: { 结果集: [], 指纹: 样本.指纹 }, 期望: 1, 备注: '空输入不许判绿' },
+  ])
+} else {
+
+mkdirSync(SHOTS, { recursive: true })
 
 const MEASURE = `JSON.stringify((() => {
   const box = (element) => { const r = element.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)] }
@@ -141,3 +200,7 @@ console.log('\n结果:', resolve(BROWSER_OUT, 'live_app_result.json'))
 
 await page.close()
 close()
+
+process.exitCode = 判据('7/9 verify-live-app（真实应用 ' + results.length + ' 篇 · ready + 无公式源码残留 + 带修复的 chunk）',
+  判, { 结果集: results, 指纹: fingerprint }) ? 1 : 0
+}

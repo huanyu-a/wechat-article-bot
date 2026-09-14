@@ -7,7 +7,7 @@
  2. 同一 bundle 里的**语法匹配器**（`{name:"xxx",match:e=>/^<xxx\\b/.test(e)}`）——决定「写成什么才会被识别」。
     结果 `spec/component_matchers.json`。
  3. 渲染服务 `GET https://www.bx9y.com.cn/__markflow_render`（无 body）返回的 `guide`
-    （`spec/guide_recheck.md`，13744 字符）——它是**给模型看的官方语法指令**，
+    （`spec/guide_recheck.md`，13744 字节 / 7672 字符）——它是**给模型看的官方语法指令**，
     只列了 11 个块级标签 + 若干容器，另有一节数学公式。
 
 本文件给出的是「可写进 Markdown 的语法」清单：注册表里的 63 个 id 中，

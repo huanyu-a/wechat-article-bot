@@ -19,9 +19,14 @@ export default {
   build: {
     outDir: PROBE_DIST,
     emptyOutDir: true,
-    // 两个入口：probe.html = 14 组「改前 / 改后」对照；all.html = 全量 79 样例核查
+    // 三个入口：probe.html = 14 组「改前 / 改后」对照；all.html = 全量 79 样例核查；
+    // r16.html = 用户标注 11 条（带逐条计算样式探针）
     rollupOptions: {
-      input: { probe: resolve(here, 'probe.html'), all: resolve(here, 'probe_all.html') },
+      input: {
+        probe: resolve(here, 'probe.html'),
+        all: resolve(here, 'probe_all.html'),
+        r16: resolve(here, 'probe_r16.html'),
+      },
     },
   },
   resolve: {

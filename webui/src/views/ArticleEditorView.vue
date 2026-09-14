@@ -16,7 +16,8 @@ import SkillPicker from '../components/SkillPicker.vue'
 import {
   Figure, FigureCaption, MarkflowBold, MarkflowCodeBlock, ParagraphStyle, paragraphStyleTypes, PreservedClass,
   PreservedEmptySpan, PreservedInlineStyle, PreservedMarkStyle, PreservedRenderId, PreservedTableStyle,
-  RawMath, RawSvg, StyledDiv, StyledInlineDiv, StyledSection, Subscript, Superscript,
+  PreservedTableView, RawMath, RawSvg, StyledDiv, StyledInlineDiv, StyledSection, Subscript, Superscript,
+  SyntheticBlockStyle, PastedLeadingWhitespace, preserveLeadingWhitespace,
 } from '../editorExtensions'
 import '../article-agent.css'
 import {
@@ -57,7 +58,7 @@ const editor=useEditor({
     Figure,
     Image.configure({inline:false,allowBase64:false}),
     Link.configure({openOnClick:false}),
-    TableKit.configure({table:{resizable:true}}),
+    TableKit.configure({table:{resizable:true,View:PreservedTableView}}),
     TextStyle,
     Color,
     BackgroundColor,
@@ -72,6 +73,8 @@ const editor=useEditor({
     Superscript,
     PreservedTableStyle,
     PreservedRenderId,
+    SyntheticBlockStyle,
+    PastedLeadingWhitespace,
   ],
   content:'<p></p>',
   editorProps:{attributes:{class:'article-prose'}},
@@ -86,8 +89,8 @@ watch([
 ],markDirty,{flush:'sync'})
 watch(articleSkillIds,()=>{if(ready.value&&!applyingServerArticle)markDirty()},{flush:'sync'})
 watch(interactionBusy,(busy)=>editor.value?.setEditable(!busy),{flush:'post'})
-function applyServerArticle(updated,replaceContent=false){applyingServerArticle=true;article.value={...article.value,...updated};articleSkillIds.value=parseSkillIds(updated.skillIds);if(replaceContent)editor.value.commands.setContent(updated.contentHtml||'<p></p>',false);applyingServerArticle=false}
-async function load(){try{const [a,acc,msg]=await Promise.all([api(`/api/articles/${route.params.id}`),api('/api/accounts'),api(`/api/articles/${route.params.id}/ai/messages`)]);article.value=a;accounts.value=acc;messages.value=msg;articleSkillIds.value=parseSkillIds(a.skillIds);try{const skills=await api('/api/skills');skillNames.value=Object.fromEntries(skills.map(s=>[Number(s.id),s.name]))}catch{}await nextTick();editor.value.commands.setContent(a.contentHtml||'<p></p>',false);ready.value=true;savedAt.value=formatClock(a.updatedAt)}catch(e){error.value=e.message}}
+function applyServerArticle(updated,replaceContent=false){applyingServerArticle=true;article.value={...article.value,...updated};articleSkillIds.value=parseSkillIds(updated.skillIds);if(replaceContent)editor.value.commands.setContent(preserveLeadingWhitespace(updated.contentHtml)||'<p></p>',false);applyingServerArticle=false}
+async function load(){try{const [a,acc,msg]=await Promise.all([api(`/api/articles/${route.params.id}`),api('/api/accounts'),api(`/api/articles/${route.params.id}/ai/messages`)]);article.value=a;accounts.value=acc;messages.value=msg;articleSkillIds.value=parseSkillIds(a.skillIds);try{const skills=await api('/api/skills');skillNames.value=Object.fromEntries(skills.map(s=>[Number(s.id),s.name]))}catch{}await nextTick();editor.value.commands.setContent(preserveLeadingWhitespace(a.contentHtml||'<p></p>'),false);ready.value=true;savedAt.value=formatClock(a.updatedAt)}catch(e){error.value=e.message}}
 async function save(showError=true){
   clearTimeout(saveTimer)
   if(savePromise){try{return await savePromise}catch(e){if(showError){error.value=e.message;throw e}return null}}

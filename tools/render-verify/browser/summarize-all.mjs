@@ -11,11 +11,19 @@
  *   fail  其余（文字变了 / 特征丢了 / 一个盒子都没有）
  *
  * 用法：node tools/render-verify/browser/summarize-all.mjs
+ *       node tools/render-verify/browser/summarize-all.mjs --selftest   # 闸自检，不写产物
  * 产物：target/probe/browser/all_summary.md、all_summary.json
+ *
+ * 退出码（**第二十九轮 E1 补**，此前这一支没有退出码——`9a EXIT=0` 与 pass 数无关）：
+ *   0 = 失败项 0；1 = 有 `fail` 或 `unverified`（逐条打印是哪一条、为什么）。
+ *   ⚠️ 判据本身、判定口径、`na` 清单**一个字节都没动**，补的只是「把既有结论变成一个数」。
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { OUT, BROWSER_OUT } from '../paths.mjs'
 import { resolve } from 'node:path'
+import { 判据, 自检, 失败, 克隆 } from '../gates.mjs'
+
+const ARGS = process.argv.slice(2)
 
 const PROBE = OUT
 const raw = JSON.parse(readFileSync(resolve(BROWSER_OUT, 'all_result.json'), 'utf8'))
@@ -188,6 +196,55 @@ for (const row of rows) {
   byCategory[row.category][row.verdict] += 1
 }
 
+// ===========================================================================
+// 9a 的**判据**（纯函数；主流程与 `--selftest` 走的是同一个函数）。
+//
+// 失败项 = 判定为 `fail` 或 `unverified` 的样例行，逐条带上脚本自己算出的理由。
+// `unverified` 也算失败项：它表示「na 清单里记的现场与实测对不上」——清单过期本身就是要修的事，
+// 不是可以悄悄放过的一格。
+//
+// 另加一条**退化保护**：一条判定都没有时判红。理由是本轮审计的主题——
+// 一个在空输入上判绿的闸等于恒真式（第二十九轮 A 抓到过恒真判据：`String.includes("")`）。
+// 这条保护不改变任何一条样例的判定，只在「表是空的」这种其原本不可能绿的输入上生效。
+// ===========================================================================
+// ===========================================================================
+// 9a 的**判据**（纯函数；主流程与 `--selftest` 共用）。
+//
+// ⚠️ **分母锚**（第三十二轮加）：应有条数**不取 `rows.length`**——`rows` 是遍历 `raw.samples`
+// 生成的，产物里少几条它就少几条，「pass 0 / na 0 / fail 0」照样拼得出来一个绿。
+// 实测：把 `all_result.json` 的 `samples` 只留 1 条，原判据（只有「空表」保护）判 `EXIT=0`，
+// 分母从 79 悄悄变成 1。现在拿**另一份产物**（`component_matrix.json`，由 `gen/component_matrix.py`
+// 写的样例清单）当锚——两个脚本各写一份，数对不上就红。空表是这一条的特例（0 ≠ 79）。
+// ===========================================================================
+const 应有样例数 = (matrix.rows || matrix).length
+
+const 判 = ({ rows: 表, 应有 }) => {
+  const 清单 = 表.filter((row) => row.verdict === 'fail' || row.verdict === 'unverified')
+    .map((row) => 失败(row.verdict + ' ' + row.id, row.reason))
+  if (表.length !== 应有) 清单.push(失败('样例数', 表.length + ' 条，应为 ' + 应有 + ' 条'
+    + '——与 `component_matrix.json` 的样例清单对不上（分母变小/变大，'
+    + '后面的 pass / na / fail 分布也一起失真）。0 条是这一条的特例'))
+  return 清单
+}
+
+if (ARGS.includes('--selftest')) {
+  const 坏 = 克隆(rows)
+  坏[0].verdict = 'fail'
+  坏[0].reason = '（自检造）可见文字不一致：参照 100 字 / 编辑器 90 字'
+  const 坏2 = 克隆(rows)
+  坏2[1].verdict = 'unverified'
+  坏2[1].reason = '（自检造）na 清单里记的现场与本轮实测不符'
+  process.exitCode = 自检('9a summarize-all', 判, [
+    { 名: '当前存档（' + rows.length + ' 条判定）', 数据: { rows, 应有: 应有样例数 }, 期望: 0,
+      备注: 'pass ' + (counts.pass || 0) + ' / na ' + (counts.na || 0) + ' / fail ' + (counts.fail || 0) + ' / unverified ' + (counts.unverified || 0) },
+    { 名: '把第 1 条改成 fail', 数据: { rows: 坏, 应有: 应有样例数 }, 期望: 1, 备注: 坏[0].id },
+    { 名: '把第 2 条改成 unverified', 数据: { rows: 坏2, 应有: 应有样例数 }, 期望: 1, 备注: 坏2[1].id },
+    { 名: '空表（退化输入）', 数据: { rows: [], 应有: 应有样例数 }, 期望: 1, 备注: '空输入不许判绿' },
+    { 名: '分母变小：只留 1 条（第三十二轮加的用例）', 数据: { rows: 坏.slice(0, 1), 应有: 应有样例数 }, 期望: 1,
+      备注: '1 条 vs 应有 ' + 应有样例数 + ' 条 —— 少跑样例但每条都 pass 时，光看 pass/na/fail 是看不出来的' },
+  ])
+} else {
+
 const lines = []
 lines.push('# 全量 79 样例 · 真实浏览器逐个判定')
 lines.push('')
@@ -263,4 +320,8 @@ console.log(lines.slice(0, 40).join('\n'))
 console.log('\n判定汇总:', JSON.stringify(counts))
 for (const row of rows.filter((item) => item.verdict !== 'pass')) {
   console.log(`  ${row.verdict}  ${row.id.padEnd(24)} ${row.reason}`)
+}
+
+process.exitCode = 判据('9a summarize-all（79 样例 pass / na / fail / unverified）', 判,
+  { rows, 应有: 应有样例数 }) ? 1 : 0
 }

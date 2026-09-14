@@ -8,7 +8,7 @@
  *
  * 只用到这里需要的几个域：Target / Page / Runtime / Emulation / DOM。
  */
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -29,6 +29,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** 起一个 headless 浏览器，返回 { browser, port, close() }。 */
 export async function launchBrowser({ port = 9333, headless = true, extraArgs = [] } = {}) {
+  await sweepLeftovers()
   const executable = findBrowser()
   const profile = mkdtempSync(join(tmpdir(), 'probe-chrome-'))
   const args = [
@@ -52,14 +53,128 @@ export async function launchBrowser({ port = 9333, headless = true, extraArgs = 
     } catch { /* 还没起来 */ }
     await sleep(250)
   }
-  if (!version) { browser.kill(); throw new Error('浏览器 CDP 端口没起来') }
+  if (!version) { killTree(browser, profile); throw new Error('浏览器 CDP 端口没起来') }
 
   const client = new CDP(version.webSocketDebuggerUrl)
   await client.open()
   return {
     browser, client, port, version,
-    close() { try { client.close() } catch { /* 已经关了 */ } try { browser.kill() } catch { /* 已退出 */ } },
+    close() { try { client.close() } catch { /* 已经关了 */ } killTree(browser, profile) },
   }
+}
+
+/** 本支专用 profile 的前缀。`mkdtempSync(join(tmpdir(), 'probe-chrome-'))` 造出来的目录全带它。 */
+const PROFILE_PREFIX = 'probe-chrome-'
+
+/**
+ * 「是不是本支的探针浏览器」的 PowerShell 判定片段。
+ *
+ * ⚠️ 第二十九轮实测：**只用「命令行里带前缀」判定是错的**——发出这条查询/清理命令的
+ * PowerShell 自己，命令行里也嵌着这个前缀（脚本字符串原样进命令行），于是**自己数自己**：
+ * 数出来永远留 1 个（那 1 个就是正在执行查询的 powershell.exe 本身），清理脚本还会
+ * `Stop-Process` 打到自己、半路把自己干掉，剩下的进程反而清不完。
+ * 所以必须同时限定**可执行名**是浏览器（chrome.exe / msedge.exe / crashpad_handler.exe）。
+ * 副作用是这条判定也不再依赖「前缀不能出现在别的进程命令行里」这个假设。
+ */
+function probeMatcher(varName) {
+  return "$_.Name -in @('chrome.exe','msedge.exe','crashpad_handler.exe') "
+    + '-and $_.CommandLine -and $_.CommandLine.Contains(' + varName + ')'
+}
+
+/**
+ * 关掉本次启动的浏览器进程。
+ *
+ * ⚠️ 第二十八轮实测的教训：Windows 上 `browser.kill()`（只杀 spawn 返回的那一个 pid）**杀不干净**——
+ * 一轮跑下来在机器上攒出 **1828 个 `chrome.exe`**（都带 `--user-data-dir=…\probe-chrome-*`，
+ * 确认过没有一个是用户自己的浏览器），把机器压到 `Page.loadEventFired` 直接超时，
+ * 后面几次量出来的都是环境噪声。
+ *
+ * 为什么不能按 pid 杀：Chrome 的启动器进程会**把浏览器进程另起一个再自己退出**——
+ * 实测 spawn 拿到的 pid（88476）在 `close()` 那一刻就已经「没有这个进程」，
+ * 所以 `taskkill /PID` 和 `browser.kill()` 都打空，真正的浏览器进程成了孤儿。
+ *
+ * 稳定可用的标识只有一个：本次启动专用的 `--user-data-dir`（`mkdtemp` 出来，全机唯一）。
+ * 进程的完整命令行里带着它，按它匹配来杀，跑完进程数回到 0。非 Windows 上仍走 `kill()`。
+ */
+function killTree(browser, profile) {
+  if (process.platform === 'win32' && profile) {
+    // PowerShell 里单引号字符串不做转义，Windows 路径可以直接放；用 Contains 而不是 -like，
+    // 免得路径里的字符被当成通配符。
+    const script = "$p='" + profile + "'; "
+      + 'Get-CimInstance Win32_Process | '
+      + 'Where-Object { ' + probeMatcher('$p') + ' } | '
+      + 'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }'
+    try {
+      spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script],
+        { stdio: 'ignore', windowsHide: true })
+      return
+    } catch { /* 退回到 kill */ }
+  }
+  try { browser && browser.kill() } catch { /* 已退出 */ }
+}
+
+/**
+ * 数一数机器上还有几个「本支的」浏览器进程（命令行里带 `probe-chrome-`，且可执行名是浏览器）。
+ * 不返回命令行内容是为了不把一屏路径灌进日志。
+ */
+function probeChromeProcesses() {
+  if (process.platform !== 'win32') return []
+  // 单引号字符串在 PowerShell 里不做转义，这里没有用户输入，前缀是常量。
+  const script = 'Get-CimInstance Win32_Process | '
+    + 'Where-Object { ' + probeMatcher("'" + PROFILE_PREFIX + "'") + ' } | '
+    + 'Select-Object -ExpandProperty ProcessId'
+  try {
+    const out = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script],
+      { encoding: 'utf8', windowsHide: true, timeout: 60000 })
+    return String(out.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  } catch { return [] }
+}
+
+/** 只扫一次：`launchBrowser()` 可能在同一条链里被调好几次（每支脚本各自起一次）。 */
+let swept = false
+
+/**
+ * **启动前自检**：开浏览器之前先看机器上有没有上一轮留下的探针浏览器，有就报告并清掉。
+ *
+ * 为什么要有这一步：第二十八轮实测过 **1828 个 `chrome.exe`** 堆积（全是本支的 profile），
+ * 把机器压到 `Page.loadEventFired` 直接超时。当时是事后 `killTree` 修的；但「事后」管不了
+ * **上一次异常退出留下的**（脚本被 Ctrl-C、进程被杀、Node 崩掉——`close()` 根本没跑到）。
+ * 于是在这里补一道**事前**的：残留不清干净，后面的量都不可信，宁可在启动那一刻就喊出来。
+ *
+ * 只匹配本支专用的 `probe-chrome-` 前缀，**绝不碰用户自己的浏览器**。
+ * 用 `RENDER_VERIFY_NO_SWEEP=1` 可以跳过（给「就是要看残留」的排查场景留口子）。
+ * 非 Windows 上是空操作（`probeChromeProcesses()` 直接返回空表）。
+ */
+export async function sweepLeftovers() {
+  if (swept) return null
+  swept = true
+  if (process.env.RENDER_VERIFY_NO_SWEEP === '1') return null
+  const before = probeChromeProcesses()
+  if (before.length === 0) return { 残留: 0, 已清理: 0 }
+  console.log('⚠️ 启动前自检：机器上有 ' + before.length + ' 个上一轮留下的探针浏览器'
+    + '（完整命令行里带 `' + PROFILE_PREFIX + '` 的 chrome/msedge，不是用户自己的浏览器）'
+    + '——先把它们清掉再继续，否则量出来的是环境噪声。')
+  const script = 'Get-CimInstance Win32_Process | '
+    + 'Where-Object { ' + probeMatcher("'" + PROFILE_PREFIX + "'") + ' } | '
+    + 'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }'
+  // 实测（第二十九轮自检）：Chrome 是「启动器 + 一串子进程」，一条 Stop-Process 管道打下去，
+  // 先死的父进程可能还在被回收，所以**反复收**，最多 6 轮，到 0 或不再减少为止。
+  let after = before
+  let previous = before.length
+  for (let round = 1; round <= 6; round += 1) {
+    try {
+      spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script],
+        { stdio: 'ignore', windowsHide: true, timeout: 120000 })
+    } catch { /* 清不掉也把数报出来，不吞 */ }
+    await sleep(700)
+    after = probeChromeProcesses()
+    if (after.length === 0) break
+    if (after.length >= previous) break  // 一轮没动静就不再耗时间
+    previous = after.length
+  }
+  console.log('   清理完成：' + before.length + ' → ' + after.length + ' 个'
+    + (after.length ? '（还有剩，后面的量请自行判断可信度）' : ' ✅'))
+  return { 残留: before.length, 已清理: before.length - after.length }
 }
 
 export class CDP {

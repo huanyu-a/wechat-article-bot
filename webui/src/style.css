@@ -60,9 +60,22 @@
 .editor-toolbar .toolbar-delete{color:#b95858}
 .editor-toolbar .toolbar-delete:hover{background:#fbeaea;color:#a33c3c}
 .ProseMirror .tableWrapper,.preview-content .tableWrapper{max-width:100%;overflow-x:auto;margin:18px 0}
+/* TipTap 需要放光标时会往段落里塞一个零宽分隔图（`img.ProseMirror-separator`）。
+   它的基础样式（`@tiptap/core` 的 style）本项目一直没有引入，于是这张图落进了上面那条
+   `.ProseMirror img{display:block;margin:18px auto}`——1×1 的图被撑成块级、还带 18px 上下
+   外边距，把所在行顶开。这里只补分隔图一条，不动 `.ProseMirror` 的其它基础行为。 */
+.ProseMirror img.ProseMirror-separator{display:inline !important;width:0 !important;height:0 !important;margin:0 !important;border:0 !important;border-radius:0}
 .ProseMirror table,.preview-content table{width:100%;border-collapse:collapse;table-layout:fixed;margin:18px 0;font-size:14px}
 .ProseMirror th,.ProseMirror td,.preview-content th,.preview-content td{position:relative;min-width:80px;border:1px solid #dce2de;padding:8px 10px;vertical-align:top;box-sizing:border-box}
 .ProseMirror th,.preview-content th{background:#f2f6f3;font-weight:700;color:#2c4238}
+/* 产物表（渲染服务产出的 `<table style=...>`，打开时由 `applyPreservedTableStyle()` 打上
+   `mf-preserved` 类）用的是上面那套**反过来的**排版：列宽由各列文字长度决定（`table-layout:auto`）、
+   描边由单元格自带的 `border-bottom` 承担、行高由单元格自带的 font-size 决定。类名让上面三条兜底
+   规则让路，只对产物表生效——手写表格（编辑器工具栏「插入 3×3 表格」）拿不到这个类，逐字节不变。
+   实测同一张对比表（内容盒 629px）：改前表高 347.09px、列宽四等分 156.5×4；改后 212px、
+   列宽 105.67/165.64/133.83/223.86——原项目预览侧同一份产物是 197px、105.02/165.13/136.34/222.52。 */
+.ProseMirror table.mf-preserved{table-layout:auto}
+.ProseMirror table.mf-preserved th,.ProseMirror table.mf-preserved td{border:0;line-height:normal}
 .ProseMirror .selectedCell{background:#e2f1e9}
 .ProseMirror .selectedCell:after{content:"";position:absolute;inset:0;pointer-events:none;background:rgba(39,126,91,.08)}
 .ProseMirror pre,.preview-content pre{margin:18px 0;padding:14px 16px;border-radius:8px;background:#1f2924;color:#e8f0eb;overflow-x:auto;font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;white-space:pre-wrap}

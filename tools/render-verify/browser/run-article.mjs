@@ -8,18 +8,54 @@
  *   3. **在库稿件回归 + 软删稿件**：同一套量法跑一遍，顺便看软删稿打开时给不给得出清楚的提示。
  *
  * 用法：node tools/render-verify/browser/run-article.mjs
+ *       node tools/render-verify/browser/run-article.mjs --selftest   # 闸自检，不开浏览器、不写产物
  * 产物：target/probe/browser/articles_result.json、shots/articles/<id>.png
+ *
+ * 退出码（**第二十九轮 E1 补**，此前这一支没有退出码——`6/9 EXIT=0` 与「13 篇都打开了」无关）：
+ *   0 = 失败项 0；1 = 下列任一：**稿件数不是 14**、**非软删稿件编辑器没挂载**、
+ *       **可见文字里残留公式源码**、**有图没加载出来**。
+ *   这四项都是脚本本来每次就逐行印出来的量（`ready=` / `公式源码残留=` / `轮播图=`），
+ *   补的只是退出码，**判定口径一个字节没动**。
+ *   ⚠️ 软删稿件（`kind` 含「软删」）本来就打不开编辑器——那不是失败，是预期行为，故豁免 ready。
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, createReadStream, statSync } from 'node:fs'
 import { createServer, request as httpRequest } from 'node:http'
 import { resolve, join, extname, normalize } from 'node:path'
 import { launchBrowser, openPage } from './cdp.mjs'
 import { BROWSER_OUT, WEBUI_DIST } from '../paths.mjs'
+import { 判据, 自检, 失败, 克隆 } from '../gates.mjs'
+
+const ARGS = process.argv.slice(2)
 
 const DIST = WEBUI_DIST
 const API = 'http://127.0.0.1:8081'
 const SHOTS = resolve(BROWSER_OUT, 'shots/articles')
-mkdirSync(SHOTS, { recursive: true })
+// ===========================================================================
+// 6/9 的**判据**（纯函数；主流程与 `--selftest` 共用）。口径见文件头的退出码说明。
+// 软删稿件（`kind` 含「软删」）本来就打不开编辑器，豁免 ready；其余三项目前每篇都该成立。
+// ===========================================================================
+const 判 = ({ 应有, 结果 }) => {
+  const 清单 = []
+  if (结果.length !== 应有) {
+    清单.push(失败('稿件数', 结果.length + ' 篇，应为 ' + 应有 + ' 篇——有稿件根本没取到证'))
+  }
+  for (const 条 of 结果) {
+    const 软删 = String(条.kind || '').includes('软删')
+    if (软删) continue
+    if (!条.editor?.ready) {
+      清单.push(失败('#' + 条.id + ' 编辑器没挂载', 'ready=false：' + (条.editor?.reason || '（未给出理由）')))
+      continue
+    }
+    if (条.editor.katexSourceLeak) {
+      清单.push(失败('#' + 条.id + ' 残留公式源码', '可见文字里出现 $$ / \\frac / \\begin{ / \\sum_ ——公式没渲染，是原样文本'))
+    }
+    if (条.images && 条.images.loaded < 条.images.total) {
+      清单.push(失败('#' + 条.id + ' 有图没加载', 条.images.loaded + ' / ' + 条.images.total
+        + ' 张——图没解码，量到的盒子与截图都不是真的'))
+    }
+  }
+  return 清单
+}
 
 /** 本轮要取证的稿件。`kind` 只影响报告里的分组，量法完全一样。 */
 const TARGETS = [
@@ -41,6 +77,51 @@ const TARGETS = [
   // 软删稿件：编辑器打开时的表现要合理（给得出提示，不能白屏）
   { id: 5, kind: '软删稿件（DELETED=1）', expect: 'API 404；页面要给得出清楚的提示或明确跳走，不能白屏' },
 ]
+
+if (ARGS.includes('--selftest')) {
+  // 「好输入」用**合成的干净一轮**（14 篇全 ready、无公式源码泄漏、图全加载）——不能用当前存档：
+  // 当前存档本身是红的（见下面的「存档实况」一行，那是真发现，不是闸写松了）。
+  const 好输入 = {
+    应有: TARGETS.length,
+    结果: TARGETS.map((条) => ({
+      id: 条.id, kind: 条.kind,
+      editor: { ready: !String(条.kind).includes('软删'), katexSourceLeak: false },
+      images: { total: 2, loaded: 2 },
+    })),
+  }
+  const 少一篇 = 克隆(好输入)
+  少一篇.结果 = 少一篇.结果.slice(0, 少一篇.结果.length - 1)
+  const 有稿件没挂载 = 克隆(好输入)
+  ;(有稿件没挂载.结果.find((条) => !String(条.kind).includes('软删')) || 有稿件没挂载.结果[0])
+    .editor = { ready: false, reason: '（自检造）页面上没有 .ProseMirror' }
+  const 漏源码 = 克隆(好输入)
+  ;(漏源码.结果.find((条) => !String(条.kind).includes('软删')) || 漏源码.结果[0]).editor.katexSourceLeak = true
+  const 图没加载 = 克隆(好输入)
+  图没加载.结果[0].images = { total: 3, loaded: 2 }
+  const 软删没挂载 = 克隆(好输入)
+  ;(软删没挂载.结果.find((条) => String(条.kind).includes('软删')) || 软删没挂载.结果[0])
+    .editor = { ready: false, reason: '（自检造）软删稿打不开是**预期行为**' }
+  process.exitCode = 自检('6/9 run-article', 判, [
+    { 名: '合成的好一轮（' + 好输入.结果.length + ' 篇全 ready / 图全加载）', 数据: 好输入, 期望: 0,
+      备注: '软删 ' + 好输入.结果.filter((条) => String(条.kind).includes('软删')).length + ' 篇豁免 ready' },
+    { 名: '少取一篇稿', 数据: 少一篇, 期望: 1, 备注: 少一篇.结果.length + ' 篇 vs 应有 ' + TARGETS.length },
+    { 名: '有一篇非软删稿没挂载', 数据: 有稿件没挂载, 期望: 1, 备注: '软删稿豁免，非软删稿不豁免' },
+    { 名: '软删稿没挂载（预期行为，不该判红）', 数据: 软删没挂载, 期望: 0, 备注: '#5 本来就打不开编辑器' },
+    { 名: '有一篇残留公式源码', 数据: 漏源码, 期望: 1, 备注: '公式没渲染' },
+    { 名: '有一篇的图没加载全', 数据: 图没加载, 期望: 1, 备注: '2 / 3 张' },
+  ])
+  // 存档实况：只打印、不断言——它是「当前数据是什么样」，不是「闸对不对」。
+  const 存档 = resolve(BROWSER_OUT, 'articles_result.json')
+  if (existsSync(存档)) {
+    const 已跑 = JSON.parse(readFileSync(存档, 'utf8'))
+    const 实况 = 判({ 应有: TARGETS.length, 结果: 已跑.results })
+    console.log('  [存档实况] 当前 articles_result.json（' + 已跑.results.length + ' 篇）失败项 ' + 实况.length)
+    for (const 条 of 实况) console.log('             · ' + 条.项 + '：' + 条.详情)
+    console.log('             ↑ 这一行是**真实数据**，不参与自检结论；缘由见 docs/dev/known-issues-handoff.md §3.30')
+  }
+} else {
+
+mkdirSync(SHOTS, { recursive: true })
 
 const PROXY_PREFIXES = ['/api', '/uploads']
 const MIME = {
@@ -214,3 +295,8 @@ console.log('结果:', resolve(BROWSER_OUT, 'articles_result.json'))
 await page.close()
 close()
 server.close()
+
+process.exitCode = 判据('6/9 run-article（' + TARGETS.length + ' 篇真实稿件 · 软删 '
+  + TARGETS.filter((条) => String(条.kind).includes('软删')).length + ' 篇豁免 ready）',
+  判, { 应有: TARGETS.length, 结果: results }) ? 1 : 0
+}
