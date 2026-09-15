@@ -46,6 +46,31 @@ app:
     # 实测 run#41/42/47/48 的卡点都是「主编侧无事件、子智能体正在运行」——300s 一到就把正常工作中的
     # 主编硬超时杀掉、整轮 FAILED；编辑器的同类会话（含委托）本就按 1800s 计，这里对齐。
     coordinator-timeout-seconds: ${COORDINATOR_TIMEOUT_SECONDS:1800}
+    # 单智能体会话硬超时（秒，SINGLE 链路）：**一次会话就要做完调研 + 写作 + 配图**，
+    # 与「每个阶段各起一个会话」的 PIPELINE 不是同一个量级。此前 SINGLE 走的是全局
+    # stage-timeout-seconds（300s，按「单个阶段」定的），实测结果是它从未成功跑过 300 秒：
+    # 6 次成功运行最长 272s，12 次失败**全部**卡在 300s（含 09-13、09-14 两次真实定时触发），
+    # 而同样三件事由 PIPELINE 分阶段做完的成功运行均值是 533~1194s。
+    # 900 取自两者之间：覆盖正常工作量，同时仍给失控会话封顶（停滞会由 AgentInvoker 重试一次）。
+    single-timeout-seconds: ${SINGLE_TIMEOUT_SECONDS:900}
+    # 会话失败的重试策略（见 AgentInvoker）：只在**本次尝试零工具调用**时重试（无付费副作用），
+    # 且「永久错误」（鉴权/审查/模型未配置/余额不足）一律不重试。
+    retry:
+      # 瞬时错误（429 并发超限、连接重置、5xx、流中断、零工具调用的空指针）的最大重试次数。
+      # 由 3 提到 5：这些错误常在零工具调用时数秒内返回，重试成本远低于整轮重跑。
+      transient-max: ${RETRY_TRANSIENT_MAX:5}
+      # 退避间隔（毫秒，逗号分隔），长度不足时沿用最后一项；合计 31 秒。
+      backoff-millis: ${RETRY_BACKOFF_MILLIS:1000,2000,4000,8000,16000}
+      # 阶段停滞的重试次数：有意保持 1 次——每次停滞要白等一整个会话超时（SINGLE 下两次就是半小时），
+      # 与秒级返回的模型报错代价差两个数量级，不该随 transient-max 一起放大。
+      stall-max: ${RETRY_STALL_MAX:1}
+      # 无进展检测阈值（秒）：距上次有效事件超过该秒数即判停滞，不必等满硬超时。
+      # 硬超时只回答「总共等了多久」，不回答「上游还活着吗」——实测一次卡死要白等一整个超时
+      # （SINGLE 900s / COORDINATOR 1800s），期间零事件。加上本检测后，卡死的会话在 180 秒内被判停滞，
+      # 立刻走「换模型档案 / 重建会话」的重试路径。硬超时仍保留作为不依赖上报的兜底。
+      # 「有工具正在执行」视为有进展：协调者主编委托子智能体时主编侧本就收不到事件，
+      # 只按事件计时会把正常等待委托的主编误杀（实测 run#41/42/47/48）。0 或负数表示关闭本检测。
+      inactivity-seconds: ${RETRY_INACTIVITY_SECONDS:180}
     # 工具调用预算（方案 5.5 预算护栏的可配置来源，见 ToolCallBudget）：
     # 调研阶段单独一档——实测 run#46 的调研子智能体 25 次调用全部成功（search_web ×20 + browse_webpage ×5，
     # 零失败零重试），仅因超过 24 的上限 1 次就让整轮 PIPELINE 失败。宽口径调研的正常工作量本就大于写作/审核；
@@ -59,13 +84,21 @@ app:
       stage: ${TOOL_CALLS_STAGE:36}
       chief: ${TOOL_CALLS_CHIEF:48}
       total: ${TOOL_CALLS_TOTAL:200}
+      # SINGLE 链路（一次会话做完调研 + 写作 + 配图）：此前是 ArticleAiService 里的硬编码常量 40，
+      # 也是唯一不受本节约束的预算——同一件事在 PIPELINE 里分三段跑有 60+36+36，
+      # 挤在一次会话里反而只有 40。60 取自各段实测工作量（调研可达 47、配图约 26）。
+      single: ${TOOL_CALLS_SINGLE:60}
     # 遗留运行判定阈值（小时）：进程被杀时 task_run 会永久停在 RUNNING 并占住并发闸门；
     # 启动时与下一次触发时中止「开始时间超过本阈值」的运行。COORDINATOR 一轮的上界是
     # 「主编超时 1800s + 子会话 300s × 委托数」≈ 1.2h，PIPELINE 是「阶段超时 300s × 阶段数上界 19
     # （4 基础阶段 + 5 轮返工 × 3）≈ 1.6h」；取 3h 是在两者之上留出余量——调小到低于这个估算值会把
     # 仍在正常执行的运行误判为孤儿（启动时会打 WARN 提醒）；Quartz 集群部署下多实例共用一套库，
     # 更不能设得过小。
+    # SINGLE 不参与这个上界：它只有**一次会话**（single-timeout-seconds=900s = 0.25h），
+    # 远低于上面两条，故引入 SINGLE 独立超时不需要调整本值。
     # ⚠️ 与 stage-timeout-seconds / coordinator-timeout-seconds 绑在同一个估算式上：改一个必须同步改另一个。
+    # （single-timeout-seconds 不在其中——`StaleRunReaper` 传给 thresholdTooSmall 的是 stage-timeout-seconds，
+    # SINGLE 的单次会话不进入 MAX_STAGES_PER_RUN 的阶段循环。）
     stale-run-hours: ${STALE_RUN_HOURS:3}
     # 运行心跳超时（秒，I2）：执行线程每 progress-flush-seconds 秒刷新 task_run.HEARTBEAT_AT，
     # 心跳早于本值即判定属主实例已失联/崩溃，其它实例可中止该运行并把自愈窗口压到分钟级。

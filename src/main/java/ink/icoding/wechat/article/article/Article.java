@@ -19,12 +19,41 @@ public class Article extends PO {
     @TableField(exist = false, link = WechatAccount.class, linkField = "name", self = "accountId", target = "id")
     private String accountName;
     private String title;
+    /**
+     * 作者名。显式声明 255（与 {@link ArticleRevision#getAuthor()} 一致）而不是靠默认值：
+     * 两个同名字段的声明文本必须**逐字相同**，否则 smart-mybatis 的列声明缓存
+     * （键是字段名的单键）会在两者间二选一，结果取决于实体初始化顺序。
+     * 当前两处都是 255，实测列宽也是 varchar(255)，显式写出可让这个巧合变成保证。
+     */
+    @TableField(length = 255)
     private String author;
     @TableField(length = 500)
     private String digest;
-    @TableField(length = 65535)
+    /**
+     * 文章正文 HTML。
+     *
+     * <p>为什么是 {@code MEDIUMTEXT} 而不是按 {@code length} 映射：{@code MysqlDialect.javaTypeToSql}
+     * 的长度映射只有三档（&le;16383 → VARCHAR、&le;65535 → TEXT、其余 → LONGTEXT），**表达不出
+     * MEDIUMTEXT**，所以必须用 {@code columnType} 直接指定（它在映射里优先级最高，见其字节码：
+     * 先取 {@code columnType()}，非空即返回）。
+     *
+     * <p>为什么必须扩容：TEXT 的上限是 65535 **字节**，中文 UTF-8 占 3 字节，只相当于约 2 万字正文。
+     * 实测全库最大文章已到 53253 字节，COORDINATOR 跑出的富文本因此报
+     * {@code Data too long for column 'CONTENT_HTML'}（run#98，79 次工具调用、1655 秒全部作废）。
+     * 扩容由 {@code ArticleLongTextColumnRunner} 以幂等 DDL 完成；本注解的作用是让**声明**与真实列宽
+     * 同向——smart-mybatis 会按声明对已存在列发 {@code MODIFY COLUMN}，声明若停在 TEXT 会把列收窄回去
+     * （见该 runner 的「字段同名共享声明」一节）。
+     */
+    @TableField(columnType = "MEDIUMTEXT")
     private String contentHtml;
-    @TableField(length = 65535)
+    /**
+     * 正文的纯文本（落库前由 Jsoup 从 {@link #contentHtml} 抽出）。
+     *
+     * <p>与 {@code contentHtml} 同在一条 INSERT 上，因此必须一起扩容：只扩 HTML 只会把报错
+     * 从 {@code CONTENT_HTML} 换成 {@code CONTENT_TEXT}，长文照样进不去
+     * （这是扩容用例当场跑出来的，不是推断）。
+     */
+    @TableField(columnType = "MEDIUMTEXT")
     private String contentText;
     /**
      * 排版引擎（PROMPT / MARKFLOW）。MARKFLOW 文章的正文由渲染服务生成，
@@ -32,8 +61,15 @@ public class Article extends PO {
      */
     @TableField(length = 20)
     private String layoutEngine;
-    /** MARKFLOW 文章的 Markdown 源文：渲染产物被覆盖后仍可重排，也是版式保真的唯一依据。 */
-    @TableField(length = 65535)
+    /**
+     * MARKFLOW 文章的 Markdown 源文：渲染产物被覆盖后仍可重排，也是版式保真的唯一依据。
+     *
+     * <p>与 {@link #contentHtml} 同为 MEDIUMTEXT：一是两者同源同写（同一次渲染产出、同一条快照写两表），
+     * 二是本字段名与 {@code ArticleRevision.contentMarkdown} 同名，而 smart-mybatis 的列声明缓存按
+     * 字段名共享——两处声明不一致时谁先初始化谁说了算，必然留下一个被悄悄改型的列
+     * （见 {@code ArticleLongTextColumnRunner} 的「字段同名共享声明」一节）。
+     */
+    @TableField(columnType = "MEDIUMTEXT")
     private String contentMarkdown;
     /**
      * MARKFLOW 渲染时**实际生效**的主题色（渲染服务响应里的 theme.accent/theme.dark）。
@@ -52,6 +88,11 @@ public class Article extends PO {
     @TableField(length = 500)
     private String coverUrl;
     private Long coverAssetId;
+    /**
+     * 文章来源 URL。与 {@code ArticleRevision.sourceUrl}、{@code Asset.sourceUrl} 同名，
+     * 三处**必须都是 1000**（实测三张表的列宽也都是 varchar(1000)）。
+     * 此前 {@code Asset} 那处声明 2000，结果 ASSET.SOURCE_URL 被静默收窄成 1000——见 Asset 的说明。
+     */
     @TableField(length = 1000)
     private String sourceUrl;
     private String sourceType;

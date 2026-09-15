@@ -62,6 +62,12 @@ class AgentInvokerTest {
         verify(fixture.agent, times(1)).createSession();
     }
 
+    /**
+     * 永久错误不重试：重发同一个请求结果一定相同，重试只是白烧配额与时间。
+     *
+     * <p>这条在 2026-09-15 扩围「瞬时错误可重试」后**必须保留**——扩围的前提正是
+     * 「永久类先被排除」，否则余额不足/鉴权失败也会被反复重试。
+     */
     @Test
     void doesNotRetryModelErrors() throws Exception {
         Fixture fixture = new Fixture(30);
@@ -70,6 +76,135 @@ class AgentInvokerTest {
         assertThatThrownBy(() -> fixture.invoker.run(fixture.agent, "指令", null))
                 .hasMessageContaining("余额不足");
         verify(fixture.agent, times(1)).createSession();
+    }
+
+    /** 其余永久类同样不重试（鉴权 / 内容审查 / 模型未配置 / 接口不存在），逐一钉住分类器。 */
+    @Test
+    void doesNotRetryPermanentErrors() throws Exception {
+        for (String permanent : List.of(
+                "SSE connection failed: HTTP 401: unauthorized",
+                "SSE connection failed: HTTP 403: IP 不在白名单",
+                "SSE connection failed: HTTP 451: {\"code\":\"censorship_blocked\"}",
+                "SSE connection failed: HTTP 503: {\"code\":\"model_not_found\"}",
+                "SSE connection failed: HTTP 404: not found",
+                // 实测 run#117：跑满 59 次工具调用后被告知试用额度耗尽且未开后付费。
+                // 这是账号级状态，重发一定还是 402；此前只因为错误码 401008 里含 "401" 才被误打误撞拦下。
+                "SSE connection failed: HTTP 402: {\"error\":{\"message\":\"The free trial quota for the"
+                        + " service has been exhausted and postpaid billing is not enabled\","
+                        + "\"type\":\"permission_error\",\"code\":\"401008\"}}")) {
+            Fixture fixture = new Fixture(30);
+            when(fixture.session.command(anyString())).thenReturn(failsWith(permanent));
+
+            assertThatThrownBy(() -> fixture.invoker.run(fixture.agent, "指令", null))
+                    .as("永久错误不应重试：%s", permanent)
+                    .isInstanceOf(IllegalStateException.class);
+            verify(fixture.agent, times(1)).createSession();
+        }
+    }
+
+    /**
+     * 瞬时模型报错重试并成功（2026-09-15 扩围）。
+     *
+     * <p>此前只认 429 与停滞，于是「连接被重置」「HTTP 5xx」这些同样瞬时、且常在**零工具调用**时
+     * 数秒内返回的错误一次都不重试。实测 run#8/#9/#39 分别在 0/6/5 秒就失败，完全满足
+     * 「无付费副作用」的重试前提却被直接判死。
+     */
+    @Test
+    void retriesTransientModelErrorsAndSucceeds() throws Exception {
+        for (String transientError : List.of(
+                "SSE connection failed: , Connection reset",
+                "SSE connection failed: HTTP 500: {\"message\":\"openai_error\"}",
+                "SSE connection failed: HTTP 502: nginx",
+                "SSE connection failed: HTTP 200: stream reset INTERNAL_ERROR")) {
+            Fixture fixture = new Fixture(30);
+            when(fixture.session.command(anyString())).thenReturn(
+                    failsWith(transientError), completes("已生成"));
+
+            AgentRunner.Outcome outcome = fixture.invoker.run(fixture.agent, "指令", null);
+
+            assertThat(outcome.reply()).as("瞬时错误应重试成功：%s", transientError).isEqualTo("已生成");
+            verify(fixture.agent, times(2)).createSession();
+        }
+    }
+
+    /**
+     * 瞬时错误重试**必须重建会话**且受次数上限约束（不能变成无限重试）。
+     *
+     * <p>退避合计 31 秒，这里用 1ms 的退避跑满 5 次重试，避免用例真的等半分钟。
+     */
+    @Test
+    void transientRetriesAreBoundedAndRebuildTheSession() throws Exception {
+        AgentClient agent = mock(AgentClient.class);
+        AgentClientSession session = mock(AgentClientSession.class);
+        when(agent.createSession()).thenReturn(session);
+        when(session.command(anyString())).thenReturn(failsWith("Connection reset"));
+        AgentInvoker invoker = new AgentInvoker(30, 5, "1,1,1,1,1", 1);
+
+        assertThatThrownBy(() -> invoker.run(agent, "指令", null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Connection reset");
+        // 1 次原始尝试 + 5 次重试
+        verify(agent, times(6)).createSession();
+    }
+
+    /** 已调用过工具时不重试瞬时错误：那些工具可能已产生付费副作用。 */
+    @Test
+    void doesNotRetryTransientErrorOnceAToolAlreadyRan() throws Exception {
+        Fixture fixture = new Fixture(30);
+        when(fixture.session.command(anyString())).thenReturn(
+                callsToolThenFails("generate_image", "SSE connection failed: , Connection reset"));
+
+        assertThatThrownBy(() -> fixture.invoker.run(fixture.agent, "指令", null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Connection reset");
+        verify(fixture.agent, times(1)).createSession();
+    }
+
+    /**
+     * 零工具调用的空指针可重试（真实定时失败 run#86）。
+     *
+     * <p>该 NPE 来自 agent4j 对未知工具名不判空：{@code OpenAIChatModel.handleToolCallsAndContinue}
+     * 用 {@code toolMap.get(工具名)} 拿到 null 后直接交给无判空的 {@code ToolDescriptor.fromTool}
+     * （偏移 14 即 {@code tool.getClass()}）。异常发生在工具执行**之前**，故 toolCalls 恒为 0。
+     * 重建会话后模型通常不会再返回那个越界的工具名。
+     */
+    @Test
+    void retriesNullPointerFromUnknownToolName() throws Exception {
+        Fixture fixture = new Fixture(30);
+        when(fixture.session.command(anyString())).thenReturn(
+                failsWithNullPointer(), completes("恢复"));
+
+        AgentRunner.Outcome outcome = fixture.invoker.run(fixture.agent, "指令", null);
+
+        assertThat(outcome.reply()).isEqualTo("恢复");
+        verify(fixture.agent, times(2)).createSession();
+    }
+
+    /** 空指针失败时把「本次广告的工具清单」记进日志：原异常里没有工具名，事后无从查起。 */
+    @Test
+    void nullPointerFailureRecordsAdvertisedToolNames() throws Exception {
+        Fixture fixture = new Fixture(30);
+        when(fixture.session.command(anyString())).thenReturn(failsWithNullPointer());
+        List<String> streamedLog = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        assertThatThrownBy(() -> fixture.invoker.runWithLimit(fixture.agent, "指令", null, "【协调】", 10,
+                progressListener(new AtomicInteger(), streamedLog)))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(streamedLog).anySatisfy(line ->
+                assertThat(line).contains("【协调】会话抛空指针").contains("本次广告的工具："));
+    }
+
+    /** 停滞有自己的预算，**不能**被瞬时错误的 5 次重试吞掉（否则一次停滞会拖成小时级）。 */
+    @Test
+    void stageStallKeepsItsOwnSmallerRetryBudget() throws Exception {
+        Fixture fixture = new Fixture(1);
+        when(fixture.session.command(anyString())).thenReturn(hangs(), hangs(), hangs());
+
+        assertThatThrownBy(() -> fixture.invoker.run(fixture.agent, "指令", null))
+                .isInstanceOf(StageTimeoutException.class);
+        // 1 次原始尝试 + 1 次停滞重试（而不是 1 + 5）
+        verify(fixture.agent, times(2)).createSession();
     }
 
     @Test
@@ -95,6 +230,48 @@ class AgentInvokerTest {
                 .hasMessageContaining("已调用工具 0 次");
         // 停滞只重试一次，不做无限重试
         verify(fixture.agent, times(2)).createSession();
+    }
+
+    /**
+     * 只输出思维链、暂时没有正文的会话**不是停滞**：思维链增量必须计入进展。
+     *
+     * <p>反例（run#123/#124）：hy4-preview 先连续输出几分钟 {@code reasoning_content} 再吐正文，
+     * agent4j 把这类增量路由到 {@code onThink}（见 {@code OpenAIChatModel} 的 delta 分派），
+     * 而此前只把 {@code onMessage} 计为活动——于是「正在思考」与「流已断」在检测层完全同形。
+     * 实测 269 秒的生成里有 3322 条思维链增量、仅 195 条正文增量，按正文计的最大空档达 254 秒，
+     * 超过 180 秒阈值 → 两个本该成功的 SINGLE 运行被判停滞中止，而线程当时一直在正常出字
+     * （判死后 3 分钟仍有草稿落库、11 分钟后仍有校验日志）。
+     */
+    @Test
+    void reasoningOnlyOutputCountsAsProgressNotStall() throws Exception {
+        // 阈值 1 秒：只发思维链、间隔 300ms 连续 3 秒，远超阈值。若思维链不算进展必然误杀。
+        AgentInvoker invoker = new AgentInvoker(30, 0, "0", 0, 1);
+        AgentClient agent = mock(AgentClient.class);
+        AgentClientSession session = mock(AgentClientSession.class);
+        when(agent.createSession()).thenReturn(session);
+        when(session.command(anyString())).thenReturn(thinkingOnly(10, 300, "思考完毕"));
+
+        AgentRunner.Outcome outcome = invoker.run(agent, "指令", null);
+
+        assertThat(outcome.reply()).isEqualTo("思考完毕");
+        // 一次会话就跑完，没有因为「无进展」被中止重建
+        verify(agent, times(1)).createSession();
+    }
+
+    /** 只回调 {@code onThink}（正文一个字符都不发）的会话，用于复现思维链盲区。 */
+    private static AgentSessionResult thinkingOnly(int times, long gapMillis, String reply) {
+        return new AgentSessionResult(self -> {
+            for (int i = 0; i < times; i++) {
+                self.getHandler().onThink("思考第 " + i + " 步");
+                try {
+                    Thread.sleep(gapMillis);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+            self.complete(reply);
+        });
     }
 
     @Test
@@ -241,9 +418,41 @@ class AgentInvokerTest {
     @Test
     void retryBudgetIsBoundedAndBackoffMatchesRetryCount() {
         // 结构性钉住「有界」：退避数组长度必须与重试次数一致，避免将来加了重试却忘了给退避间隔
-        assertThat(AgentInvoker.MAX_RATE_LIMIT_RETRIES).isEqualTo(3);
-        assertThat(AgentInvoker.RATE_LIMIT_BACKOFF_MILLIS).hasSize(AgentInvoker.MAX_RATE_LIMIT_RETRIES);
+        assertThat(AgentInvoker.MAX_TRANSIENT_RETRIES).isEqualTo(5);
+        assertThat(AgentInvoker.TRANSIENT_BACKOFF_MILLIS).hasSize(AgentInvoker.MAX_TRANSIENT_RETRIES);
+        // 退避必须递增：恒定间隔在持续抖动下等于持续冲击上游
+        for (int index = 1; index < AgentInvoker.TRANSIENT_BACKOFF_MILLIS.length; index++) {
+            assertThat(AgentInvoker.TRANSIENT_BACKOFF_MILLIS[index])
+                    .isGreaterThan(AgentInvoker.TRANSIENT_BACKOFF_MILLIS[index - 1]);
+        }
         assertThat(AgentInvoker.MAX_STALL_RETRIES).isEqualTo(1);
+    }
+
+    /** 退避配置写错时回落默认值，不能静默变成零退避（那会把重试变成对上游的连续冲击）。 */
+    @Test
+    void malformedBackoffConfigFallsBackToDefaults() {
+        assertThat(AgentInvoker.parseBackoff(null)).isEqualTo(AgentInvoker.TRANSIENT_BACKOFF_MILLIS);
+        assertThat(AgentInvoker.parseBackoff("  ")).isEqualTo(AgentInvoker.TRANSIENT_BACKOFF_MILLIS);
+        assertThat(AgentInvoker.parseBackoff("abc,def")).isEqualTo(AgentInvoker.TRANSIENT_BACKOFF_MILLIS);
+        assertThat(AgentInvoker.parseBackoff("1000,-5")).isEqualTo(AgentInvoker.TRANSIENT_BACKOFF_MILLIS);
+        assertThat(AgentInvoker.parseBackoff("500,1500")).containsExactly(500L, 1500L);
+    }
+
+    /** 分类器：永久类必须先于瞬时类被识别（503 model_not_found 不得被当成 5xx 重试）。 */
+    @Test
+    void classifiesPermanentBeforeTransient() {
+        assertThat(AgentInvoker.isPermanent(
+                new IllegalStateException("HTTP 503 model_not_found"))).isTrue();
+        assertThat(AgentInvoker.isTransient(
+                new IllegalStateException("HTTP 503 model_not_found"))).isFalse();
+        assertThat(AgentInvoker.isTransient(
+                new IllegalStateException("HTTP 503 service unavailable"))).isTrue();
+        assertThat(AgentInvoker.isTransient(
+                new IllegalStateException("HTTP 429 concurrent limit exceeded"))).isTrue();
+        // 停滞由独立预算处理，不进入瞬时类
+        assertThat(AgentInvoker.isTransient(new StageTimeoutException("超时"))).isFalse();
+        // 空指针（未知工具名）是瞬时的，但只在零工具调用时才真正重试
+        assertThat(AgentInvoker.isTransient(new NullPointerException("tool is null"))).isTrue();
     }
 
     /** 桩掉 agent4j 会话：{@code command()} 按队列依次返回预置的会话结果。 */
@@ -258,6 +467,287 @@ class AgentInvokerTest {
             when(agent.createSession()).thenReturn(session);
             this.invoker = new AgentInvoker(stageTimeoutSeconds);
         }
+    }
+
+    // ==================== 模型档案故障切换（Phase 1） ====================
+
+    /**
+     * 候选桩：每个候选一个独立的 agent + session，各自按队列返回预置结果。
+     *
+     * <p>为什么必须独立：切换的前提就是「换一个 AgentClient」——agent4j 的模型在
+     * {@code setModel} 时绑死，同一个 client 换不了模型（这正是整个功能要解决的问题）。
+     */
+    private static final class Candidates {
+        private final List<AgentRunner.Candidate> candidates = new java.util.ArrayList<>();
+        private final List<AgentClient> agents = new java.util.ArrayList<>();
+        private final List<AgentClientSession> sessions = new java.util.ArrayList<>();
+
+        /** 追加一个候选，其会话按顺序返回给定结果。 */
+        private Candidates add(String label, AgentSessionResult... results) {
+            AgentClient agent = mock(AgentClient.class);
+            AgentClientSession session = mock(AgentClientSession.class);
+            when(agent.createSession()).thenReturn(session);
+            when(session.command(anyString())).thenReturn(results[0], java.util.Arrays.copyOfRange(results, 1,
+                    results.length));
+            candidates.add(new AgentRunner.Candidate(agent, label));
+            agents.add(agent);
+            sessions.add(session);
+            return this;
+        }
+
+        private List<AgentRunner.Candidate> list() {
+            return candidates;
+        }
+
+        private AgentClient agent(int index) {
+            return agents.get(index);
+        }
+    }
+
+    /**
+     * 模型级错误 + **零工具调用** → 换下一个档案，整轮仍然成功。
+     *
+     * <p>这是新功能的核心断言。此前 {@code isPermanent} 把 {@code model_not_found} 判为
+     * 「重发结果一定相同」而完全不重试——**这个判断对同一个模型是对的，但换一个模型就可能治好**。
+     * 实测上游下线 agnes-3.0-flash 后，唯一的恢复手段是手工改库。
+     */
+    @Test
+    void switchesToNextCandidateOnModelLevelFailure() throws Exception {
+        Candidates candidates = new Candidates()
+                .add("主用/glm-5.3-flash", failsWith("SSE connection failed: HTTP 503: {\"code\":\"model_not_found\"}"))
+                .add("兜底/hy4-preview", completes("已生成"));
+
+        AgentRunner.Outcome outcome = new AgentInvoker(30).runWithCandidates(candidates.list(), "指令", null,
+                "【写作】", 40, 0, null);
+
+        assertThat(outcome.reply()).isEqualTo("已生成");
+        // 换档案必须**新建会话**：失败的那次在 agent4j 里无法取消，且它的模型是绑死的
+        verify(candidates.agent(0), times(1)).createSession();
+        verify(candidates.agent(1), times(1)).createSession();
+        // 档案链随产出返回，供 stages_summary 与终态消息说明「这一轮换了几个模型」
+        assertThat(outcome.profilesUsed()).containsExactly("主用/glm-5.3-flash", "兜底/hy4-preview");
+        assertThat(outcome.switchedProfile()).isTrue();
+    }
+
+    /**
+     * **有工具调用时不切换**：可能已经生图/落库，换模型重跑会重复计费与重复写入。
+     *
+     * <p>这条与「瞬时错误不重试」共用同一个前置条件，是新功能最重要的安全边界。
+     */
+    @Test
+    void doesNotSwitchOnceAToolAlreadyRan() throws Exception {
+        Candidates candidates = new Candidates()
+                .add("主用/a", callsToolThenFails("generate_image",
+                        "SSE connection failed: HTTP 503: {\"code\":\"model_not_found\"}"))
+                .add("兜底/b", completes("已生成"));
+
+        assertThatThrownBy(() -> new AgentInvoker(30).runWithCandidates(candidates.list(), "指令", null,
+                null, 40, 0, null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("model_not_found");
+        verify(candidates.agent(1), times(0)).createSession();
+    }
+
+    /**
+     * {@code 451}（内容审查）与 {@code 429}（账号级并发）**不切换**。
+     *
+     * <p>451 换个模型同样会被拦；429 是**账号级**并发配额，同一网关下换档案无效，
+     * 仍走原有的同模型退避重试。把这两类也拿来切换只会白费一次尝试。
+     */
+    @Test
+    void doesNotSwitchOnCensorshipOrRateLimit() throws Exception {
+        for (String notAModelProblem : List.of(
+                "SSE connection failed: HTTP 451: {\"code\":\"censorship_blocked\"}",
+                "HTTP 429 concurrent limit exceeded: running=7 max=6")) {
+            Candidates candidates = new Candidates()
+                    .add("主用/a", failsWith(notAModelProblem))
+                    .add("兜底/b", completes("已生成"));
+
+            assertThatThrownBy(() -> new AgentInvoker(30).runWithCandidates(candidates.list(), "指令", null,
+                    null, 40, 0, null))
+                    .as("这类错误换模型无效，不该切换：%s", notAModelProblem)
+                    .isInstanceOf(IllegalStateException.class);
+            verify(candidates.agent(1), times(0)).createSession();
+        }
+    }
+
+    /**
+     * 失败路径也要留下「用的是哪个档案」——这是 run#123/#124 暴露的真实缺陷。
+     *
+     * <p>那两次运行停滞失败后 {@code stages_summary.profilesUsed} 为空、{@code switchedProfile=false}，
+     * 事后完全看不出当时跑的是哪个模型、有没有试过备用档案。原因：档案链原先只随成功的
+     * {@code Outcome} 返回，而失败路径根本没有 Outcome。修复是让运行器**实时**上报用过的档案
+     * （与工具计数、执行日志同一理由：失败的那次尝试的局部数据会随异常丢弃）。
+     *
+     * <p>这里直接钉住「候选耗尽后抛出，但监听器已经收到主用与切换后的两个档案」。
+     */
+    @Test
+    void reportsProfilesUsedEvenWhenAllCandidatesFail() throws Exception {
+        Candidates candidates = new Candidates()
+                .add("主用/a", failsWith("SSE connection failed: HTTP 503: {\"code\":\"model_not_found\"}"))
+                .add("兜底/b", failsWith("SSE connection failed: HTTP 503: {\"code\":\"model_not_found\"}"));
+        List<String> reported = new java.util.ArrayList<>();
+
+        assertThatThrownBy(() -> new AgentInvoker(30).runWithCandidates(candidates.list(), "指令", null,
+                null, 40, 0, new AgentRunner.ProgressListener() {
+                    @Override
+                    public void toolCallCounted(int delta) {
+                    }
+
+                    @Override
+                    public void logLine(String line) {
+                    }
+
+                    @Override
+                    public void profileUsed(String label) {
+                        reported.add(label);
+                    }
+                }))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(reported).containsExactly("主用/a", "兜底/b");
+    }
+
+    /** 单候选失败同样要上报主用档案（否则「只有一条档案」的部署永远看不到归因信息）。 */
+    @Test
+    void reportsTheSingleCandidateWhenItFails() throws Exception {
+        Candidates candidates = new Candidates()
+                .add("主用/only", failsWith("SSE connection failed: HTTP 503: {\"code\":\"model_not_found\"}"));
+        List<String> reported = new java.util.ArrayList<>();
+
+        assertThatThrownBy(() -> new AgentInvoker(30).runWithCandidates(candidates.list(), "指令", null,
+                null, 40, 0, new AgentRunner.ProgressListener() {
+                    @Override
+                    public void toolCallCounted(int delta) {
+                    }
+
+                    @Override
+                    public void logLine(String line) {
+                    }
+
+                    @Override
+                    public void profileUsed(String label) {
+                        reported.add(label);
+                    }
+                }))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(reported).containsExactly("主用/only");
+    }
+
+    /**
+     * 停滞（零工具调用）→ 优先换档案，而不是原地重建会话。
+     *
+     * <p>依据：零工具调用的停滞说明这个模型在本次请求上卡死了，换模型比原地重试更对症，
+     * 也省下「再白等一整个会话超时」的时间（SINGLE 900s / COORDINATOR 1800s）。
+     */
+    @Test
+    void switchesOnStallInsteadOfRetryingInPlace() throws Exception {
+        Candidates candidates = new Candidates()
+                .add("主用/a", hangs())
+                .add("兜底/b", completes("已生成"));
+
+        AgentRunner.Outcome outcome = new AgentInvoker(1).runWithCandidates(candidates.list(), "指令", null,
+                null, 40, 0, null);
+
+        assertThat(outcome.reply()).isEqualTo("已生成");
+        assertThat(outcome.switchedProfile()).isTrue();
+        // 原地停滞重试的预算（1 次）没有被用掉：有候选时直接换，不浪费
+        verify(candidates.agent(0), times(1)).createSession();
+        verify(candidates.agent(1), times(1)).createSession();
+    }
+
+    /** 候选耗尽后仍失败：抛出原始错误，不静默吞掉。 */
+    @Test
+    void throwsAfterCandidatesAreExhausted() throws Exception {
+        Candidates candidates = new Candidates()
+                .add("主用/a", failsWith("HTTP 503: {\"code\":\"model_not_found\"}"))
+                .add("兜底/b", failsWith("HTTP 503: {\"code\":\"model_not_found\"}"));
+
+        assertThatThrownBy(() -> new AgentInvoker(30).runWithCandidates(candidates.list(), "指令", null,
+                null, 40, 0, null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("model_not_found");
+        verify(candidates.agent(1), times(1)).createSession();
+    }
+
+    /** 未发生切换时产出不带档案链：终态消息不该说「换过模型」。 */
+    @Test
+    void singleCandidateOutcomeHasNoProfileChain() throws Exception {
+        Candidates candidates = new Candidates().add("主用/a", completes("已生成"));
+
+        AgentRunner.Outcome outcome = new AgentInvoker(30).runWithCandidates(candidates.list(), "指令", null,
+                null, 40, 0, null);
+
+        assertThat(outcome.switchedProfile()).isFalse();
+    }
+
+    /** 空候选列表是调用错误（装配层保证至少一个候选，这里兜住误用）。 */
+    @Test
+    void rejectsEmptyCandidateList() {
+        assertThatThrownBy(() -> new AgentInvoker(30).runWithCandidates(List.of(), "指令", null,
+                null, 40, 0, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("候选智能体列表不能为空");
+    }
+
+    // ==================== 工具治理（Phase 4） ====================
+
+    /**
+     * 无进展循环：同一工具 + 同一参数重复到阈值即中止会话。
+     *
+     * <p>依据：run#46/#62/#85/#89 都是「同一工具、同一参数、反复调用」把预算一路烧完的形态。
+     * 中止必须在**工具执行前**判，否则那次上游请求已经发出去了。
+     */
+    @Test
+    void abortsSessionOnNoProgressLoop() throws Exception {
+        ToolCallGovernor governor = new ToolCallGovernor();
+        AgentSessionResult loop = new AgentSessionResult(self -> {
+            AgentResultHandler handler = self.getHandler();
+            try {
+                for (int index = 0; index < ToolCallGovernor.NO_PROGRESS_ABORT_THRESHOLD; index++) {
+                    // callId 每次不同（真实链路里每次工具调用都是新的 call id），
+                    // 但**参数完全相同**——循环检测看的正是「工具 + 参数」，不是 call id。
+                    ToolDescriptor descriptor = tool("search_web", "call-" + index);
+                    descriptor.setInputParams("{\"query\":\"AI\"}");
+                    handler.onTool(descriptor, ToolStatus.CALLING);
+                }
+            } catch (IllegalStateException expected) {
+                // 回调里抛出的异常在真实链路会被 agent4j 转成该工具的失败原因，会话不终止
+            }
+            self.complete("完成");
+        });
+        Fixture fixture = new Fixture(30);
+        when(fixture.session.command(anyString())).thenReturn(loop);
+
+        assertThatThrownBy(() -> fixture.invoker.runWithCandidates(
+                List.of(new AgentRunner.Candidate(fixture.agent, "a", governor)), "指令", null,
+                null, 40, 0, null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("陷入循环");
+    }
+
+    /** 不同参数不算循环：换关键词继续检索是正常工作量（run#46 的 25 次调用全部成功且参数各异）。 */
+    @Test
+    void differentParametersAreNotALoop() throws Exception {
+        ToolCallGovernor governor = new ToolCallGovernor();
+        AgentSessionResult varied = new AgentSessionResult(self -> {
+            AgentResultHandler handler = self.getHandler();
+            for (int index = 0; index < ToolCallGovernor.NO_PROGRESS_ABORT_THRESHOLD + 2; index++) {
+                ToolDescriptor descriptor = tool("search_web", "call-" + index);
+                descriptor.setInputParams("{\"query\":\"关键词" + index + "\"}");
+                handler.onTool(descriptor, ToolStatus.CALLING);
+            }
+            self.complete("完成");
+        });
+        Fixture fixture = new Fixture(30);
+        when(fixture.session.command(anyString())).thenReturn(varied);
+
+        AgentRunner.Outcome outcome = fixture.invoker.runWithCandidates(
+                List.of(new AgentRunner.Candidate(fixture.agent, "a", governor)), "指令", null,
+                null, 40, 0, null);
+
+        assertThat(outcome.reply()).isEqualTo("完成");
     }
 
     private static AgentSessionResult completes(String reply) {
@@ -275,6 +765,12 @@ class AgentInvokerTest {
 
     private static AgentSessionResult failsWith(String message) {
         return new AgentSessionResult(self -> self.completeExceptionally(new IllegalStateException(message)));
+    }
+
+    /** 复刻 agent4j 对未知工具名不判空时抛出的空指针（ToolDescriptor.fromTool → tool.getClass()）。 */
+    private static AgentSessionResult failsWithNullPointer() {
+        return new AgentSessionResult(self -> self.completeExceptionally(new NullPointerException(
+                "Cannot invoke \"ink.icoding.llm.core.tool.Tool.getClass()\" because \"tool\" is null")));
     }
 
     /** 工具已经开始执行后会话才失败——这是「不得重试」的那一类。 */

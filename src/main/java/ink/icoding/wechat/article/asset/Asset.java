@@ -38,7 +38,22 @@ public class Asset extends PO {
     private String contentType;
     private Long fileSize;
     private String sourceType;
-    @TableField(length = 2000)
+    /**
+     * 素材来源页 URL（导入网页图片时记录）。
+     *
+     * <p><b>声明必须与真实列宽同向</b>：{@code sourceUrl} 这个字段名在 {@link ink.icoding.wechat.article.article.Article}
+     * 与 {@code ArticleRevision} 里也存在，而 smart-mybatis 的列声明缓存按**字段名**共享
+     * （{@code MapperUtil.getColumnDeclaration} 的键是 {@code field.getName()} 单键，不含类名），
+     * 谁先初始化谁说了算。此处曾声明 2000 而另两处是 1000，实测结果就是
+     * {@code ASSET.SOURCE_URL} 被**静默收窄成 varchar(1000)**——声明与真实列宽不一致，
+     * 而 {@code MysqlDialect.buildAlterColumn} 会发 {@code MODIFY COLUMN}，
+     * 意味着另两处哪天先初始化，这一列的长度还会随初始化顺序漂移。
+     *
+     * <p>取 1000 与另两处对齐（实测最大来源 URL 94 字符，余量充足）：三处声明一致后，
+     * 同步结果与初始化顺序无关，也不会对任何一张表发出收窄 DDL。
+     * 若将来确需更长的来源 URL，**必须三处一起改并配一次显式 DDL**，不能只改这里。
+     */
+    @TableField(length = 1000)
     private String sourceUrl;
     @TableField(length = Asset.DESCRIPTION_MAX_LENGTH)
     private String description;

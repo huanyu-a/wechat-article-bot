@@ -175,7 +175,9 @@ class ScheduledArticleToolsDraftTests {
                 .findFirst().orElseThrow(() -> new AssertionError("工具组里没有 save_article_draft"));
     }
 
-    /** 渲染降级警告必须能随快照传到运行终态：产物里留着未识别的语法就是「版式没有 100% 复刻」。 */
+    /**
+     * 渲染降级警告必须能随快照传到运行终态：产物里留着未识别的语法就是「版式没有 100% 复刻」。
+     */
     @Test
     void renderWarningsTravelWithTheDraftSnapshot() {
         MarkFlowRenderService renderService = mock(MarkFlowRenderService.class);
@@ -195,6 +197,101 @@ class ScheduledArticleToolsDraftTests {
         again.setContentHtml(MARKDOWN);
         state.save(again);
         assertThat(state.renderWarnings()).isEmpty();
+    }
+
+    /**
+     * 摘要超长改为**截断 + 可见警告**，不再抛异常（2026-09-15）。
+     *
+     * <p>此前是硬拒绝，实测 run#85 / run#89（真实定时触发，task#4 SINGLE）前 40 次检索**全部成功**，
+     * 却因为「文章摘要不能超过120字」连续两次失败、烧光收尾宽限，整篇文章作废。
+     * 摘要只是列表页预览文案，截断的代价远小于丢掉整篇；前端编辑器本来就是静默截断
+     * （{@code slice(0,120)}），后端硬拒绝才是语义不一致的那一侧。
+     */
+    @Test
+    void oversizedDigestIsTruncatedWithAVisibleWarning() {
+        ScheduledArticleTools.DraftState state = new ScheduledArticleTools.DraftState(null, LayoutEngine.MARKFLOW);
+        ScheduledArticleTools.SaveDraftParam param = new ScheduledArticleTools.SaveDraftParam();
+        param.setTitle("测试文章");
+        param.setContentHtml(MARKDOWN);
+        param.setDigest("摘".repeat(187));
+        state.save(param);
+
+        // 保存必须成功——这正是 run#85 丢掉整篇文章的那一步
+        assertThat(state.isSaved()).isTrue();
+        assertThat(state.snapshot().digest())
+                .hasSize(ScheduledArticleTools.DIGEST_MAX_LENGTH)
+                .isEqualTo("摘".repeat(ScheduledArticleTools.DIGEST_MAX_LENGTH));
+        assertThat(state.saveWarnings()).hasSize(1);
+        assertThat(state.saveWarnings().get(0)).contains("187").contains("120");
+    }
+
+    /** 标题超长同样截断而非拒绝（公众号标题栏 64 字上限）。 */
+    @Test
+    void oversizedTitleIsTruncatedWithAVisibleWarning() {
+        ScheduledArticleTools.DraftState state = new ScheduledArticleTools.DraftState(null, LayoutEngine.MARKFLOW);
+        ScheduledArticleTools.SaveDraftParam param = new ScheduledArticleTools.SaveDraftParam();
+        param.setTitle("标".repeat(80));
+        param.setContentHtml(MARKDOWN);
+        state.save(param);
+
+        assertThat(state.isSaved()).isTrue();
+        assertThat(state.snapshot().title()).hasSize(ScheduledArticleTools.TITLE_MAX_LENGTH);
+        assertThat(state.saveWarnings()).hasSize(1);
+        assertThat(state.saveWarnings().get(0)).contains("80").contains("64");
+    }
+
+    /** 长度合规时不产生任何保存降级警告（判据可反证：没有超长就不能报警告）。 */
+    @Test
+    void withinLimitDraftProducesNoSaveWarnings() {
+        ScheduledArticleTools.DraftState state = new ScheduledArticleTools.DraftState(null, LayoutEngine.MARKFLOW);
+        ScheduledArticleTools.SaveDraftParam param = new ScheduledArticleTools.SaveDraftParam();
+        param.setTitle("测试文章");
+        param.setContentHtml(MARKDOWN);
+        param.setDigest("正常长度的摘要");
+        state.save(param);
+
+        assertThat(state.saveWarnings()).isEmpty();
+        assertThat(state.snapshot().saveWarnings()).isEmpty();
+    }
+
+    /** 保存降级警告随快照传递，并在重新保存时被清掉（与渲染警告同一套「不留上一版」语义）。 */
+    @Test
+    void saveWarningsTravelWithTheSnapshotAndResetOnSave() {
+        ScheduledArticleTools.DraftState state = new ScheduledArticleTools.DraftState(null, LayoutEngine.MARKFLOW);
+        ScheduledArticleTools.SaveDraftParam longDigest = new ScheduledArticleTools.SaveDraftParam();
+        longDigest.setTitle("测试文章");
+        longDigest.setContentHtml(MARKDOWN);
+        longDigest.setDigest("摘".repeat(200));
+        state.save(longDigest);
+        assertThat(state.snapshot().saveWarnings()).hasSize(1);
+
+        ScheduledArticleTools.SaveDraftParam fixed = new ScheduledArticleTools.SaveDraftParam();
+        fixed.setTitle("测试文章");
+        fixed.setContentHtml(MARKDOWN);
+        fixed.setDigest("改短了");
+        state.save(fixed);
+
+        assertThat(state.saveWarnings()).isEmpty();
+        assertThat(state.snapshot().saveWarnings()).isEmpty();
+    }
+
+    /**
+     * 渲染服务回填的摘要同样受长度约束：模型没给 digest 时它才会被用上，因而**绕过了保存期截断**。
+     * 不在交付前再截一次，就会在落库/同步公众号时暴露一个保存期已经修掉的同类问题。
+     */
+    @Test
+    void rendererSuppliedDigestIsAlsoTruncated() {
+        MarkFlowRenderService renderService = mock(MarkFlowRenderService.class);
+        when(renderService.render(any(), any(), any()))
+                .thenReturn(new MarkFlowRenderService.RenderResult("<section>渲染产物</section>", "标题",
+                        "摘".repeat(300), "#0984e3", "#0652dd"));
+        ScheduledArticleTools.DraftState state = markflowDraft(null, null);
+
+        state.renderBeforeDelivery(renderService);
+
+        assertThat(state.snapshot().digest()).hasSize(ScheduledArticleTools.DIGEST_MAX_LENGTH);
+        assertThat(state.saveWarnings()).hasSize(1);
+        assertThat(state.saveWarnings().get(0)).contains("渲染服务生成").contains("300");
     }
 
     /**

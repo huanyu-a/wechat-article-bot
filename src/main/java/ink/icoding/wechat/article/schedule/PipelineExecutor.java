@@ -1,8 +1,8 @@
 package ink.icoding.wechat.article.schedule;
 
-import ink.icoding.llm.agent.AgentClient;
 import ink.icoding.wechat.article.ai.ArticleAiService;
 import ink.icoding.wechat.article.ai.ScheduledAgentFactory;
+import ink.icoding.wechat.article.ai.ToolMutationDeduplicator;
 import ink.icoding.wechat.article.agent.AgentDefinition;
 import ink.icoding.wechat.article.agent.AgentDefinitionMapper;
 import ink.icoding.wechat.article.agent.AgentFactory;
@@ -23,11 +23,12 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
     private static final Logger log = LoggerFactory.getLogger(PipelineExecutor.class);
     private static final List<String> IMAGE_KEYWORDS = List.of("配图", "图片", "封面", "视觉", "插图", "图注");
 
-    /** 阶段智能体装配 seam（单测可替换，skills-agent-plan 8.1）。 */
+    /** 阶段智能体装配 seam（单测可替换，skills-agent-plan 8.1）：返回**故障切换候选**，首个为主用。 */
     @FunctionalInterface
     interface StageAgentBuilder {
-        AgentClient build(String code, String fallbackStage, ArticleAiService.ScheduledAgentRequest request,
-                          TaskWorkspace workspace);
+        List<AgentRunner.Candidate> build(String code, String fallbackStage,
+                                          ArticleAiService.ScheduledAgentRequest request,
+                                          TaskWorkspace workspace);
     }
 
     private final ScheduledAgentFactory agentFactory;
@@ -44,8 +45,10 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
         this.toolCallBudget = toolCallBudget == null ? ToolCallBudget.defaults() : toolCallBudget;
         this.stageAgentBuilder = (code, stage, request, workspace) -> {
             var context = agentFactory.skillContext(request.accountId(), request.skillIds(), List.of());
-            return agentFactory.build(code, stage, context, workspace, request.accountId(),
-                    request.userId(), null);
+            // 每个阶段一个独立的检索治理器：阶段之间不共享缓存（不同阶段该看到各自的新检索结果），
+            // 而阶段内部的重复调用正是要治理的对象。
+            return agentFactory.buildCandidates(code, stage, context, workspace, request.accountId(),
+                    request.userId(), null, new ToolMutationDeduplicator(), new ToolCallGovernor());
         };
     }
 
@@ -154,18 +157,35 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
     private AgentRunner.Outcome runStage(String code, String fallbackStage,
                                          ArticleAiService.ScheduledAgentRequest request, TaskWorkspace workspace,
                                          String command, String logPrefix, List<String> executionLog) {
-        AgentClient agent = buildAgent(code, fallbackStage, request, workspace);
-        executionLog.add(logPrefix + "启动智能体：" + agent.getName());
+        List<AgentRunner.Candidate> candidates = buildCandidates(code, fallbackStage, request, workspace);
+        executionLog.add(logPrefix + "启动智能体：" + candidates.get(0).agent().getName()
+                + AgentRunner.profileSuffix(candidates));
         // 每个阶段受工具调用上限约束（方案 5.5 预算护栏；超限中止并让任务以明确错误失败）。
         // 额度按阶段取：调研阶段高于写作/配图/审核（见 ToolCallBudget——实测宽口径调研的正常检索量
         // 就会超过 24 次，此前正是调查阶段触顶让整轮任务失败）。
         // 计数与日志都经 progressListener 实时汇入工作区：阶段因停滞/超时失败时，
         // 本次尝试的局部日志会随异常丢弃，只有实时上报的那份留得住（运行历史据此定位卡点）。
-        AgentRunner.Outcome outcome = runner.runWithLimit(agent, command, null, logPrefix,
-                toolCallBudget.subAgentLimitFor(fallbackStage), workspace.progressListener());
-        // 阶段内的工具失败计入运行级失败数：流水线即使跑完，也不该把「配图失败」记成干净的成功
-        workspace.addToolFailures(outcome.toolFailures());
-        return outcome;
+        // 走 runWithCandidates（而非 runWithLimit）：模型级错误时由 AgentInvoker 换下一个档案接着跑。
+        long startedAt = System.nanoTime();
+        try {
+            AgentRunner.Outcome outcome = runner.runWithCandidates(candidates, command, null, logPrefix,
+                    toolCallBudget.subAgentLimitFor(fallbackStage), 0, workspace.progressListener());
+            // 阶段内的工具失败计入运行级失败数：流水线即使跑完，也不该把「配图失败」记成干净的成功
+            workspace.addToolFailures(outcome.toolFailures());
+            workspace.addProfilesUsed(outcome.profilesUsed());
+            workspace.recordStage(fallbackStage, elapsedMillis(startedAt), outcome.toolCalls(),
+                    outcome.profilesUsed());
+            return outcome;
+        } catch (RuntimeException failure) {
+            // 失败路径同样记一段耗时：阶段中止时「卡了多久、调了几次工具」正是排查的起点，
+            // 只记成功路径会让最该看的那几类运行反而没有阶段记录。
+            workspace.recordStage(fallbackStage, elapsedMillis(startedAt), workspace.toolCallCount(), List.of());
+            throw failure;
+        }
+    }
+
+    private static long elapsedMillis(long startedAtNanos) {
+        return (System.nanoTime() - startedAtNanos) / 1_000_000L;
     }
 
     /**
@@ -197,9 +217,10 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
         }
     }
 
-    /** 装配阶段智能体（包级可见，便于单测经 seam 替换，skills-agent-plan 8.1）。 */
-    AgentClient buildAgent(String code, String fallbackStage,
-                           ArticleAiService.ScheduledAgentRequest request, TaskWorkspace workspace) {
+    /** 装配阶段智能体候选（包级可见，便于单测经 seam 替换，skills-agent-plan 8.1）。 */
+    List<AgentRunner.Candidate> buildCandidates(String code, String fallbackStage,
+                                                ArticleAiService.ScheduledAgentRequest request,
+                                                TaskWorkspace workspace) {
         return stageAgentBuilder.build(code, fallbackStage, request, workspace);
     }
 

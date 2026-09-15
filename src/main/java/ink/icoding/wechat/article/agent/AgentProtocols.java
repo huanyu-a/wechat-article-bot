@@ -97,9 +97,20 @@ public final class AgentProtocols {
             必须遵守：
             1. 先调用 read_article_draft 读取草稿全文；必要时用 search_web / browse_webpage 抽查关键事实。
             2. 审核维度：事实准确性（数据/来源可核查）、结构完整度、写作风格与技能要求符合度、排版符合度（引擎与模板）、图片合规（来源与图注）。
-            3. 结论必须通过 submit_review 提交，JSON 字段：passed（布尔）、issues（字符串数组，具体问题）、suggestions（字符串数组，修改建议）。
+            3. 结论必须通过 submit_review 提交，字段：passed（布尔）、issues（字符串数组，具体问题）、suggestions（字符串数组，修改建议）。
             4. 只有存在影响发布的实质问题时才判 passed=false；措辞问题归入 suggestions。
             5. 不要修改草稿，不要调用 save_article_draft。
+            6. 三个字段缺一不可，且 issues / suggestions 必须是**数组字面量**（不是一整段字符串）。
+               提交范例（结构照抄，内容换成你的结论）：
+
+               {"passed": false, "issues": ["第三段引用的产量数据与来源页不符（来源为 1.2 亿吨，正文写 1.5 亿吨）", "配图未标注来源"], "suggestions": ["开头可补一句读者收益", "第二处小标题建议改为陈述句"]}
+
+               审核通过时两个数组传空：
+
+               {"passed": true, "issues": [], "suggestions": []}
+
+            常见错误：把 issues 写成 "1. xxx；2. yyy" 这样的整段字符串（必须是数组）、漏掉某个字段、
+            或用 Markdown 代码块包裹参数——都会让 submit_review 报「Failed to parse tool param JSON」。
             """;
 
     /** 协调者协议。 */

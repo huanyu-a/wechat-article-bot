@@ -93,4 +93,48 @@ class ToolCallBudgetTest {
                 "save_research_notes", "save_article_draft", "submit_review", "set_article_draft_cover");
         assertThat(ToolCallBudget.TERMINAL_GRACE).isPositive().isLessThanOrEqualTo(5);
     }
+
+    /**
+     * 宽限额度按「成功占额度、失败不占额度」结算——复刻 run#85 的调用序列。
+     *
+     * <p>run#85 的 4 次宽限里 3 次被烧掉，只有 1 次是真正的成果提交：成功的
+     * {@code set_article_draft_cover}、两次因摘要超长失败的 {@code save_article_draft}，
+     * 第 4 次 {@code save_article_draft} 直接被拒——前 40 次成功检索全部作废。
+     * 修好之后，两次失败不占额度，第 4 次提交必须放行。
+     *
+     * <p>判据的代数形式很直白：{@code attempts = 成功 + 失败}，而失败换回的额度是
+     * {@code min(失败, grace)}，代入后当失败不超过 grace 时失败项相消，
+     * 条件等价于 **成功次数 &lt; TERMINAL_GRACE**——即「成功提交最多 grace 次，失败不额外收费」。
+     * 失败超过 grace 后换回的额度不再增长，总量封顶 {@code 2 × grace}。
+     */
+    @Test
+    void failedTerminalCallsEarnBackGraceButTotalStaysBounded() {
+        int grace = ToolCallBudget.TERMINAL_GRACE;
+
+        // 纯成功路径：连续 grace 次放行，第 grace+1 次收紧
+        for (int used = 0; used < grace; used++) {
+            assertThat(ToolCallBudget.allowsTerminalPastBudget(used, 0))
+                    .as("第 %d 次成功提交仍在宽限内", used + 1).isTrue();
+        }
+        assertThat(ToolCallBudget.allowsTerminalPastBudget(grace, 0))
+                .as("成功次数达到 grace 后不再放行").isFalse();
+
+        // run#85 现场：3 次尝试里 1 成功 + 2 失败。旧判据（只数次数）到这里就关门了
+        assertThat(ToolCallBudget.allowsTerminalPastBudget(grace, 2))
+                .as("两次失败不占额度，第 4 次提交必须放行").isTrue();
+        // 失败不占额度，成功仍然占：成功累计到 grace 次才关门
+        assertThat(ToolCallBudget.allowsTerminalPastBudget(grace + 1, 2))
+                .as("此时只成功了 2 次，仍在额度内").isTrue();
+        assertThat(ToolCallBudget.allowsTerminalPastBudget(grace + 2, 2))
+                .as("成功累计到 grace 次后收紧").isFalse();
+        assertThat(ToolCallBudget.allowsTerminalPastBudget(grace + 2, 3))
+                .as("多一次失败就多一格，重新放行").isTrue();
+
+        // 上界：失败再多也只能把总量撑到 2 × grace，否则成功路径就没有上限了
+        assertThat(ToolCallBudget.allowsTerminalPastBudget(grace * 2 - 1, 1_000)).isTrue();
+        assertThat(ToolCallBudget.allowsTerminalPastBudget(grace * 2, 1_000))
+                .as("失败换来的额度本身也必须封顶").isFalse();
+        // 负数（理论上不该出现）不能把判据算成「已用超额」
+        assertThat(ToolCallBudget.allowsTerminalPastBudget(0, -5)).isTrue();
+    }
 }

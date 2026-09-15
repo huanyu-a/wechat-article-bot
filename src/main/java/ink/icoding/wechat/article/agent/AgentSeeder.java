@@ -17,6 +17,10 @@ import java.util.List;
  * 内置智能体种子（skills-agent-plan 5.9 / 附录B）：7 个内置定义按 builtin_key 幂等 upsert。
  * 幂等策略：已存在则仅同步 tool_keys 与 skill_ids（系统行为），**persona 与 seed 不同视为用户改过，不覆盖**；
  * name/enabled 同样保留用户修改。@Order(30) 依赖 skill 表种子（@Order(10)）已就绪。
+ *
+ * <p>另：按智能体绑定模型档案（Phase 2）——{@code llm_profile_id} **仅在为空时**写入默认绑定，
+ * 用户改过就尊重用户的选择（与 skill_ids 同一策略）。@Order(30) 晚于
+ * {@link LlmProfileSeeder}（@Order(25)），因此标准档案此时已存在。
  */
 @Component
 @Order(30)
@@ -25,10 +29,12 @@ public class AgentSeeder implements ApplicationRunner {
 
     private final AgentDefinitionMapper mapper;
     private final SkillMapper skillMapper;
+    private final LlmProfileMapper profileMapper;
 
-    public AgentSeeder(AgentDefinitionMapper mapper, SkillMapper skillMapper) {
+    public AgentSeeder(AgentDefinitionMapper mapper, SkillMapper skillMapper, LlmProfileMapper profileMapper) {
         this.mapper = mapper;
         this.skillMapper = skillMapper;
+        this.profileMapper = profileMapper;
     }
 
     @Override
@@ -46,6 +52,7 @@ public class AgentSeeder implements ApplicationRunner {
         AgentDefinition existing = mapper.findByBuiltinKey(seed.builtinKey());
         String toolKeys = AgentDefinitionService.toJson(seed.toolGroups());
         String skillIds = resolveSkillIds(seed.skillKeys());
+        Long profileId = resolveProfileId(seed.profileSeedName());
         if (existing != null) {
             // 已存在：仅补齐「系统必需工具组」的缺失项（保留用户自定义增删），
             // 并同步内置默认技能（仅当用户未设置时）。persona/name/enabled 一律保留用户修改。
@@ -53,6 +60,10 @@ public class AgentSeeder implements ApplicationRunner {
             existing.setToolKeys(mergedToolKeys);
             if (existing.getSkillIds() == null || existing.getSkillIds().isBlank()) {
                 existing.setSkillIds(skillIds);
+            }
+            // 模型档案同样只在为空时写入：用户给某个智能体换过模型，种子不该把它改回去
+            if (existing.getLlmProfileId() == null && profileId != null) {
+                existing.setLlmProfileId(profileId);
             }
             existing.setUpdatedAt(LocalDateTime.now());
             mapper.updateById(existing);
@@ -65,6 +76,7 @@ public class AgentSeeder implements ApplicationRunner {
         agent.setPersona(seed.persona());
         agent.setToolKeys(toolKeys);
         agent.setSkillIds(skillIds);
+        agent.setLlmProfileId(profileId);
         agent.setEnabled(true);
         agent.setIsBuiltin(true);
         agent.setBuiltinKey(seed.builtinKey());
@@ -72,6 +84,19 @@ public class AgentSeeder implements ApplicationRunner {
         agent.setCreatedAt(now);
         agent.setUpdatedAt(now);
         mapper.insert(agent);
+    }
+
+    /**
+     * 档案名 → id（档案不存在时返回 null，该智能体回落默认档案）。
+     *
+     * <p>按**名称**而不是硬编码 id：id 由数据库自增，写死在种子里的 id 在别的部署上会指向
+     * 完全不同的档案；名称是 {@link LlmProfileSeeder} 的幂等键，两处对齐才可靠。
+     */
+    private Long resolveProfileId(String profileSeedName) {
+        if (profileSeedName == null || profileSeedName.isBlank()) return null;
+        LlmProfile profile = profileMapper.findByName(profileSeedName);
+        if (profile == null || !Boolean.TRUE.equals(profile.getEnabled())) return null;
+        return profile.getId();
     }
 
     /**
@@ -97,34 +122,43 @@ public class AgentSeeder implements ApplicationRunner {
         return ids.isEmpty() ? null : AgentDefinitionService.normalizeSkillIds(ids);
     }
 
+    /**
+     * 内置定义种子。
+     *
+     * @param profileSeedName 默认绑定的模型档案名（{@link LlmProfileSeeder} 的幂等键）；
+     *                        档案不存在时该智能体回落默认档案。分配依据见
+     *                        {@code docs/dev/model-availability-probe.md}：
+     *                        工具密集、以速度为主的阶段绑 deepseek-flash（445 tok/s），
+     *                        成稿与判断为主的阶段绑 glm-5.3-flash（本 key 下能力分最高）。
+     */
     record Seed(String builtinKey, String code, String name, String stage, String persona,
-                List<String> toolGroups, List<String> skillKeys) {
+                List<String> toolGroups, List<String> skillKeys, String profileSeedName) {
     }
 
     static List<Seed> seeds() {
         return List.of(
                 new Seed("builtin_editor", "builtin_editor", "墨舟编辑智能体", "EDITOR", EDITOR_PERSONA,
                         List.of(ToolRegistry.BROWSER_EDITOR, ToolRegistry.MEDIA,
-                                ToolRegistry.RENDER, ToolRegistry.DELEGATE), List.of()),
+                                ToolRegistry.RENDER, ToolRegistry.DELEGATE), List.of(), "deepseek-flash"),
                 new Seed("builtin_scheduled_creator", "builtin_scheduled_creator", "墨舟定时创作智能体",
                         "SCHEDULED_SINGLE", SCHEDULED_PERSONA,
                         List.of(ToolRegistry.DRAFT_READ, ToolRegistry.DRAFT_WRITE, ToolRegistry.MEDIA),
-                        List.of("default_layout")),
+                        List.of("default_layout"), "glm-5.3-flash"),
                 new Seed("builtin_researcher", "builtin_researcher", "调研员", "RESEARCH", RESEARCH_PERSONA,
                         List.of(ToolRegistry.RESEARCH, ToolRegistry.MEDIA),
-                        List.of("fact_check_default")),
+                        List.of("fact_check_default"), "deepseek-flash"),
                 new Seed("builtin_writer", "builtin_writer", "撰稿人", "WRITING", WRITER_PERSONA,
                         List.of(ToolRegistry.DRAFT_READ, ToolRegistry.DRAFT_WRITE),
-                        List.of("default_layout")),
+                        List.of("default_layout"), "glm-5.3-flash"),
                 new Seed("builtin_illustrator", "builtin_illustrator", "配图师", "ILLUSTRATION",
                         ILLUSTRATOR_PERSONA,
                         List.of(ToolRegistry.MEDIA, ToolRegistry.DRAFT_READ, ToolRegistry.DRAFT_WRITE),
-                        List.of()),
+                        List.of(), "deepseek-flash"),
                 new Seed("builtin_reviewer", "builtin_reviewer", "审稿人", "REVIEW", REVIEWER_PERSONA,
                         List.of(ToolRegistry.DRAFT_READ, ToolRegistry.MEDIA, ToolRegistry.REVIEW),
-                        List.of("fact_check_default")),
+                        List.of("fact_check_default"), "glm-5.3-flash"),
                 new Seed("builtin_chief", "builtin_chief", "主编（协调者）", "COORDINATE", CHIEF_PERSONA,
-                        List.of(ToolRegistry.DELEGATE, ToolRegistry.DRAFT_READ), List.of()));
+                        List.of(ToolRegistry.DELEGATE, ToolRegistry.DRAFT_READ), List.of(), "glm-5.3-flash"));
     }
 
     static final String EDITOR_PERSONA = """

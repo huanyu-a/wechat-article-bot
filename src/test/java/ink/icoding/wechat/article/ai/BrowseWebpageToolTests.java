@@ -57,6 +57,8 @@ class BrowseWebpageToolTests {
     private static ArticleMediaTools.BrowseWebpageTool tool(SafeWebService webService) {
         ArticleMediaTools tools = new ArticleMediaTools(webService, mock(AssetService.class),
                 mock(ImageGenerationService.class));
-        return tools.new BrowseWebpageTool();
+        // 直通 ReadExecutor：这里测的是工具本身对「页面不可访问」的分类，不是检索治理
+        // （去重与循环检测由 ToolCallGovernorTest 覆盖），直通即生产默认行为。
+        return tools.new BrowseWebpageTool((toolName, paramJson, action) -> action.get());
     }
 }

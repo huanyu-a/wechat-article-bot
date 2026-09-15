@@ -20,6 +20,12 @@ import java.time.LocalDateTime;
 public class RenderConfig extends PO {
     @ID
     private Long id;
+    /**
+     * 渲染服务供应商标识。显式声明 50（与 {@code LlmConfig.provider} / {@code LlmProfile.provider} 一致）：
+     * 三处同名共用 smart-mybatis 的字段名级列声明缓存，声明文本不一致时结果取决于初始化顺序。
+     * 实测三张表都是 varchar(50)，显式写出即与真实列宽同向。
+     */
+    @TableField(length = 50)
     private String provider;
     @TableField(length = 500)
     private String baseUrl;

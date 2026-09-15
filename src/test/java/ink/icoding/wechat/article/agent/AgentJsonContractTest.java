@@ -19,10 +19,26 @@ class AgentJsonContractTest {
     void profileViewSerializesIsDefault() throws Exception {
         LlmProfileService.ProfileView view = new LlmProfileService.ProfileView(
                 1L, "默认配置", "OPENAI_COMPATIBLE", "https://api.openai.com", "gpt-4.1-mini",
-                true, "••••••••abcd", new BigDecimal("0.7"), 4096, true, true, null);
+                true, "••••••••abcd", new BigDecimal("0.7"), 4096, true, true, false, null);
         String json = mapper.writeValueAsString(view);
         assertThat(json).contains("\"isDefault\":true").doesNotContain("\"default\":");
         assertThat(json).doesNotContain("apiKey\""); // 不得回传完整 key
+    }
+
+    /**
+     * 兜底档案的字段名同样是前后端契约：前端用它渲染「兜底」徽标与切换按钮。
+     *
+     * <p>与 {@code isDefault} 同理——record 的 {@code isFallback} 访问器一旦被 Jackson 剥掉前缀，
+     * 字段会静默变成 {@code fallback}，前端读不到就永远显示「未设置兜底档案」，
+     * 而故障切换链的最后一段实际上是配好的。
+     */
+    @Test
+    void profileViewSerializesIsFallback() throws Exception {
+        LlmProfileService.ProfileView view = new LlmProfileService.ProfileView(
+                3L, "兜底档案", "OPENAI_COMPATIBLE", "https://nexus.bx9y.com.cn", "hy4-preview",
+                true, "••••••••wxyz", null, null, true, false, true, null);
+        String json = mapper.writeValueAsString(view);
+        assertThat(json).contains("\"isFallback\":true").doesNotContain("\"fallback\":");
     }
 
     @Test
@@ -40,7 +56,7 @@ class AgentJsonContractTest {
     void profileViewWithoutApiKeyReportsMaskedState() throws Exception {
         LlmProfileService.ProfileView view = new LlmProfileService.ProfileView(
                 2L, "无 key 档案", "ANTHROPIC", "https://api.anthropic.com", "claude", false, "未配置",
-                null, null, false, false, null);
+                null, null, false, false, false, null);
         String json = mapper.writeValueAsString(view);
         assertThat(json).contains("\"hasApiKey\":false").contains("\"isDefault\":false");
     }

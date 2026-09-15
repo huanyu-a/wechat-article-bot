@@ -1,6 +1,5 @@
 package ink.icoding.wechat.article.schedule;
 
-import ink.icoding.llm.agent.AgentClient;
 import ink.icoding.llm.core.tool.Tool;
 import ink.icoding.wechat.article.ai.ArticleAiService;
 import ink.icoding.wechat.article.ai.DelegateTools;
@@ -50,6 +49,10 @@ public class CoordinatorExecutor extends ScheduledExecutionStrategy {
         return "COORDINATOR";
     }
 
+    private static long elapsedMillis(long startedAtNanos) {
+        return (System.nanoTime() - startedAtNanos) / 1_000_000L;
+    }
+
     @Override
     public ArticleAiService.ScheduledAgentResult execute(ArticleAiService.ScheduledAgentRequest request,
                                                          TaskWorkspace workspace) throws Exception {
@@ -63,28 +66,49 @@ public class CoordinatorExecutor extends ScheduledExecutionStrategy {
         // 子智能体运行器工厂：按 code/stage 装配并同步运行，复用同一工作区与预算日志
         DelegateTools.SubAgentRunner runnerProxy = (code, stage, command, logPrefix) -> {
             SkillContext context = agentFactory.skillContext(request.accountId(), request.skillIds(), List.of());
-            AgentClient subAgent = agentFactory.build(code, stage, context, workspace, request.accountId(),
-                    request.userId(), null, mediaMutations);
-            executionLog.add(logPrefix + "启动子智能体：" + subAgent.getName());
+            // 每次委托一个独立的检索治理器：委托之间不共享缓存（换一次委托往往就是换一个检索方向），
+            // 而「同一次委托内反复用同一参数检索」才是要拦的失控形态。
+            List<AgentRunner.Candidate> candidates = agentFactory.buildCandidates(code, stage, context, workspace,
+                    request.accountId(), request.userId(), null, mediaMutations, new ToolCallGovernor());
+            executionLog.add(logPrefix + "启动子智能体：" + candidates.get(0).agent().getName()
+                    + AgentRunner.profileSuffix(candidates));
             // 子智能体的工具计数与日志都**实时**汇入共享工作区：此前只实时上报计数、日志由 DelegateTools
             // 事后整体追加，子智能体停滞/超时的那次尝试其局部日志会随异常丢弃（I6 现状 a），
             // 失败后只剩一句引导文本。改为全量 progressListener 后，卡在哪一步在运行历史里也看得到。
-            AgentRunner.Outcome outcome = runner.runWithLimit(subAgent, command, null, logPrefix,
-                    toolCallBudget.subAgentLimitFor(stage), workspace.progressListener());
-            // 子智能体的工具失败也要计入运行级失败数（终态判定见 TaskWorkspace.toolFailureCount）
-            workspace.addToolFailures(outcome.toolFailures());
-            // 日志已随 progressListener 实时落盘；这里清空 executionLog 返回，避免 DelegateTools.runSubAgent
-            // 再 addAll 一次造成同一行记两遍（这正是原 toolCallsOnly 用意的替代实现）。
-            return new AgentRunner.Outcome(outcome.reply(), outcome.toolCalls(), "", outcome.toolFailures());
+            // 走 runWithCandidates：模型级错误时换下一个档案接着跑，而不是把整次委托判死。
+            long startedAt = System.nanoTime();
+            try {
+                AgentRunner.Outcome outcome = runner.runWithCandidates(candidates, command, null, logPrefix,
+                        toolCallBudget.subAgentLimitFor(stage), 0, workspace.progressListener());
+                // 子智能体的工具失败也要计入运行级失败数（终态判定见 TaskWorkspace.toolFailureCount）
+                workspace.addToolFailures(outcome.toolFailures());
+                workspace.addProfilesUsed(outcome.profilesUsed());
+                // 每次委托单记一条阶段记录：一次 COORDINATOR 运行有多轮委托，只记一条汇总
+                // 就看不出「哪一次委托慢」——而这正是 1801 秒里最需要定位的部分。
+                workspace.recordStage("DELEGATE_" + stage, elapsedMillis(startedAt), outcome.toolCalls(),
+                        outcome.profilesUsed());
+                // 日志已随 progressListener 实时落盘；这里清空 executionLog 返回，避免 DelegateTools.runSubAgent
+                // 再 addAll 一次造成同一行记两遍（这正是原 toolCallsOnly 用意的替代实现）。
+                return new AgentRunner.Outcome(outcome.reply(), outcome.toolCalls(), "", outcome.toolFailures());
+            } catch (RuntimeException failure) {
+                // 委托失败也要留一条耗时记录：它同样是「时间花在哪」的证据
+                workspace.recordStage("DELEGATE_" + stage, elapsedMillis(startedAt),
+                        workspace.toolCallCount(), List.of());
+                throw failure;
+            }
         };
 
         List<Tool> delegateTools = DelegateTools.create(workspace, maxRounds,
                 (code, stage) -> runnerProxy, executionLog, toolCallBudget);
 
         SkillContext chiefContext = agentFactory.skillContext(request.accountId(), request.skillIds(), List.of());
-        AgentClient chief = agentFactory.build(AgentFactory.CODE_CHIEF, "COORDINATE", chiefContext, workspace,
-                request.accountId(), request.userId(), ws -> delegateTools, mediaMutations);
-        executionLog.add("【协调】启动主编智能体：" + chief.getName());
+        // 主编自己不做检索（它只读草稿 + 委托），治理器只为统一候选构造签名而给一个：
+        // 委托类工具不在只读集合里，因此对主编而言它实际是直通的。
+        List<AgentRunner.Candidate> chiefCandidates = agentFactory.buildCandidates(AgentFactory.CODE_CHIEF,
+                "COORDINATE", chiefContext, workspace, request.accountId(), request.userId(),
+                ws -> delegateTools, mediaMutations, new ToolCallGovernor());
+        executionLog.add("【协调】启动主编智能体：" + chiefCandidates.get(0).agent().getName()
+                + AgentRunner.profileSuffix(chiefCandidates));
 
         String command = """
                 当前时间：%s
@@ -107,10 +131,12 @@ public class CoordinatorExecutor extends ScheduledExecutionStrategy {
         // 会话超时单独放宽到 coordinator-timeout-seconds：这一次会话覆盖全部委托，量级与单阶段不同。
         // 日志实时汇入工作区：chief 停滞/超时时本次尝试的局部日志会随异常丢弃，只有实时上报的留得住。
         AgentRunner.Outcome outcome;
+        long chiefStartedAt = System.nanoTime();
         try {
-            outcome = runner.runWithLimit(chief, command, null, "【协调】",
+            outcome = runner.runWithCandidates(chiefCandidates, command, null, "【协调】",
                     toolCallBudget.chiefLimit(), chiefTimeoutSeconds, workspace.progressListener());
         } catch (RuntimeException error) {
+            workspace.recordStage("COORDINATE", elapsedMillis(chiefStartedAt), workspace.toolCallCount(), List.of());
             // 主编会话中止但草稿已落盘：文章是完整的，按现有草稿交付而不是整轮失败
             // （否则一次协调层抖动就会把子智能体已经写好的整篇文章丢掉）。
             if (!workspace.draftState().isSaved()) throw error;
@@ -120,6 +146,9 @@ public class CoordinatorExecutor extends ScheduledExecutionStrategy {
             outcome = new AgentRunner.Outcome("", 0, "", 0);
         }
         workspace.addToolFailures(outcome.toolFailures());
+        workspace.addProfilesUsed(outcome.profilesUsed());
+        workspace.recordStage("COORDINATE", elapsedMillis(chiefStartedAt), outcome.toolCalls(),
+                outcome.profilesUsed());
 
         if (!workspace.draftState().isSaved()) {
             throw new IllegalStateException("智能体没有通过 save_article_draft 提交文章");

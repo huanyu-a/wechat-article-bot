@@ -57,11 +57,6 @@ public class ArticleAiService {
     private static final Logger log = LoggerFactory.getLogger(ArticleAiService.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final int MAX_TOOL_CALLS = 24;
-    /**
-     * 定时单智能体的工具调用上限（方案 5.5 预算护栏，定时侧为新增强制点）：
-     * 该智能体独自完成调研 + 配图 + 写作，额度高于编辑器单轮编辑的 {@link #MAX_TOOL_CALLS}。
-     */
-    private static final int MAX_SCHEDULED_TOOL_CALLS = 40;
     /** 编辑器单次对话的渲染/委托额度（服务端工具不经过浏览器管道，需单独限流）。 */
     private static final int MAX_EDITOR_RENDER_CALLS = 10;
     private static final int MAX_EDITOR_DELEGATE_CALLS = 3;
@@ -125,6 +120,15 @@ public class ArticleAiService {
      */
     private final long editorTimeoutSeconds;
     /**
+     * 定时 SINGLE 链路的会话硬超时（秒，{@code app.schedule.single-timeout-seconds}）。
+     *
+     * <p>为什么必须与 {@code app.schedule.stage-timeout-seconds}（300s）分开：那 300 秒是照
+     * 「单个阶段会话」定的，而 SINGLE 的**一次会话就要做完调研 + 写作 + 配图**。此前它沿用 300s，
+     * 实测结果是 SINGLE 从未成功跑过 300 秒（6 次成功最长 272s），12 次失败全部卡在 300s
+     * （含 09-13、09-14 两次真实定时触发），而 PIPELINE 分阶段做同样三件事的成功运行均值是 533~1194s。
+     */
+    private final long singleTimeoutSeconds;
+    /**
      * 工具调用预算：编辑器的调研委托与定时链路共用同一套额度（见 {@link ToolCallBudget}）——
      * 调研阶段单独一档，否则编辑器里一次宽口径调研同样会在 24 次处被中止。
      */
@@ -150,7 +154,9 @@ public class ArticleAiService {
                             ink.icoding.wechat.article.common.InFlightGate inFlightGate,
                             ink.icoding.wechat.article.schedule.ToolCallBudget toolCallBudget,
                             @org.springframework.beans.factory.annotation.Value(
-                                    "${app.llm.editor-timeout-seconds:1800}") long editorTimeoutSeconds) {
+                                    "${app.llm.editor-timeout-seconds:1800}") long editorTimeoutSeconds,
+                            @org.springframework.beans.factory.annotation.Value(
+                                    "${app.schedule.single-timeout-seconds:900}") long singleTimeoutSeconds) {
         this.messageMapper = messageMapper;
         this.agentSessionMapper = agentSessionMapper;
         this.articleService = articleService;
@@ -169,6 +175,7 @@ public class ArticleAiService {
         this.toolCallBudget = toolCallBudget == null
                 ? ink.icoding.wechat.article.schedule.ToolCallBudget.defaults() : toolCallBudget;
         this.editorTimeoutSeconds = editorTimeoutSeconds;
+        this.singleTimeoutSeconds = singleTimeoutSeconds > 0 ? singleTimeoutSeconds : 900L;
     }
 
     public List<AiMessage> messages(Long articleId) {
@@ -263,56 +270,17 @@ public class ArticleAiService {
                     "sessionId", session.id,
                     "status", "thinking",
                     "message", "智能体正在分析要求并准备读取编辑区…"));
-            AgentClient agent = createArticleAgent(session);
+            // 故障切换候选（Phase 1）：编辑器链路此前完全没有重试，模型档案被下线后
+            // 用户只能看到一句错误，且**唯一**恢复手段是去设置页手工换档案。
+            // 这里只做「模型级错误 → 换档案」这一件事，不引入定时链路的重试栈：
+            // 用户在场，快速失败 + 明确提示比后台反复重试更合适（见方案十二）。
+            List<ink.icoding.wechat.article.schedule.AgentRunner.Candidate> candidates =
+                    createArticleAgentCandidates(session);
             ArticleAgentSession storedSession = agentSessionMapper.findByArticleId(session.article.getId());
-            AgentClientSession agentSession = storedSession == null
-                    ? agent.createSession()
-                    : agent.getSessionFromSerialization(storedSession.getSerializedSession());
-            AgentSessionResult result = agentSession.command(commandWithAttachments(instruction, session.attachedAssets),
-                            sessionAttachments(session.attachedAssets))
-                    .then(new AgentResultHandler() {
-                        @Override
-                        public void onMessage(String message) {
-                            assistantText.append(message);
-                            session.send("delta", Map.of("content", message));
-                        }
-
-                        @Override
-                        public void onUsage(TokenUsage usage) {
-                            if (usage != null) {
-                                inputTokens.addAndGet(usage.getInputTokens());
-                                outputTokens.addAndGet(usage.getOutputTokens());
-                            }
-                        }
-
-                        @Override
-                        public void onTool(ToolDescriptor tool, ToolStatus status) {
-                            if (isServerSideTool(tool)) session.serverToolStatus(tool, status);
-                        }
-
-                        @Override
-                        public void onToolError(ToolDescriptor tool, Exception error) {
-                            if (isServerSideTool(tool)) session.serverToolError(tool, error);
-                        }
-
-                        @Override
-                        public void onContextCompression(ContextCompressionStatus status,
-                                                         int beforeTokens, int afterTokens) {
-                            session.send("state", Map.of(
-                                    "sessionId", session.id,
-                                    "status", "compressing_context",
-                                    "message", status == ContextCompressionStatus.STARTED
-                                            ? "正在压缩较早的对话上下文…" : "对话上下文压缩完成"));
-                        }
-                    });
-            // 硬超时护栏（I8）：编辑器链路此前直接 result.execute()/result.get()，完全绕过 StageTimeout。
-            // 上游 SSE 一旦停滞，该线程永久 WAITING，InFlightGate 名额（在 finishSession 才释放）被永久占住，
-            // 且编辑器会话不是「运行」，TASK_RUN 里没有任何记录——用户只看到「AI 一直不回」。
-            // 这里包上 StageTimeout：超时抛 StageTimeoutException → 下面的 catch 发 error 事件 → finally
-            // 走 finishSession 释放名额。门槛用独立配置 editor-timeout-seconds（用户在场，等 300 秒太短）。
-            // 说明：StageTimeout 只能放弃工作线程（agent4j 无 cancel），这一限制与定时链路一致（U1）。
-            ink.icoding.wechat.article.schedule.StageTimeout.await(result, editorTimeoutSeconds, "编辑器");
-            String response = result.get();
+            EditorAttempt editorAttempt = attemptEditorSession(candidates, storedSession, session, instruction,
+                    assistantText, inputTokens, outputTokens);
+            AgentClientSession agentSession = editorAttempt.agentSession();
+            String response = editorAttempt.response();
             if (session.serverToolCalls.get() > MAX_SERVER_TOOL_CALLS) {
                 throw new IllegalStateException("单次对话最多调用 " + MAX_SERVER_TOOL_CALLS
                         + " 次服务端工具（素材/渲染/委托），请合并操作后重试");
@@ -339,7 +307,147 @@ public class ArticleAiService {
         }
     }
 
+    /** 一次编辑器会话尝试的产出（会话对象用于持久化，响应文本用于回复）。 */
+    private record EditorAttempt(AgentClientSession agentSession, String response) {
+    }
+
+    /**
+     * 跑一次编辑器会话；模型级错误且**本次零工具调用**时换下一个档案重试一次。
+     *
+     * <p>为什么只在这里做「换档案」而不引入 {@link ink.icoding.wechat.article.schedule.AgentInvoker}
+     * 的完整重试栈：编辑器是**交互式**链路，用户就坐在屏幕前。定时链路的退避重试（最多 6 次尝试、
+     * 合计 31 秒退避）对无人值守是合理的，对交互式只会让用户干等；而「换档案」解决的是
+     * 用户自己解决不了的那类错误（档案被下线），值得多花一次尝试。
+     *
+     * <p>零工具调用是硬前提：编辑器会话已经改动过文章时换模型重跑，会让同一处修改做两遍。
+     * 有历史会话（{@code storedSession != null}）时也**不切换**——续接的会话带着上下文，
+     * 换模型续接等于让另一个模型接着前一个的对话写，行为不可预期。
+     */
+    private EditorAttempt attemptEditorSession(
+            List<ink.icoding.wechat.article.schedule.AgentRunner.Candidate> candidates,
+            ArticleAgentSession storedSession, EditorSession session, String instruction,
+            StringBuilder assistantText, AtomicInteger inputTokens, AtomicInteger outputTokens)
+            throws Exception {
+        int index = 0;
+        while (true) {
+            ink.icoding.wechat.article.schedule.AgentRunner.Candidate candidate = candidates.get(index);
+            AgentClient agent = candidate.agent();
+            AgentClientSession agentSession = storedSession == null
+                    ? agent.createSession()
+                    : agent.getSessionFromSerialization(storedSession.getSerializedSession());
+            int toolCallsBefore = session.serverToolCalls.get();
+            AgentSessionResult result = agentSession
+                    .command(commandWithAttachments(instruction, session.attachedAssets),
+                            sessionAttachments(session.attachedAssets))
+                    .then(editorResultHandler(session, assistantText, inputTokens, outputTokens));
+            try {
+                // 硬超时护栏（I8）：编辑器链路此前直接 result.execute()/result.get()，完全绕过 StageTimeout。
+                // 上游 SSE 一旦停滞，该线程永久 WAITING，InFlightGate 名额（在 finishSession 才释放）被永久占住，
+                // 且编辑器会话不是「运行」，TASK_RUN 里没有任何记录——用户只看到「AI 一直不回」。
+                // 这里包上 StageTimeout：超时抛 StageTimeoutException → 下面的 catch 发 error 事件 → finally
+                // 走 finishSession 释放名额。门槛用独立配置 editor-timeout-seconds（用户在场，等 300 秒太短）。
+                // 说明：StageTimeout 只能放弃工作线程（agent4j 无 cancel），这一限制与定时链路一致（U1）。
+                ink.icoding.wechat.article.schedule.StageTimeout.await(result, editorTimeoutSeconds, "编辑器");
+                return new EditorAttempt(agentSession, result.get());
+            } catch (Exception failure) {
+                boolean noSideEffects = storedSession == null
+                        && session.serverToolCalls.get() == toolCallsBefore;
+                boolean hasNext = index + 1 < candidates.size();
+                if (noSideEffects && hasNext && isModelLevelFailure(failure)) {
+                    String next = candidates.get(index + 1).label();
+                    log.warn("编辑器会话模型档案不可用（{}），切换 {} → {}", failure.getMessage(),
+                            candidate.label(), next);
+                    session.send("state", Map.of("sessionId", session.id, "status", "switching_model",
+                            "message", "当前模型不可用（" + briefError(failure) + "），已自动切换到 " + next));
+                    index++;
+                    continue;
+                }
+                throw failure;
+            }
+        }
+    }
+
+    /** 编辑器会话的结果处理器（每轮尝试都新建一个，累积到同一份 assistantText）。 */
+    private AgentResultHandler editorResultHandler(EditorSession session, StringBuilder assistantText,
+                                                   AtomicInteger inputTokens, AtomicInteger outputTokens) {
+        return new AgentResultHandler() {
+            @Override
+            public void onMessage(String message) {
+                assistantText.append(message);
+                session.send("delta", Map.of("content", message));
+            }
+
+            @Override
+            public void onUsage(TokenUsage usage) {
+                if (usage != null) {
+                    inputTokens.addAndGet(usage.getInputTokens());
+                    outputTokens.addAndGet(usage.getOutputTokens());
+                }
+            }
+
+            @Override
+            public void onTool(ToolDescriptor tool, ToolStatus status) {
+                if (isServerSideTool(tool)) session.serverToolStatus(tool, status);
+            }
+
+            @Override
+            public void onToolError(ToolDescriptor tool, Exception error) {
+                if (isServerSideTool(tool)) session.serverToolError(tool, error);
+            }
+
+            @Override
+            public void onContextCompression(ContextCompressionStatus status,
+                                             int beforeTokens, int afterTokens) {
+                session.send("state", Map.of(
+                        "sessionId", session.id,
+                        "status", "compressing_context",
+                        "message", status == ContextCompressionStatus.STARTED
+                                ? "正在压缩较早的对话上下文…" : "对话上下文压缩完成"));
+            }
+        };
+    }
+
+    /**
+     * 模型级错误判据（与 {@link ink.icoding.wechat.article.schedule.AgentInvoker#isModelLevelFailure}
+     * 同一清单）：只有换模型才可能治好的那几类。
+     *
+     * <p>有意不把 429 / 内容审查算进来：前者是账号级并发配额（换档案无效），后者换个模型同样会被拦。
+     */
+    static boolean isModelLevelFailure(Throwable failure) {
+        Throwable cause = failure;
+        StringBuilder text = new StringBuilder();
+        while (cause != null) {
+            if (cause.getMessage() != null) text.append(cause.getMessage()).append('\n');
+            cause = cause.getCause() == cause ? null : cause.getCause();
+        }
+        String message = text.toString().toLowerCase(java.util.Locale.ROOT);
+        for (String keyword : new String[]{"model_not_found", "no available channel", "invalid_api_key",
+                "401", "402", "403", "404"}) {
+            if (message.contains(keyword)) return true;
+        }
+        return false;
+    }
+
+    /** 错误摘要（用于给用户看的一行提示）。 */
+    private static String briefError(Throwable failure) {
+        String message = failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage();
+        int newline = message.indexOf('\n');
+        if (newline > 0) message = message.substring(0, newline);
+        return message.length() > 80 ? message.substring(0, 80) + "…" : message;
+    }
+
     private AgentClient createArticleAgent(EditorSession editorSession) {
+        return createArticleAgentCandidates(editorSession).get(0).agent();
+    }
+
+    /**
+     * 编辑器链路的故障切换候选（首个为主用）。
+     *
+     * <p>编辑器**不做检索治理**（治理器传 null）：用户在场的交互式编辑里，重复检索由用户自己叫停，
+     * 缓存反而会让用户「刚改完素材库却读不到新图」。
+     */
+    private List<ink.icoding.wechat.article.schedule.AgentRunner.Candidate> createArticleAgentCandidates(
+            EditorSession editorSession) {
         // 第②期：装配改走 AgentFactory（内置 builtin_editor 定义，方案 7 第②期第 4 项）
         SkillContext context = editorSkillContext(editorSession.article);
         SkillPromptResult editorPrompt = skillPromptAssembler.assemble(context);
@@ -365,7 +473,12 @@ public class ArticleAiService {
             }
             return tools;
         };
-        return agentFactory.buildByCode(AgentFactory.CODE_EDITOR, "EDITOR", context, editorPrompt, resolver);
+        return agentFactory.buildLabeledCandidatesByCode(AgentFactory.CODE_EDITOR, "EDITOR", context,
+                        editorPrompt, resolver)
+                .stream()
+                .map(labeled -> new ink.icoding.wechat.article.schedule.AgentRunner.Candidate(
+                        labeled.agent(), labeled.label()))
+                .toList();
     }
 
     private String commandWithAttachments(String instruction, List<Asset> assets) {
@@ -507,10 +620,15 @@ public class ArticleAiService {
         ScheduledArticleTools.DraftState draftState =
                 new ScheduledArticleTools.DraftState(request.defaultCoverAssetId(), layoutEngine);
         ToolMutationDeduplicator mediaMutations = new ToolMutationDeduplicator();
+        // 只读检索治理器（Phase 4）：SINGLE 一次会话覆盖调研 + 写作 + 配图，是最容易把预算
+        // 烧在重复检索上的链路（run#85/#89 都是这个形态），因此这里同样装上。
+        ink.icoding.wechat.article.schedule.ToolCallGovernor governor =
+                new ink.icoding.wechat.article.schedule.ToolCallGovernor();
         // 第②期：装配改走 AgentFactory（内置 builtin_scheduled_creator 定义，方案 7 第②期第 4 项）
         List<ink.icoding.llm.core.tool.Tool> draftTools = new ArrayList<>(ScheduledArticleTools.all(draftState));
-        List<ink.icoding.llm.core.tool.Tool> mediaToolList =
-                mediaTools.create(request.accountId(), request.userId(), mediaMutations::execute);
+        List<ink.icoding.llm.core.tool.Tool> mediaToolList = mediaTools.create(request.accountId(),
+                request.userId(), mediaMutations::execute,
+                ink.icoding.wechat.article.ai.ScheduledAgentFactory.readExecutor(governor));
         AgentFactory.ToolResolver resolver = groups -> {
             List<ink.icoding.llm.core.tool.Tool> tools = new ArrayList<>();
             if (groups.contains(ink.icoding.wechat.article.agent.ToolRegistry.DRAFT_READ)
@@ -522,8 +640,13 @@ public class ArticleAiService {
             }
             return tools;
         };
-        AgentClient agent = agentFactory.buildByCode(AgentFactory.CODE_SCHEDULED_CREATOR, "SCHEDULED_SINGLE",
-                skillContext, resolver);
+        List<ink.icoding.wechat.article.schedule.AgentRunner.Candidate> candidates =
+                agentFactory.buildLabeledCandidatesByCode(AgentFactory.CODE_SCHEDULED_CREATOR,
+                                "SCHEDULED_SINGLE", skillContext, skillPrompt, resolver)
+                        .stream()
+                        .map(labeled -> new ink.icoding.wechat.article.schedule.AgentRunner.Candidate(
+                                labeled.agent(), labeled.label(), governor))
+                        .toList();
 
         // 日志写在工作区上（不是局部变量）：阶段失败时局部变量随异常丢弃，运行历史就只剩一行错误
         List<String> executionLog = workspace.executionLog();
@@ -547,10 +670,31 @@ public class ArticleAiService {
         // 此前 SINGLE（存量任务的默认模式）自己起会话，只有超时没有重试，与另两条链路必然漂移。
         // 工具调用数与日志**实时**汇入工作区（progressListener）：会话停滞/超时时本次尝试的
         // 局部日志会随异常丢弃，只有实时上报的那份留得住；日志前缀为 null，与原有「调用工具：X」格式一致。
-        ink.icoding.wechat.article.schedule.AgentRunner.Outcome outcome =
-                agentRunner.runWithLimit(agent, command, null, null,
-                        MAX_SCHEDULED_TOOL_CALLS, workspace.progressListener());
+        //
+        // 超时走 7 参重载显式传 singleTimeoutSeconds：这里的一次会话覆盖调研 + 写作 + 配图三个阶段，
+        // 用全局 stage-timeout-seconds（300s，按单个阶段定的）会让它在做完之前就被杀掉——
+        // 实测 SINGLE 从未成功跑过 300 秒，而分阶段做完同样三件事的 PIPELINE 需要 533~1194 秒。
+        //
+        // 走 runWithCandidates（而非 runWithLimit）：模型级错误（档案被下线 / 渠道无可用 / 该渠道额度耗尽）
+        // 时由 AgentInvoker 换下一个档案接着跑。此前这类错误的唯一恢复手段是手工改库。
+        executionLog.add("启动智能体：" + candidates.get(0).agent().getName()
+                + ink.icoding.wechat.article.schedule.AgentRunner.profileSuffix(candidates));
+        long startedAt = System.nanoTime();
+        ink.icoding.wechat.article.schedule.AgentRunner.Outcome outcome;
+        try {
+            outcome = agentRunner.runWithCandidates(candidates, command, null, null,
+                    toolCallBudget.singleLimit(), singleTimeoutSeconds,
+                    workspace.progressListener());
+        } catch (RuntimeException failure) {
+            // 失败路径也留一条阶段记录：SINGLE 的失败几乎全是停滞/超时，「跑了多久」正是要看的值
+            workspace.recordStage("SCHEDULED_SINGLE", (System.nanoTime() - startedAt) / 1_000_000L,
+                    workspace.toolCallCount(), List.of());
+            throw failure;
+        }
         workspace.addToolFailures(outcome.toolFailures());
+        workspace.addProfilesUsed(outcome.profilesUsed());
+        workspace.recordStage("SCHEDULED_SINGLE", (System.nanoTime() - startedAt) / 1_000_000L,
+                outcome.toolCalls(), outcome.profilesUsed());
         String response = outcome.reply();
         // MARKFLOW 延迟渲染：交付前统一渲染一次（skills-agent-plan 5.10.4），失败则任务 FAIL 且 Markdown 不丢
         draftState.renderBeforeDelivery(markFlowRenderService);

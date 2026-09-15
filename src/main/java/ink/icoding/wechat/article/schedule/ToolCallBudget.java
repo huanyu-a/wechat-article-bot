@@ -55,6 +55,19 @@ public class ToolCallBudget {
      * 抬到 200 后，四个阶段各跑满 36 次仍有 56 次余量，同时「跑不出可预期范围」这条护栏仍然成立。
      */
     public static final int DEFAULT_TOTAL = 200;
+    /**
+     * SINGLE 链路（单智能体一次会话做完调研 + 写作 + 配图）的额度。
+     *
+     * <p>这个值此前是 {@code ArticleAiService} 里的硬编码常量 40，也是唯一不受
+     * {@code app.schedule.tool-calls.*} 约束的预算——同一件事在 PIPELINE 里分三段跑，
+     * 额度是 60 + 36 + 36；挤在一次会话里反而只有 40，这是**链路间的不一致**。
+     *
+     * <p>40 → 60 的依据是各段的实测工作量：调研单独就能到 47 次（run#62，其中前 40 次全部成功）、
+     * 写作 2–7 次、配图约 26 次（run#63）；而 run#116 的成功运行整轮用了 36 次——已经贴着 40。
+     * 额度是**上限不是目标**，抬高它不会让模型多花，只会在它确实需要时不再被截断：
+     * 触顶的代价是整篇文章作废（run#85：前 40 次检索全部成功，最后因一个字段格式校验把文章丢掉）。
+     */
+    public static final int DEFAULT_SINGLE = 60;
 
     /**
      * 「交出成果」的收尾工具：预算用尽后仍放行有限次（见 {@link #TERMINAL_GRACE}）。
@@ -76,31 +89,67 @@ public class ToolCallBudget {
      */
     public static final int TERMINAL_GRACE = 3;
 
+    /**
+     * 收尾宽限的放行判据：**失败的收尾调用不占额度**，但总次数仍有硬上限。
+     *
+     * <p>为什么失败不占额度：实测 run#85（定时任务 #4，SINGLE）的 4 次宽限里有 3 次被烧掉，只有 1 次
+     * 是真正的成果提交——一次成功的 {@code set_article_draft_cover}、两次 {@code save_article_draft}
+     * 因「文章摘要不能超过120字」失败，第 4 次 {@code save_article_draft} 直接被预算拒绝。
+     * 前 40 次检索**全部成功**，却因为一个字段的格式校验丢掉整篇文章。
+     * 宽限的用途是「让已有成果交得出来」，而一次失败什么都没交出来，不该与成功提交争抢额度。
+     *
+     * <p>为什么不能只判失败次数：那样成功路径就没有上限了（失败数为 0 时可无限成功调用），
+     * 而 {@code save_research_notes} 是追加语义，重复简报会刷满工作区。故失败换来的额外额度
+     * 本身也封顶在 {@link #TERMINAL_GRACE}，总放行次数上界为 {@code 2 × TERMINAL_GRACE}。
+     *
+     * @param attempts 预算用尽后已**放行**的收尾调用次数（成功与失败都算）
+     * @param failures 其中失败的次数
+     */
+    public static boolean allowsTerminalPastBudget(int attempts, int failures) {
+        int earned = Math.min(Math.max(0, failures), TERMINAL_GRACE);
+        return attempts < TERMINAL_GRACE + earned;
+    }
+
     private final int research;
     private final int stage;
     private final int chief;
     private final int total;
+    private final int single;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public ToolCallBudget(@Value("${app.schedule.tool-calls.research:" + DEFAULT_RESEARCH + "}") int research,
                           @Value("${app.schedule.tool-calls.stage:" + DEFAULT_STAGE + "}") int stage,
                           @Value("${app.schedule.tool-calls.chief:" + DEFAULT_CHIEF + "}") int chief,
-                          @Value("${app.schedule.tool-calls.total:" + DEFAULT_TOTAL + "}") int total) {
+                          @Value("${app.schedule.tool-calls.total:" + DEFAULT_TOTAL + "}") int total,
+                          @Value("${app.schedule.tool-calls.single:" + DEFAULT_SINGLE + "}") int single) {
         // 非正数会让「超限即中止」的护栏失效（AgentInvoker 里 <=0 表示不限制），
         // 配置写错时回落到默认值，而不是静默放开额度。
         this.research = positiveOr(research, DEFAULT_RESEARCH);
         this.stage = positiveOr(stage, DEFAULT_STAGE);
         this.chief = positiveOr(chief, DEFAULT_CHIEF);
         this.total = positiveOr(total, DEFAULT_TOTAL);
+        this.single = positiveOr(single, DEFAULT_SINGLE);
+    }
+
+    /** 单测构造：只关心四档时用（SINGLE 取默认）。 */
+    public ToolCallBudget(int research, int stage, int chief, int total) {
+        this(research, stage, chief, total, DEFAULT_SINGLE);
     }
 
     /** 默认预算（非 Spring 上下文构造 DelegateTools 时用，如单测）。 */
     public static ToolCallBudget defaults() {
-        return new ToolCallBudget(DEFAULT_RESEARCH, DEFAULT_STAGE, DEFAULT_CHIEF, DEFAULT_TOTAL);
+        return new ToolCallBudget(DEFAULT_RESEARCH, DEFAULT_STAGE, DEFAULT_CHIEF, DEFAULT_TOTAL, DEFAULT_SINGLE);
     }
 
     /** 子智能体额度：调研阶段单独一档，其余阶段共用一档。 */
     public int subAgentLimitFor(String stageCode) {
+        if (stageCode != null && "SCHEDULED_SINGLE".equalsIgnoreCase(stageCode.trim())) return single;
         return isResearch(stageCode) ? research : stage;
+    }
+
+    /** SINGLE 链路额度（一次会话覆盖调研 + 写作 + 配图）。 */
+    public int singleLimit() {
+        return single;
     }
 
     public int chiefLimit() {

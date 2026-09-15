@@ -8,7 +8,9 @@ import ink.icoding.wechat.article.agent.AgentDefinition;
 import ink.icoding.wechat.article.agent.AgentDefinitionMapper;
 import ink.icoding.wechat.article.agent.AgentFactory;
 import ink.icoding.wechat.article.agent.ToolRegistry;
+import ink.icoding.wechat.article.schedule.AgentRunner;
 import ink.icoding.wechat.article.schedule.TaskWorkspace;
+import ink.icoding.wechat.article.schedule.ToolCallGovernor;
 import ink.icoding.wechat.article.skill.SkillContext;
 import org.springframework.stereotype.Component;
 
@@ -86,10 +88,56 @@ public class ScheduledAgentFactory {
         return agentFactory.buildByCode(code, fallbackStage, context, resolver);
     }
 
+    /**
+     * 装配**故障切换候选**（Phase 1）：首个是主用，其余是「主用模型不可用时」的退路。
+     *
+     * <p>与 {@link #build} 的唯一区别是返回一组只差模型的 AgentClient（各带档案标签）。
+     * 定义缺失/停用时退回单候选，保证存量行为不变。
+     *
+     * <p>标签由这里透传而不是让调用方从 AgentClient 反查：agent4j 的 {@code LLMModel}
+     * 没有暴露模型名的 getter，事后查不出「这一轮用的到底是哪个档案」，而执行日志需要它。
+     */
+    public List<AgentRunner.Candidate> buildCandidates(String code, String fallbackStage, SkillContext context,
+                                                       TaskWorkspace workspace, Long accountId, Long userId,
+                                                       Function<TaskWorkspace, List<Tool>> delegateTools,
+                                                       ToolMutationDeduplicator mediaMutations) {
+        return buildCandidates(code, fallbackStage, context, workspace, accountId, userId, delegateTools,
+                mediaMutations, new ToolCallGovernor());
+    }
+
+    /**
+     * @param governor 只读检索治理器：候选之间共享同一个实例（工具实例也是共享的），
+     *                 {@link AgentRunner} 据此在每次尝试时重置预算并中止无进展循环。
+     */
+    public List<AgentRunner.Candidate> buildCandidates(String code, String fallbackStage, SkillContext context,
+                                                       TaskWorkspace workspace, Long accountId, Long userId,
+                                                       Function<TaskWorkspace, List<Tool>> delegateTools,
+                                                       ToolMutationDeduplicator mediaMutations,
+                                                       ToolCallGovernor governor) {
+        AgentDefinition definition = agentDefinitionMapper.findByCode(code);
+        AgentFactory.ToolResolver resolver = groups -> resolveTools(groups, workspace, accountId, userId,
+                delegateTools, mediaMutations, governor);
+        if (definition != null && Boolean.TRUE.equals(definition.getEnabled())) {
+            SkillContext effective = skillContextFor(accountId, context.taskSkillIds(), definition);
+            return agentFactory.buildLabeledCandidates(definition, effective, null, resolver).stream()
+                    .map(labeled -> new AgentRunner.Candidate(labeled.agent(), labeled.label(), governor))
+                    .toList();
+        }
+        return List.of(new AgentRunner.Candidate(
+                agentFactory.buildByCode(code, fallbackStage, context, resolver), fallbackStage, governor));
+    }
+
     /** 工具组 → 工具实例。 */
     public List<Tool> resolveTools(List<String> groups, TaskWorkspace workspace, Long accountId, Long userId,
                                    Function<TaskWorkspace, List<Tool>> delegateTools,
                                    ToolMutationDeduplicator mediaMutations) {
+        return resolveTools(groups, workspace, accountId, userId, delegateTools, mediaMutations, null);
+    }
+
+    /** 工具组 → 工具实例（可带只读检索治理器，见 {@link ToolCallGovernor}）。 */
+    public List<Tool> resolveTools(List<String> groups, TaskWorkspace workspace, Long accountId, Long userId,
+                                   Function<TaskWorkspace, List<Tool>> delegateTools,
+                                   ToolMutationDeduplicator mediaMutations, ToolCallGovernor governor) {
         List<Tool> tools = new ArrayList<>();
         if (groups == null) return tools;
         if (groups.contains(ToolRegistry.DRAFT_READ) && !groups.contains(ToolRegistry.DRAFT_WRITE)) {
@@ -107,11 +155,23 @@ public class ScheduledAgentFactory {
         if (groups.contains(ToolRegistry.MEDIA)) {
             // 与编辑器链路一致：同参数重复调用复用首次结果，避免重复生图/计费
             tools.addAll(mediaTools.create(accountId, userId,
-                    (mediaMutations == null ? new ToolMutationDeduplicator() : mediaMutations)::execute));
+                    (mediaMutations == null ? new ToolMutationDeduplicator() : mediaMutations)::execute,
+                    readExecutor(governor)));
         }
         if (groups.contains(ToolRegistry.DELEGATE) && delegateTools != null) {
             tools.addAll(delegateTools.apply(workspace));
         }
         return tools;
+    }
+
+    /**
+     * 只读检索治理器 → {@link ArticleMediaTools.ReadExecutor}。
+     *
+     * <p>治理器为 null（编辑器链路、单测）时返回直通实现：这些调用方要么是用户在场的交互式编辑
+     * （重复检索由用户自己叫停），要么根本没有上游调用，套一层缓存只会改变它们的既有行为。
+     */
+    static ArticleMediaTools.ReadExecutor readExecutor(ToolCallGovernor governor) {
+        if (governor == null) return (toolName, paramJson, action) -> action.get();
+        return (toolName, paramJson, action) -> governor.execute(toolName, paramJson, action);
     }
 }

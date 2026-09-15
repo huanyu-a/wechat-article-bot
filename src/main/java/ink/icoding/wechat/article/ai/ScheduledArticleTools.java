@@ -28,6 +28,11 @@ public final class ScheduledArticleTools {
     private static final Logger log = LoggerFactory.getLogger(ScheduledArticleTools.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    /** 文章标题最大字数（公众号标题栏限制）；超长截断并记可见警告，不抛异常（见 save）。 */
+    public static final int TITLE_MAX_LENGTH = 64;
+    /** 文章摘要最大字数（公众号摘要栏限制）；超长截断并记可见警告，不抛异常（见 save）。 */
+    public static final int DIGEST_MAX_LENGTH = 120;
+
     /**
      * 正文是否「像手写的公众号模板 HTML」。
      *
@@ -548,6 +553,16 @@ public final class ScheduledArticleTools {
         private String saveDark;
         private boolean rendered;
         private List<String> renderWarnings = List.of();
+        /**
+         * 保存期降级警告（如标题/摘要超长被截断）。
+         *
+         * <p>为什么不复用 {@link #renderWarnings}：那个字段会在两处被**整体覆盖**——
+         * {@code save} 里每次保存重置、{@code renderBeforeDelivery} 里交付前用渲染器返回的警告覆盖。
+         * 保存期的提示写在里面，MARKFLOW 链路下必然丢失（PROMPT 链路因为不渲染反而能留下，
+         * 同一个改动在两种引擎下行为还不一致）。两者语义也不同：渲染降级说的是「版式没复刻」，
+         * 保存降级说的是「内容被改短了」，混在一起会让终态文案指错方向。
+         */
+        private List<String> saveWarnings = List.of();
 
         public DraftState(Long defaultCoverAssetId) {
             this(defaultCoverAssetId, LayoutEngine.PROMPT);
@@ -606,9 +621,24 @@ public final class ScheduledArticleTools {
             if (body == null || body.isBlank()) {
                 throw new IllegalArgumentException(markflow ? "文章正文（MarkFlow 语法 Markdown）不能为空" : "文章正文不能为空");
             }
-            if (rawTitle.length() > 64) throw new IllegalArgumentException("文章标题不能超过64字");
-            if (rawDigest != null && rawDigest.length() > 120) {
-                throw new IllegalArgumentException("文章摘要不能超过120字");
+            // 标题/摘要超长改为**截断 + 可见警告**，不再抛异常：
+            // 实测 run#85 / run#89（真实定时触发，task#4 SINGLE）前 40 次检索**全部成功**，
+            // 却因为「文章摘要不能超过120字」连续两次失败、烧光收尾宽限，整篇文章作废。
+            // 摘要只是列表页预览文案，截断的代价远小于丢掉整篇；且前端编辑器本来就是静默截断
+            // （ArticleEditorView.vue 的 slice(0,120) / maxlength="120"），后端硬拒绝才是语义不一致的那一侧。
+            List<String> lengthWarnings = new java.util.ArrayList<>();
+            if (rawTitle.length() > TITLE_MAX_LENGTH) {
+                lengthWarnings.add("标题 " + rawTitle.length() + " 字已截断为 " + TITLE_MAX_LENGTH + " 字");
+                rawTitle = rawTitle.substring(0, TITLE_MAX_LENGTH);
+            }
+            if (rawDigest != null && rawDigest.length() > DIGEST_MAX_LENGTH) {
+                lengthWarnings.add("摘要 " + rawDigest.length() + " 字已截断为 " + DIGEST_MAX_LENGTH + " 字");
+                rawDigest = rawDigest.substring(0, DIGEST_MAX_LENGTH);
+            }
+            // 每次保存重置：与 renderWarnings 同理，上一版的截断警告不该留在这一版上
+            saveWarnings = List.copyOf(lengthWarnings);
+            if (!saveWarnings.isEmpty()) {
+                log.warn("草稿保存降级 {} 处：{}", saveWarnings.size(), String.join("；", saveWarnings));
             }
             List<String> syntaxHints = List.of();
             if (markflow) {
@@ -674,6 +704,16 @@ public final class ScheduledArticleTools {
             MarkFlowRenderService.RenderResult result = renderService.render(contentMarkdown, saveAccent, saveDark);
             contentHtml = result.html();
             digest = digest == null || digest.isBlank() ? result.summary() : digest;
+            // 渲染器回填的摘要同样受摘要栏长度约束，而它**绕过了保存期的截断**（模型没给 digest 时才会走到这里）。
+            // 不在这里再截一次，就会在落库/同步公众号时暴露一个保存期已经修掉的同类问题。
+            if (digest != null && digest.length() > DIGEST_MAX_LENGTH) {
+                String extra = "摘要（渲染服务生成）" + digest.length() + " 字已截断为 " + DIGEST_MAX_LENGTH + " 字";
+                digest = digest.substring(0, DIGEST_MAX_LENGTH);
+                List<String> merged = new java.util.ArrayList<>(saveWarnings);
+                merged.add(extra);
+                saveWarnings = List.copyOf(merged);
+                log.warn("草稿保存降级：{}", extra);
+            }
             // 留存**实际生效**的主题色而非请求值：模型（或渲染服务）没显式给色时，请求值是 null，
             // 而渲染服务会按默认/派生色渲染——只存 null 的话，日后再用留存源文重排就会换成另一套配色。
             if (result.themeAccent() != null && !result.themeAccent().isBlank()) saveAccent = result.themeAccent();
@@ -690,10 +730,20 @@ public final class ScheduledArticleTools {
             return renderWarnings;
         }
 
+        /**
+         * 保存期降级警告（标题/摘要超长被截断；无降级时为空）。
+         *
+         * <p>与 {@link #renderWarnings()} 分开：渲染降级说的是「版式没复刻」，本项说的是「内容被改短了」，
+         * 混在一起会让运行终态的文案指错排查方向。
+         */
+        public synchronized List<String> saveWarnings() {
+            return saveWarnings;
+        }
+
         public synchronized Draft snapshot() {
             if (!saved) throw new IllegalStateException("智能体没有通过 save_article_draft 提交文章");
             return new Draft(title, author, digest, contentHtml, sourceUrl, coverAssetId, documentVersion,
-                    layoutEngine, contentMarkdown, saveAccent, saveDark, rendered, renderWarnings);
+                    layoutEngine, contentMarkdown, saveAccent, saveDark, rendered, renderWarnings, saveWarnings);
         }
 
         /** 采纳一次完整快照（单智能体执行器把 runScheduledAgent 的产出同步回共享工作区）。 */
@@ -712,6 +762,7 @@ public final class ScheduledArticleTools {
             this.saveDark = draft.themeDark();
             this.rendered = draft.rendered();
             this.renderWarnings = draft.renderWarnings() == null ? List.of() : List.copyOf(draft.renderWarnings());
+            this.saveWarnings = draft.saveWarnings() == null ? List.of() : List.copyOf(draft.saveWarnings());
             this.saved = true;
         }
 
@@ -804,13 +855,22 @@ public final class ScheduledArticleTools {
     public record Draft(String title, String author, String digest, String contentHtml,
                         String sourceUrl, Long coverAssetId, long documentVersion,
                         LayoutEngine layoutEngine, String contentMarkdown, String themeAccent,
-                        String themeDark, boolean rendered, List<String> renderWarnings) {
-        /** 兼容构造：无渲染降级警告。 */
+                        String themeDark, boolean rendered, List<String> renderWarnings,
+                        List<String> saveWarnings) {
+        /** 兼容构造：无渲染降级警告、无保存降级警告。 */
         public Draft(String title, String author, String digest, String contentHtml, String sourceUrl,
                      Long coverAssetId, long documentVersion, LayoutEngine layoutEngine, String contentMarkdown,
                      String themeAccent, String themeDark, boolean rendered) {
             this(title, author, digest, contentHtml, sourceUrl, coverAssetId, documentVersion, layoutEngine,
-                    contentMarkdown, themeAccent, themeDark, rendered, List.of());
+                    contentMarkdown, themeAccent, themeDark, rendered, List.of(), List.of());
+        }
+
+        /** 兼容构造：只有渲染降级警告（新增保存降级警告前的形状）。 */
+        public Draft(String title, String author, String digest, String contentHtml, String sourceUrl,
+                     Long coverAssetId, long documentVersion, LayoutEngine layoutEngine, String contentMarkdown,
+                     String themeAccent, String themeDark, boolean rendered, List<String> renderWarnings) {
+            this(title, author, digest, contentHtml, sourceUrl, coverAssetId, documentVersion, layoutEngine,
+                    contentMarkdown, themeAccent, themeDark, rendered, renderWarnings, List.of());
         }
     }
 

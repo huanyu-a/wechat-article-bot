@@ -15,6 +15,11 @@ import java.time.LocalDateTime;
 public class ScheduleTask extends PO {
     @ID
     private Long id;
+    /**
+     * 任务名称。显式声明 255：{@code name} 在 5 个实体里同名，共用 smart-mybatis 的
+     * 字段名级列声明缓存，声明文本不一致时结果取决于初始化顺序。255 与实测列宽一致。
+     */
+    @TableField(length = 255)
     private String name;
     private Long accountId;
     @TableField(exist = false, link = WechatAccount.class, linkField = "name", self = "accountId", target = "id")

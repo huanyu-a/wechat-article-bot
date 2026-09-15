@@ -5,7 +5,7 @@ import { api } from '../api'
 import { useAuthStore } from '../stores/auth'
 import {
   BrainCircuit, KeyRound, Layers, LayoutTemplate, LoaderCircle, Pencil, PlugZap, Plus, Save,
-  ShieldCheck, Star, Trash2, X,
+  Shield, ShieldCheck, Star, Trash2, X,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -76,6 +76,12 @@ async function saveProfile(){
 async function setDefaultProfile(profile){
   error.value='';message.value=''
   try{await api(`/api/llm-profiles/${profile.id}/set-default`,{method:'POST'});message.value=`已将「${profile.name}」设为默认档案`;await loadProfiles()}catch(e){error.value=e.message}
+}
+// 兜底档案：主用档案全部不可用时的最后安全网。与「默认」是两个独立标记，
+// 后端 setFallback 会把其他档案的标记清掉（全局唯一）。
+async function setFallbackProfile(profile){
+  error.value='';message.value=''
+  try{await api(`/api/llm-profiles/${profile.id}/set-fallback`,{method:'POST'});message.value=`已将「${profile.name}」设为兜底档案`;await loadProfiles()}catch(e){error.value=e.message}
 }
 async function toggleProfile(profile){
   error.value='';message.value=''
@@ -162,6 +168,7 @@ onBeforeUnmount(()=>document.removeEventListener('keydown',onKeydown))
             <div class="profile-titles">
               <strong>{{ profile.name }}</strong>
               <span v-if="profile.isDefault" class="profile-default-badge"><Star :size="11"/>默认</span>
+              <span v-if="profile.isFallback" class="profile-fallback-badge"><Shield :size="11"/>兜底</span>
               <span v-if="!profile.enabled" class="status-pill">已停用</span>
             </div>
             <label v-if="isAdmin" class="skill-switch" :title="profile.enabled?'点击停用':'点击启用'">
@@ -178,6 +185,7 @@ onBeforeUnmount(()=>document.removeEventListener('keydown',onKeydown))
           </dl>
           <footer v-if="isAdmin">
             <button class="secondary-button" :disabled="profile.isDefault" :title="profile.isDefault?'已是默认档案':''" @click="setDefaultProfile(profile)"><Star :size="14"/>{{ profile.isDefault?'默认档案':'设为默认' }}</button>
+            <button class="secondary-button" :disabled="profile.isFallback" :title="profile.isFallback?'已是兜底档案':'主用档案全部不可用时自动启用它'" @click="setFallbackProfile(profile)"><Shield :size="14"/>{{ profile.isFallback?'兜底档案':'设为兜底' }}</button>
             <button class="icon-button" title="编辑" aria-label="编辑模型档案" @click="openProfile(profile)"><Pencil :size="16"/></button>
             <button class="icon-button danger-ghost" :title="profile.isDefault?'默认档案不可删除':'删除档案'" :aria-label="profile.isDefault?'默认档案不可删除':'删除档案'" :disabled="profile.isDefault" @click="removeProfile(profile)"><Trash2 :size="16"/></button>
           </footer>

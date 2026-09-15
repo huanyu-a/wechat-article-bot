@@ -131,11 +131,32 @@ function summaryChips(value){
   if(typeof value==='string'){try{parsed=JSON.parse(value)}catch{return []}}
   if(!parsed||typeof parsed!=='object')return []
   const chips=[]
-  if(Number.isFinite(Number(parsed.revisionRound)))chips.push(`返工 ${Number(parsed.revisionRound)} 轮`)
+  // 阶段耗时（Phase 5）：一次 1801 秒的运行里「时间花在哪一阶段」是首要问题，
+  // 此前只能展开执行日志逐行看时间戳反推，因此把它提到卡片上直接可见。
+  if(Array.isArray(parsed.stages)){
+    for(const stage of parsed.stages){
+      if(!stage||!stage.stage)continue
+      const seconds=Number(stage.seconds)
+      const calls=Number(stage.toolCalls)
+      let text=Number.isFinite(seconds)?`${stageLabel(stage.stage)} ${seconds}s`:stageLabel(stage.stage)
+      if(Number.isFinite(calls)&&calls>0)text+=` / ${calls} 次`
+      chips.push(text)
+    }
+  }
+  if(Number.isFinite(Number(parsed.revisionRound))&&Number(parsed.revisionRound)>0)chips.push(`返工 ${Number(parsed.revisionRound)} 轮`)
   if(Number.isFinite(Number(parsed.researchNotesRounds)))chips.push(`调研简报 ${Number(parsed.researchNotesRounds)} 份`)
   if(Number.isFinite(Number(parsed.reviewRounds)))chips.push(`审核 ${Number(parsed.reviewRounds)} 轮`)
   if(typeof parsed.saved==='boolean')chips.push(parsed.saved?'草稿已保存':'草稿未落盘')
+  // 档案切换：整轮仍可能成功，但换过模型说明主用档案当时不可用，是排查与效率对照的关键信息
+  if(Array.isArray(parsed.profilesUsed)&&parsed.profilesUsed.length>1)chips.push(`模型档案 ${parsed.profilesUsed.join(' → ')}`)
   return chips
+}
+/** 阶段名的中文短标签；DELEGATE_* 是 COORDINATOR 的每次委托，保留「第几次委托」的区分 */
+function stageLabel(stage){
+  const fixed={RESEARCH:'调研',WRITING:'写作',ILLUSTRATION:'配图',REVIEW:'审核',COORDINATE:'协调',SCHEDULED_SINGLE:'创作'}
+  if(fixed[stage])return fixed[stage]
+  if(stage.startsWith('DELEGATE_'))return `委托·${fixed[stage.slice(9)]||stage.slice(9)}`
+  return stage
 }
 function decorate(run){run.logLines=parseLog(run.executionLog);run.stageChips=summaryChips(run.stagesSummary);return run}
 function stopRunPolling(){if(runPoller){clearInterval(runPoller);runPoller=null}}

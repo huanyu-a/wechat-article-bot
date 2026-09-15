@@ -1,0 +1,82 @@
+{
+  "agent": "main",
+  "timestamp": "2026-09-16T00:40:00",
+  "session": "sess_e09c7784-7835-4597-9cea-4fe764d76dff",
+  "status": "completed",
+  "summary": "定时任务可靠性 + 效率 + 模型档案故障切换（一轮全做完）的代码侧全部落地。Phase 1 故障切换（档案链/AgentInvoker 模型级错误切换/三链路 runWithCandidates/编辑器链路切换）、Phase 2 按智能体分配模型（LlmProfileSeeder 建标准档案 + AgentSeeder 仅在 llm_profile_id 为空时绑定 + is_fallback 列与 set-fallback 端点/前端徽标）、Phase 3 效率（无进展检测 inactivity=180s、调研简报注入前截断、手动触发专用线程池、SINGLE 预算走 ToolCallBudget）、Phase 4 工具治理（只读去重 + 循环检测 + 预算提示 + REVIEW 协议完整 JSON 示例 + 参数解析失败单独计数 + 封面归属校验上提）、Phase 5 可观测性（每阶段耗时/工具数/档案进 stages_summary + 终态消息按失败类别给可读解释 + 4 条新巡检 SQL + TASK_RUN.MODE 改为插入前落库）、Phase 6 遗留缺陷（5 组同名字段声明冲突全部对齐到真实列宽 + 新增构建期回归护栏）均已完成。闸门 391 例全绿 + webui 自检与构建通过。",
+  "artifacts": [
+    "src/main/java/ink/icoding/wechat/article/schedule/ToolCallGovernor.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/AgentInvoker.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/AgentRunner.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/TaskWorkspace.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/TaskExecutionService.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/ToolCallBudget.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/PipelineExecutor.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/CoordinatorExecutor.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/StageTimeout.java",
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfileService.java",
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfileSeeder.java",
+    "src/main/java/ink/icoding/wechat/article/agent/AgentSeeder.java",
+    "src/main/java/ink/icoding/wechat/article/agent/AgentFactory.java",
+    "src/main/java/ink/icoding/wechat/article/agent/AgentProtocols.java",
+    "src/main/java/ink/icoding/wechat/article/ai/ArticleAiService.java",
+    "src/main/java/ink/icoding/wechat/article/ai/ScheduledAgentFactory.java",
+    "src/main/java/ink/icoding/wechat/article/ai/ArticleMediaTools.java",
+    "src/test/java/ink/icoding/wechat/article/common/EntityColumnDeclarationConsistencyTest.java",
+    "src/test/java/ink/icoding/wechat/article/schedule/ToolCallGovernorTest.java",
+    "src/test/java/ink/icoding/wechat/article/schedule/TaskFailureMessageTest.java",
+    "src/test/java/ink/icoding/wechat/article/agent/LlmProfileServiceTest.java",
+    "src/test/java/ink/icoding/wechat/article/agent/AgentSeederTest.java",
+    "src/test/java/ink/icoding/wechat/article/schedule/TaskExecutionServiceCoverTest.java",
+    "webui/src/views/TasksView.vue",
+    "webui/src/views/SettingsView.vue",
+    "docs/dev/model-availability-probe.md",
+    "docs/dev/scheduled-task-failure-attribution.md"
+  ],
+  "quality": {
+    "checks": [
+      {
+        "name": "mvn -o test",
+        "result": "pass",
+        "detail": "393 例全绿（改造前基线 329，新增 64）"
+      },
+      {
+        "name": "webui check:imports",
+        "result": "pass",
+        "detail": "共享工具导入自检通过（8 个导出符号）"
+      },
+      {
+        "name": "webui build",
+        "result": "pass",
+        "detail": "1659 modules transformed，零报错"
+      },
+      {
+        "name": "实体列声明扫描",
+        "result": "pass",
+        "detail": "18 个实体，不一致字段数 0（改造前为 5）"
+      },
+      {
+        "name": "回归护栏红证",
+        "result": "pass",
+        "detail": "把 Asset.sourceUrl 改回 2000 后该测试 2 例立刻失败，改回即绿"
+      }
+    ],
+    "gate_passed": true
+  },
+  "next": [
+    "需要用户单独确认后才可执行（方案第十一节）：① 重启服务让 IS_FALLBACK 新列 + 标准档案 + 智能体绑定生效；② 强制故障切换反例（把某智能体指向不存在的模型名，确认日志出现「切换 A → B」且整轮仍成功）；③ 手工触发 #4(SINGLE) / #5(COORDINATOR) 与 554s / 1801s 基线对照；④ 等一个自然日 09:00 定时触发后用新巡检 SQL 看成功率",
+    "本轮未做：线上部署；temperature/maxTokens 生效（agent4j 2.3.3 不支持）；PIPELINE 阶段并行化（有意不做，见方案十二）"
+  ],
+  "read_files": [
+    "src/main/java/ink/icoding/wechat/article/schedule/PipelineExecutor.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/CoordinatorExecutor.java",
+    "src/main/java/ink/icoding/wechat/article/agent/AgentSeeder.java",
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfileSeeder.java",
+    "docs/dev/model-availability-probe.md"
+  ],
+  "notes": [
+    "本文件是旁路记录：.zcode/handoff/latest.json 为并行会话共用的单文件，按纪律未覆盖。",
+    "smart-mybatis 的列声明缓存按字段名单键共享（MapperUtil.getColumnDeclaration），且 MysqlDialect.buildAlterColumn 会发 MODIFY COLUMN——已从 3.0.1 字节码确认（MapperUtil.updateTable → buildAlterTable → buildAlterColumn）。这是本轮 Phase 6 的判据来源。",
+    "开发库 wechat-article 的 LLM_PROFILE 目前仍无 IS_FALLBACK 列（旧实例在跑，未重启），wechat-article-test 库已有该列，验证走的是测试库。"
+  ]
+}

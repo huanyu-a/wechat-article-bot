@@ -46,10 +46,57 @@ public class TaskWorkspace {
      * 单独计数才能让终态说清楚「哪次交付是打了折扣的」。
      */
     private final java.util.concurrent.atomic.AtomicInteger degradations = new java.util.concurrent.atomic.AtomicInteger();
+    /**
+     * 工具参数 JSON 解析失败计数（Phase 4.4）。
+     *
+     * <p>与 {@code toolFailures} 分开：它是实测最常见的一类工具失败（模型把参数写成 Markdown
+     * 代码块或漏引号），但混在「工具失败」总数里看不出趋势——协议提示词补了完整 JSON 示例之后
+     * 到底有没有变好，只能靠这个单独的数字回答。
+     */
+    private final java.util.concurrent.atomic.AtomicInteger toolParamParseFailures =
+            new java.util.concurrent.atomic.AtomicInteger();
+    /**
+     * 本次运行**实际用过的模型档案**（按首次使用顺序，去重）。
+     *
+     * <p>为什么必须记在运行级：档案切换发生在 {@link AgentInvoker} 内部，单次产出只带「这次会话用过
+     * 哪些档案」，而一次运行有多个阶段/子智能体，各自的切换要汇总才看得出「这一轮到底换了几个模型」。
+     * 只在日志里留一行 warn 的话，事后想统计「哪个模型在拖后腿」只能全文检索日志。
+     */
+    private final List<String> profilesUsed = Collections.synchronizedList(new ArrayList<>());
+    /**
+     * 各阶段的实际耗时、工具调用数与用过的档案（按发生顺序）。
+     *
+     * <p>为什么必须有：此前 {@code stages_summary} 只有「总共调了几次工具、返工几轮」这类**汇总值**，
+     * 一次 1801 秒的 COORDINATOR 运行看不出时间花在哪个阶段——是主编在规划、还是某个子智能体在
+     * 反复检索、还是返工轮次拖长，全都只能靠人读 {@code EXECUTION_LOG} 的时间戳反推。
+     * 记下每阶段耗时后，「哪一阶段在拖后腿」一眼可见，也是对照基线做效率回归的依据。
+     */
+    private final List<StageRecord> stages = Collections.synchronizedList(new ArrayList<>());
+    /**
+     * 调研简报注入上限（字符数）。
+     *
+     * <p>12000 字约合 8000 token：足够容纳「核心结论 + 关键事实与数据 + 来源链接 + 风险争议」的完整简报
+     * （实测一份结构完整的简报在 3000–8000 字），同时把返工轮次的重复注入成本压在有界范围。
+     */
+    private static final int DEFAULT_MAX_RESEARCH_NOTES_CHARS = 12_000;
+    private final int maxResearchNotesChars;
+    /**
+     * 工具调用治理器（Phase 4：只读去重 + 循环检测 + 预算提示）。
+     *
+     * <p>放在工作区（运行级）而不是每个 AgentClient 一份：一次运行里「同一个检索被重复发起」
+     * 常常跨越阶段/子智能体（调研阶段搜过的词，写作阶段再搜一次），只在单会话内去重就漏掉了
+     * 这类重复。它的预算计数由 {@link AgentInvoker} 按会话重置，因此「剩余额度」仍是会话语义。
+     */
+    private final ToolCallGovernor governor = new ToolCallGovernor();
     private int revisionRound;
 
     public TaskWorkspace(ScheduledArticleTools.DraftState draftState) {
+        this(draftState, DEFAULT_MAX_RESEARCH_NOTES_CHARS);
+    }
+
+    public TaskWorkspace(ScheduledArticleTools.DraftState draftState, int maxResearchNotesChars) {
         this.draftState = draftState;
+        this.maxResearchNotesChars = maxResearchNotesChars;
     }
 
     public static TaskWorkspace create(Long defaultCoverAssetId, LayoutEngine engine) {
@@ -94,6 +141,18 @@ public class TaskWorkspace {
             public void logLine(String line) {
                 addExecutionLog(line);
             }
+
+            @Override
+            public void toolParamParseFailed(String toolName) {
+                addToolParamParseFailure();
+            }
+
+            @Override
+            public void profileUsed(String label) {
+                // 实时汇入运行级档案链：成功路径还会经 addProfilesUsed(Outcome) 再报一次（去重），
+                // 而失败路径只有这一条能留住「当时用的是哪个模型」。
+                addProfilesUsed(java.util.List.of(label));
+            }
         };
     }
 
@@ -112,9 +171,83 @@ public class TaskWorkspace {
         return toolFailures.get();
     }
 
+    /**
+     * 记入一次「工具参数 JSON 解析失败」（Phase 4.4）。
+     *
+     * <p>与 {@link #addToolFailures} 分开：参数解析失败混在工具失败总数里看不出趋势，
+     * 而「协议提示词补了完整 JSON 示例之后有没有变好」正是要靠这个单独的数字回答。
+     */
+    public void addToolParamParseFailure() {
+        toolParamParseFailures.incrementAndGet();
+    }
+
+    /** 本次运行累计的工具参数解析失败次数。 */
+    public int toolParamParseFailureCount() {
+        return toolParamParseFailures.get();
+    }
+
     /** 记入一次降级（某阶段中止但按现有产出继续）。 */
     public void addDegradation() {
         degradations.incrementAndGet();
+    }
+
+    /** 汇总一次会话实际用过的模型档案（去重、保持首次出现顺序）。 */
+    public void addProfilesUsed(List<String> labels) {
+        if (labels == null || labels.isEmpty()) return;
+        synchronized (profilesUsed) {
+            for (String label : labels) {
+                if (label != null && !label.isBlank() && !profilesUsed.contains(label)) {
+                    profilesUsed.add(label);
+                }
+            }
+        }
+    }
+
+    /** 本次运行实际用过的模型档案（按首次使用顺序）；未发生过任何切换时长度为 1。 */
+    public List<String> profilesUsed() {
+        synchronized (profilesUsed) {
+            return List.copyOf(profilesUsed);
+        }
+    }
+
+    /** 本次运行是否发生过模型档案切换（用过 &gt;1 个档案）。 */
+    public boolean switchedProfile() {
+        synchronized (profilesUsed) {
+            return profilesUsed.size() > 1;
+        }
+    }
+
+    /**
+     * 记入一个阶段的执行情况（耗时 / 工具调用数 / 用过的档案）。
+     *
+     * <p>失败路径也要记：阶段中止时正是最需要知道「卡了多久、调了几次工具」的时刻，
+     * 只记成功路径等于把最该看的那些运行漏掉。
+     */
+    public void recordStage(String stage, long durationMillis, int toolCalls, List<String> profiles) {
+        stages.add(new StageRecord(stage == null ? "UNKNOWN" : stage, Math.max(0, durationMillis),
+                Math.max(0, toolCalls),
+                profiles == null ? List.of() : List.copyOf(profiles), LocalDateTime.now()));
+    }
+
+    /** 各阶段执行记录（按发生顺序）；未经过阶段编排的链路（SINGLE）为空。 */
+    public List<StageRecord> stageRecords() {
+        synchronized (stages) {
+            return List.copyOf(stages);
+        }
+    }
+
+    /** 各阶段记录转成可序列化的摘要视图（秒为单位，便于人读运行历史）。 */
+    private List<Map<String, Object>> stageSummary() {
+        List<Map<String, Object>> value = new ArrayList<>();
+        for (StageRecord stage : stageRecords()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("stage", stage.stage());
+            item.put("seconds", Math.round(stage.durationMillis() / 100.0) / 10.0);
+            item.put("toolCalls", stage.toolCalls());
+            if (!stage.profiles().isEmpty()) item.put("profiles", stage.profiles());
+            value.add(item);
+        }
+        return value;
     }
 
     /** 本次运行累计的降级次数；&gt;0 时交付物是打了折扣的（见 TaskExecutionService 的终态判定）。 */
@@ -124,6 +257,11 @@ public class TaskWorkspace {
 
     public ScheduledArticleTools.DraftState draftState() {
         return draftState;
+    }
+
+    /** 工具调用治理器（只读去重 / 循环检测 / 预算提示）。 */
+    public ToolCallGovernor governor() {
+        return governor;
     }
 
     public LayoutEngine layoutEngine() {
@@ -145,9 +283,27 @@ public class TaskWorkspace {
         return json(result);
     }
 
-    /** 全部调研简报拼接（供写作阶段指令注入）；无简报返回空串。 */
+    /**
+     * 全部调研简报拼接（供写作阶段指令注入）；无简报返回空串。
+     *
+     * <p><b>注入前截断</b>：{@code researchNotes} 是追加式的，而写作指令在**每一轮返工**里都会
+     * 把全文重发一次。宽口径任务的简报可以到几万字（run#62 的调研子智能体发起 47 次调用），
+     * 若不截断，一次返工就要重发全部简报——token 成本随返工轮数线性放大，
+     * 而撰稿人真正需要的是结论与关键事实，不是每一条检索记录。
+     *
+     * <p>截断保留**开头**（核心结论与关键事实按协议排在最前），并在末尾明确告知被截断：
+     * 静默丢弃会让撰稿人以为「简报就这些」，进而漏掉后面的风险与争议项。
+     */
     public synchronized String researchNotesText() {
-        return String.join("\n\n", researchNotes);
+        return truncateResearchNotes(String.join("\n\n", researchNotes), maxResearchNotesChars);
+    }
+
+    /** 调研简报注入上限（字符数）；截断逻辑独立成静态方法以便单测直接钉住边界。 */
+    static String truncateResearchNotes(String text, int maxChars) {
+        if (text == null || text.isEmpty()) return "";
+        if (maxChars <= 0 || text.length() <= maxChars) return text;
+        return text.substring(0, maxChars)
+                + "\n\n（调研简报过长已截断，仅保留前 " + maxChars + " 字；完整简报见任务工作区记录）";
     }
 
     public synchronized boolean hasResearchNotes() {
@@ -211,8 +367,13 @@ public class TaskWorkspace {
         value.put("reviewRounds", reviewRounds.size());
         value.put("toolCalls", toolCalls.get());
         value.put("toolFailures", toolFailures.get());
+        value.put("toolParamParseFailures", toolParamParseFailures.get());
         value.put("degradations", degradations.get());
+        value.put("profilesUsed", profilesUsed());
+        value.put("switchedProfile", switchedProfile());
+        value.put("stages", stageSummary());
         value.put("renderWarnings", draftState.renderWarnings().size());
+        value.put("saveWarnings", draftState.saveWarnings().size());
         value.put("saved", draftState.isSaved());
         return value;
     }
@@ -228,5 +389,17 @@ public class TaskWorkspace {
     /** 审核轮次记录。 */
     public record ReviewRound(int round, boolean passed, List<String> issues, List<String> suggestions,
                               String rawText, LocalDateTime at) {
+    }
+
+    /**
+     * 单个阶段的执行记录。
+     *
+     * @param stage          阶段名（RESEARCH / WRITING / ILLUSTRATION / REVIEW / COORDINATE）
+     * @param durationMillis 该阶段实际耗时（含失败前的部分）
+     * @param toolCalls      该阶段累计的工具调用数
+     * @param profiles       该阶段用过的模型档案（发生过切换时 &gt;1 个）
+     */
+    public record StageRecord(String stage, long durationMillis, int toolCalls, List<String> profiles,
+                              LocalDateTime at) {
     }
 }

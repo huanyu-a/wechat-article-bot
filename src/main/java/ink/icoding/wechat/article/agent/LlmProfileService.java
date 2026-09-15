@@ -23,6 +23,7 @@ import java.util.Set;
  */
 @Service
 public class LlmProfileService {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(LlmProfileService.class);
     private static final Set<String> SUPPORTED_PROVIDERS = Set.of(
             "OPENAI_COMPATIBLE", "OPENAI_RESPONSES", "ANTHROPIC");
     private static final String DEFAULT_PROFILE_NAME = "默认配置";
@@ -61,6 +62,55 @@ public class LlmProfileService {
     public LlmProfile defaultProfile() {
         LlmProfile profile = mapper.findDefault();
         return profile == null ? mapper.findFirst() : profile;
+    }
+
+    /** 兜底档案：is_fallback=true；未设置返回 null（此时档案链自然少一环）。 */
+    public LlmProfile fallbackProfile() {
+        return mapper.findFallback();
+    }
+
+    /**
+     * 模型档案故障切换链：按优先级返回可用的候选档案（已去重、已剔除不可用者）。
+     *
+     * <p>为什么需要它：{@code AgentInvoker} 的重试只会重建会话，而会话绑定的模型是在
+     * {@code AgentClient.setModel} 时就定死的——同一个模型报 {@code model_not_found} /
+     * {@code no available channel} / {@code invalid_api_key} 时，重发多少次结果都一样。
+     * 这类错误此前被归为「永久错误」直接判死（见 {@code AgentInvoker.isPermanent}），
+     * 于是上游下线一个模型（实测 agnes-3.0-flash）就得**手工改库**才能恢复。
+     *
+     * <p>顺序（每一环都是「更差但更可能活着」的退路）：
+     * <ol>
+     *   <li>智能体绑定的档案——该智能体的最优选择；</li>
+     *   <li>默认档案——没绑定时它就是首选，绑定失效时它是第一退路；</li>
+     *   <li>兜底档案——主用全部不可用时的安全网；</li>
+     *   <li>其余已启用档案（按 id 升序）——最后把剩下的可能性都用上。</li>
+     * </ol>
+     *
+     * @param bound 智能体绑定的档案，可为 null（未绑定）
+     * @return 至少包含一项的有序候选；全表无可用档案时返回空列表（由调用方回落 llm_config）
+     */
+    public List<LlmProfile> failoverChain(LlmProfile bound) {
+        List<LlmProfile> chain = new java.util.ArrayList<>();
+        Set<Long> seen = new java.util.LinkedHashSet<>();
+        addIfUsable(chain, seen, bound);
+        addIfUsable(chain, seen, defaultProfile());
+        addIfUsable(chain, seen, fallbackProfile());
+        for (LlmProfile profile : mapper.findEnabled()) addIfUsable(chain, seen, profile);
+        return chain;
+    }
+
+    /**
+     * 候选可用性：已启用、有 API Key、且尚未入链。
+     *
+     * <p>去重按 id：绑定档案常常就是默认档案（7 个内置智能体当前全部如此），
+     * 不去重会让档案链里出现两个同样的模型，白白浪费一次切换机会。
+     */
+    private void addIfUsable(List<LlmProfile> chain, Set<Long> seen, LlmProfile profile) {
+        if (profile == null || profile.getId() == null) return;
+        if (!Boolean.TRUE.equals(profile.getEnabled())) return;
+        if (profile.getApiKeyEncrypted() == null || profile.getApiKeyEncrypted().isBlank()) return;
+        if (!seen.add(profile.getId())) return;
+        chain.add(profile);
     }
 
     @Transactional
@@ -103,6 +153,30 @@ public class LlmProfileService {
             boolean shouldDefault = profile.getId().equals(id);
             if (!java.util.Objects.equals(profile.getIsDefault(), shouldDefault)) {
                 profile.setIsDefault(shouldDefault);
+                profile.setUpdatedAt(LocalDateTime.now());
+                mapper.updateById(profile);
+            }
+        }
+        return view(required(target.getId()));
+    }
+
+    /**
+     * 设为兜底档案：语义同 {@link #setDefault}，全局唯一。
+     *
+     * <p>兜底档案不应与默认档案是同一条：默认档案是「没绑定就用它」的日常主力，
+     * 兜底档案是「主力全挂才用它」的最后退路；两者重合时档案链会少一环保护。
+     * 这里只告警不拒绝——运营可能有意为之（例如只配一条档案），拒绝会让设置页卡住。
+     */
+    @Transactional
+    public ProfileView setFallback(Long id) {
+        LlmProfile target = required(id);
+        if (Boolean.TRUE.equals(target.getIsDefault())) {
+            log.warn("把默认档案 {} 同时设为兜底档案：档案链会少一环保护", target.getName());
+        }
+        for (LlmProfile profile : mapper.findAll()) {
+            boolean shouldFallback = profile.getId().equals(id);
+            if (!java.util.Objects.equals(profile.getIsFallback(), shouldFallback)) {
+                profile.setIsFallback(shouldFallback);
                 profile.setUpdatedAt(LocalDateTime.now());
                 mapper.updateById(profile);
             }
@@ -167,7 +241,8 @@ public class LlmProfileService {
         return new ProfileView(profile.getId(), profile.getName(), profile.getProvider(),
                 normalizeBaseUrl(profile.getBaseUrl()), profile.getModelName(),
                 profile.getApiKeyEncrypted() != null, masked, profile.getTemperature(), profile.getMaxTokens(),
-                profile.getEnabled(), Boolean.TRUE.equals(profile.getIsDefault()), profile.getUpdatedAt());
+                profile.getEnabled(), Boolean.TRUE.equals(profile.getIsDefault()),
+                Boolean.TRUE.equals(profile.getIsFallback()), profile.getUpdatedAt());
     }
 
     /** 供 LlmConfigService 与 AgentFactory 使用的运行时视图（含解密后的 apiKey）。 */
@@ -228,6 +303,6 @@ public class LlmProfileService {
 
     public record ProfileView(Long id, String name, String provider, String baseUrl, String modelName,
                               boolean hasApiKey, String apiKeyMasked, BigDecimal temperature, Integer maxTokens,
-                              Boolean enabled, boolean isDefault, LocalDateTime updatedAt) {
+                              Boolean enabled, boolean isDefault, boolean isFallback, LocalDateTime updatedAt) {
     }
 }

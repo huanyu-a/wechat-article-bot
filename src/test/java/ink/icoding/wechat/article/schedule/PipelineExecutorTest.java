@@ -57,13 +57,17 @@ class PipelineExecutorTest {
 
     private static PipelineExecutor executor(StubRunner runner) {
         PipelineExecutor executor = new PipelineExecutor(null, null, runner, ToolCallBudget.defaults());
-        executor.setStageAgentBuilder((code, stage, request, workspace) -> {
-            AgentClient agent = new AgentClient();
-            agent.setName(code);
-            agent.setDescription(stage);
-            return agent;
-        });
+        executor.setStageAgentBuilder((code, stage, request, workspace) ->
+                List.of(new AgentRunner.Candidate(namedAgent(code, stage), stage)));
         return executor;
+    }
+
+    /** 桩智能体：名字用 code（桩运行器据此识别阶段），档案标签用 stage。 */
+    private static AgentClient namedAgent(String code, String stage) {
+        AgentClient agent = new AgentClient();
+        agent.setName(code);
+        agent.setDescription(stage);
+        return agent;
     }
 
     private static ArticleAiService.ScheduledAgentRequest request(Map<String, Long> stageAgents, int maxRounds) {
@@ -244,12 +248,8 @@ class PipelineExecutorTest {
             }
         };
         PipelineExecutor executor = new PipelineExecutor(null, null, capped, ToolCallBudget.defaults());
-        executor.setStageAgentBuilder((code, stage, request, ws) -> {
-            AgentClient agent = new AgentClient();
-            agent.setName(code);
-            agent.setDescription(stage);
-            return agent;
-        });
+        executor.setStageAgentBuilder((code, stage, request, ws) ->
+                List.of(new AgentRunner.Candidate(namedAgent(code, stage), stage)));
         executor.execute(request(Map.of(), 2), workspace);
 
         // 额度按阶段分档：调研阶段高于写作/配图/审核——实测宽口径调研 25 次调用全部成功却因
@@ -318,11 +318,8 @@ class PipelineExecutorTest {
             }
         };
         PipelineExecutor executor = new PipelineExecutor(null, null, stalled, ToolCallBudget.defaults());
-        executor.setStageAgentBuilder((code, stage, request, ws) -> {
-            AgentClient agent = new AgentClient();
-            agent.setName(code);
-            return agent;
-        });
+        executor.setStageAgentBuilder((code, stage, request, ws) ->
+                List.of(new AgentRunner.Candidate(namedAgent(code, stage), stage)));
 
         assertThatThrownBy(() -> executor.execute(request(Map.of("illustration", 0L, "review", 0L), 2), workspace))
                 .isInstanceOf(StageTimeoutException.class);
@@ -386,11 +383,8 @@ class PipelineExecutorTest {
 
     private static PipelineExecutor executor(AgentRunner runner) {
         PipelineExecutor executor = new PipelineExecutor(null, null, runner, ToolCallBudget.defaults());
-        executor.setStageAgentBuilder((code, stage, request, ws) -> {
-            AgentClient agent = new AgentClient();
-            agent.setName(code);
-            return agent;
-        });
+        executor.setStageAgentBuilder((code, stage, request, ws) ->
+                List.of(new AgentRunner.Candidate(namedAgent(code, stage), stage)));
         return executor;
     }
 

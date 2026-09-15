@@ -33,8 +33,18 @@ public class ArticleMediaTools {
     }
 
     public List<Tool> create(Long accountId, Long userId, MutationExecutor mutationExecutor) {
-        return List.of(new SearchWebTool(), new BrowseWebpageTool(), new SearchWebImagesTool(),
-                new ListAssetsTool(accountId), new ImportWebImageTool(accountId, userId, mutationExecutor),
+        return create(accountId, userId, mutationExecutor, (toolName, paramJson, action) -> action.get());
+    }
+
+    /**
+     * @param readExecutor 只读检索的执行包装（Phase 4 治理）：同参数重复调用直接返回首次结果、
+     *                     重复过频时在结果后追加可执行的收手指令。默认实现为直通（存量行为不变）。
+     */
+    public List<Tool> create(Long accountId, Long userId, MutationExecutor mutationExecutor,
+                             ReadExecutor readExecutor) {
+        return List.of(new SearchWebTool(readExecutor), new BrowseWebpageTool(readExecutor),
+                new SearchWebImagesTool(readExecutor), new ListAssetsTool(accountId, readExecutor),
+                new ImportWebImageTool(accountId, userId, mutationExecutor),
                 new GenerateImageTool(accountId, userId, mutationExecutor),
                 new EditImageTool(accountId, userId, mutationExecutor));
     }
@@ -44,10 +54,26 @@ public class ArticleMediaTools {
         String execute(String toolName, String paramJson, Supplier<String> action);
     }
 
+    /**
+     * 只读检索的执行包装（Phase 4）：与 {@link MutationExecutor} 对称、语义相反——
+     * 那边是「有副作用，重复执行要拦住」，这边是「无副作用，重复执行直接复用首次结果」。
+     *
+     * <p>为什么不复用 MutationExecutor：变更类工具失败必须向上抛（生图失败要计为工具失败），
+     * 而检索类工具失败已由 agent4j 统一转成工具错误回调；两者对异常的处理不同，
+     * 混在一个 seam 里会让「谁负责抛」变得含糊。
+     */
+    @FunctionalInterface
+    public interface ReadExecutor {
+        String execute(String toolName, String paramJson, Supplier<String> action);
+    }
+
     @ToolInfo(name = "search_web", description = "搜索公开网页，返回标题、链接和摘要。需要事实资料或外部来源时使用。")
     public class SearchWebTool implements Tool<SearchWebParam> {
+        private final ReadExecutor readExecutor;
+        public SearchWebTool(ReadExecutor readExecutor) { this.readExecutor = readExecutor; }
         @Override public String execute(SearchWebParam param) {
-            return json(webService.searchWeb(param.getQuery(), value(param.getMaxResults(), 5)));
+            return readExecutor.execute("search_web", json(param),
+                    () -> json(webService.searchWeb(param.getQuery(), value(param.getMaxResults(), 5))));
         }
     }
 
@@ -59,17 +85,21 @@ public class ArticleMediaTools {
 
     @ToolInfo(name = "browse_webpage", description = "打开一个公开网页并提取标题和正文。必须先有明确URL，禁止访问内网。")
     public class BrowseWebpageTool implements Tool<BrowseWebpageParam> {
+        private final ReadExecutor readExecutor;
+        public BrowseWebpageTool(ReadExecutor readExecutor) { this.readExecutor = readExecutor; }
         @Override public String execute(BrowseWebpageParam param) {
-            try {
-                return json(webService.browse(param.getUrl()));
-            } catch (SafeWebService.PageUnavailableException unavailable) {
-                // 403/404/410 属「这一页读不到」而非工具故障：返回可跳过的引导文本，不再计为工具失败，
-                // 避免外部噪声把整次运行拖成「有警告的成功」并掩盖真正的失败。
-                return json(Map.of("url", param.getUrl() == null ? "" : param.getUrl(),
-                        "skipped", true,
-                        "message", "该网页当前不可访问（HTTP " + unavailable.statusCode()
-                                + "，可能不存在或被反爬拦截），已跳过。请改用搜索结果中的其他来源。"));
-            }
+            return readExecutor.execute("browse_webpage", json(param), () -> {
+                try {
+                    return json(webService.browse(param.getUrl()));
+                } catch (SafeWebService.PageUnavailableException unavailable) {
+                    // 403/404/410 属「这一页读不到」而非工具故障：返回可跳过的引导文本，不再计为工具失败，
+                    // 避免外部噪声把整次运行拖成「有警告的成功」并掩盖真正的失败。
+                    return json(Map.of("url", param.getUrl() == null ? "" : param.getUrl(),
+                            "skipped", true,
+                            "message", "该网页当前不可访问（HTTP " + unavailable.statusCode()
+                                    + "，可能不存在或被反爬拦截），已跳过。请改用搜索结果中的其他来源。"));
+                }
+            });
         }
     }
 
@@ -80,8 +110,11 @@ public class ArticleMediaTools {
 
     @ToolInfo(name = "search_web_images", description = "搜索与文章主题相关的网络图片候选，只返回图片和来源页地址；使用前应确认内容相关并通过import_web_image导入素材库。")
     public class SearchWebImagesTool implements Tool<SearchWebImagesParam> {
+        private final ReadExecutor readExecutor;
+        public SearchWebImagesTool(ReadExecutor readExecutor) { this.readExecutor = readExecutor; }
         @Override public String execute(SearchWebImagesParam param) {
-            return json(webService.searchImages(param.getQuery(), value(param.getMaxResults(), 6)));
+            return readExecutor.execute("search_web_images", json(param),
+                    () -> json(webService.searchImages(param.getQuery(), value(param.getMaxResults(), 6))));
         }
     }
 
@@ -94,10 +127,15 @@ public class ArticleMediaTools {
     @ToolInfo(name = "list_image_assets", description = "检索文章素材库中的图片。优先复用用户提供或已有的合适素材；结果包含assetId和publicUrl。")
     public class ListAssetsTool implements Tool<ListAssetsParam> {
         private final Long accountId;
-        public ListAssetsTool(Long accountId) { this.accountId = accountId; }
+        private final ReadExecutor readExecutor;
+        public ListAssetsTool(Long accountId, ReadExecutor readExecutor) {
+            this.accountId = accountId;
+            this.readExecutor = readExecutor;
+        }
         @Override public String execute(ListAssetsParam param) {
-            return json(assetService.search(accountId, param.getKeyword(), value(param.getMaxResults(), 10))
-                    .stream().map(ArticleMediaTools::assetView).toList());
+            return readExecutor.execute("list_image_assets", json(param), () ->
+                    json(assetService.search(accountId, param.getKeyword(), value(param.getMaxResults(), 10))
+                            .stream().map(ArticleMediaTools::assetView).toList()));
         }
     }
 

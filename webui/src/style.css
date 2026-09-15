@@ -148,6 +148,7 @@
 .profile-titles{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
 .profile-titles strong{font-size:14px;color:#26332c;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .profile-default-badge{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;color:#9b681f;background:#fbf0dc;border-radius:5px;padding:3px 6px}
+.profile-fallback-badge{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;color:#1f5f8b;background:#e2f0fa;border-radius:5px;padding:3px 6px}
 .profile-provider{font-size:11px;color:#5f6b64}
 .profile-item dl{margin:0;display:grid;gap:8px}
 .profile-item dl div{display:flex;justify-content:space-between;gap:12px;font-size:12px}

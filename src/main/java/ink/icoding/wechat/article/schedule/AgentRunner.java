@@ -65,6 +65,56 @@ public abstract class AgentRunner {
         return runWithLimit(agent, command, attachments, logPrefix, maxToolCalls, progress);
     }
 
+    /**
+     * 带**模型档案故障切换**的运行：{@code candidates} 首个为主用，其余为退路（只差模型）。
+     *
+     * <p>为什么需要它：会话绑定的模型在 {@code AgentClient.setModel} 时就定死了，模型级错误
+     * （{@code model_not_found} / {@code no available channel} / 该渠道额度耗尽）重发多少次结果都一样。
+     * 实测上游下线一个模型后只能**手工改库**才能恢复。有了这个入口，{@link AgentInvoker}
+     * 就能在「本次尝试零工具调用」的前提下换下一个档案接着跑。
+     *
+     * <p>默认实现只用首个候选并忽略其余——替身实现与不关心切换的调用方无需改动。
+     *
+     * @param candidates 候选（≥1）；空列表视为调用错误
+     */
+    public Outcome runWithCandidates(List<Candidate> candidates, String command,
+                                     List<MemoryMultipartFile> attachments, String logPrefix,
+                                     int maxToolCalls, long timeoutSeconds, ProgressListener progress) {
+        if (candidates == null || candidates.isEmpty()) {
+            throw new IllegalArgumentException("候选智能体列表不能为空");
+        }
+        return runWithLimit(candidates.get(0).agent(), command, attachments, logPrefix, maxToolCalls,
+                timeoutSeconds, progress);
+    }
+
+    /**
+     * 一个故障切换候选：智能体 + 人类可读的档案标签（用于执行日志与终态消息）。
+     *
+     * <p>{@code label} 必须单独携带：agent4j 的 {@code LLMModel} 接口没有暴露模型名/档案名的 getter，
+     * 事后无法从 AgentClient 反查「这一轮用的到底是哪个档案」。
+     *
+     * <p>{@code governor} 也必须随候选携带：候选之间**共享同一批工具实例**，而只读检索的
+     * 去重/循环状态就存在工具的治理器里——{@link AgentInvoker} 需要同一个实例才能
+     * 按尝试重置预算、并在重复调用时中止会话。为 null 表示该候选不做检索治理。
+     */
+    public record Candidate(AgentClient agent, String label, ToolCallGovernor governor) {
+        /** 无治理器（编辑器链路、多数单测）：检索治理退化为直通。 */
+        public Candidate(AgentClient agent, String label) {
+            this(agent, label, null);
+        }
+    }
+
+    /**
+     * 候选多于一个时给出「故障切换候选：A → B」后缀（写进启动日志）。
+     *
+     * <p>只有一个候选时返回空串：没有退路就没什么可说的，不必让每行启动日志都拖着它。
+     */
+    public static String profileSuffix(List<Candidate> candidates) {
+        if (candidates == null || candidates.size() < 2) return "";
+        return "（故障切换候选：" + candidates.stream().map(Candidate::label)
+                .collect(java.util.stream.Collectors.joining(" → ")) + "）";
+    }
+
     static List<String> splitLines(String text) {
         if (text == null || text.isBlank()) return List.of();
         return List.of(text.split("\n"));
@@ -80,6 +130,31 @@ public abstract class AgentRunner {
 
         /** 每产生一行执行日志回调一次（已含阶段前缀）。 */
         void logLine(String line);
+
+        /**
+         * 工具参数 JSON 解析失败（默认忽略，仅工作区监听器关心）。
+         *
+         * <p>为什么要单独计数：{@code submit_review - Failed to parse tool param JSON} 是实测最常见的
+         * 一类工具失败（模型把参数写成 Markdown 代码块或漏了引号），而它**混在「工具失败」总数里
+         * 看不出趋势**——协议提示词改了之后到底有没有变好，只能靠单独计数回答。
+         * 参数解析失败还特别浪费：一次返工轮次可能就因为它白跑。
+         *
+         * @param toolName 参数解析失败的工具名
+         */
+        default void toolParamParseFailed(String toolName) {
+        }
+
+        /**
+         * 本次会话**实际用过**的一个模型档案（默认忽略，仅工作区监听器关心）。
+         *
+         * <p>为什么要实时上报而不是等会话结束：档案链是「用过哪些模型」的唯一记录，
+         * 而**失败路径**恰恰是最需要它的时候——实测 run#123/#124 停滞失败后
+         * {@code stages_summary.profilesUsed} 为空，看不出当时用的是哪个模型、
+         * 有没有试过备用档案。成功路径可以从产出的 Outcome 里拿到档案链，
+         * 失败路径只能靠这条实时回调留住（与工具计数、执行日志同一理由）。
+         */
+        default void profileUsed(String label) {
+        }
 
         /**
          * 只上报工具调用计数、忽略日志的监听器：用于日志由调用方事后统一追加的场景
@@ -109,14 +184,25 @@ public abstract class AgentRunner {
      * @param toolFailures 工具失败次数。用于终态判定：整体成功但配图/落库类工具失败时，
      *                     运行不能再记成纯粹的 SUCCESS——那会让「交付物缺图」看起来像成功。
      */
-    public record Outcome(String reply, int toolCalls, String executionLog, int toolFailures) {
+    public record Outcome(String reply, int toolCalls, String executionLog, int toolFailures,
+                          List<String> profilesUsed) {
         /** 三参构造（多数替身与不关心失败数的调用方使用）：失败数默认 0。 */
         public Outcome(String reply, int toolCalls, String executionLog) {
-            this(reply, toolCalls, executionLog, 0);
+            this(reply, toolCalls, executionLog, 0, List.of());
+        }
+
+        /** 四参构造（存量调用点）：档案链默认空。 */
+        public Outcome(String reply, int toolCalls, String executionLog, int toolFailures) {
+            this(reply, toolCalls, executionLog, toolFailures, List.of());
         }
 
         public boolean hasToolFailures() {
             return toolFailures > 0;
+        }
+
+        /** 本次运行是否发生过模型档案切换（档案链长度 > 1）。 */
+        public boolean switchedProfile() {
+            return profilesUsed != null && profilesUsed.size() > 1;
         }
     }
 }

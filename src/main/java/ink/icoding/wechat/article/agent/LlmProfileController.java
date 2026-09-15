@@ -62,4 +62,16 @@ public class LlmProfileController {
     public ApiResponse<LlmProfileService.ProfileView> setDefault(@PathVariable Long id) {
         return ApiResponse.ok(service.setDefault(id));
     }
+
+    /**
+     * 设为兜底档案（故障切换链的最后一段）。
+     *
+     * <p>与 set-default 分开两个端点而不是合成一个「设置标记」：两者语义不同且可以同时成立——
+     * 默认档案是「没绑定就用它」，兜底档案是「主力全挂才用它」，合成一个会让前端不得不用
+     * 一个字段表达两种状态。
+     */
+    @PostMapping("/{id}/set-fallback")
+    public ApiResponse<LlmProfileService.ProfileView> setFallback(@PathVariable Long id) {
+        return ApiResponse.ok(service.setFallback(id));
+    }
 }

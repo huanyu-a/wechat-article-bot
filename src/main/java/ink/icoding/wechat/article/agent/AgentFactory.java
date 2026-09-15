@@ -94,14 +94,142 @@ public class AgentFactory {
         if (!Boolean.TRUE.equals(definition.getEnabled())) {
             throw new BusinessException("智能体「" + definition.getName() + "」已停用");
         }
-        List<String> groupKeys = AgentDefinitionService.parseToolKeys(definition.getToolKeys());
+        return assemble(definition, assembleDescription(definition, skillContext, preAssembled),
+                resolveTools(definition, resolver), createModel(definition));
+    }
+
+    /**
+     * 装配**故障切换候选**：返回一组除模型外完全相同的 AgentClient（首个为主用）。
+     *
+     * <p>为什么要一次建好一组：{@code AgentClient} 在 {@code setModel} 时就绑死了一个模型，
+     * 会话失败后无法换模型重试。要让 {@code AgentInvoker} 能「换档案接着跑」，
+     * 就必须在装配阶段把候选都准备好。候选之间**只差模型**——工具实例、工作区、
+     * 技能提示全部共享（工具不持有模型状态，多建几个 client 是廉价且安全的）。
+     *
+     * <p>返回长度 ≥ 1：档案链为空（全部未启用/无 Key）时回落到原有的
+     * 「默认档案 → llm_config」单候选行为，不改变存量语义。
+     */
+    public List<AgentClient> buildCandidates(AgentDefinition definition, SkillContext skillContext,
+                                             SkillPromptResult preAssembled, ToolResolver resolver) {
+        return buildLabeledCandidates(definition, skillContext, preAssembled, resolver).stream()
+                .map(LabeledAgent::agent).toList();
+    }
+
+    /**
+     * 故障切换候选 + 档案标签（首个为主用）。
+     *
+     * <p>标签必须由装配方给出：agent4j 的 {@code LLMModel} 没有暴露模型名的 getter，
+     * 事后无法从 AgentClient 反查「这一轮用的到底是哪个档案」，而执行日志与终态消息都需要它。
+     */
+    public List<LabeledAgent> buildLabeledCandidates(AgentDefinition definition, SkillContext skillContext,
+                                                     SkillPromptResult preAssembled, ToolResolver resolver) {
+        if (definition == null) throw new BusinessException("智能体定义不存在");
+        if (!Boolean.TRUE.equals(definition.getEnabled())) {
+            throw new BusinessException("智能体「" + definition.getName() + "」已停用");
+        }
+        // 工具与提示只解析一次，候选之间**共享同一批实例**：工具不持有模型状态，
+        // 且同一时刻只会有一个候选在跑（切换是串行的），共享既省一次解析也避免
+        // resolver 里带副作用的工具（如共享去重器）被重复构造。
+        String description = assembleDescription(definition, skillContext, preAssembled);
+        List<Tool> tools = resolveTools(definition, resolver);
+        List<LabeledAgent> candidates = new java.util.ArrayList<>();
+        for (ModelCandidate candidate : createModelCandidates(definition)) {
+            candidates.add(new LabeledAgent(
+                    assemble(definition, description, tools, candidate.model()), candidate.label()));
+        }
+        return candidates;
+    }
+
+    /** 候选智能体 + 档案标签（label 形如「档案名/模型名」，用于日志与终态消息）。 */
+    public record LabeledAgent(AgentClient agent, String label) {
+    }
+
+    /**
+     * 按 code 装配**故障切换候选**：定义缺失/停用时退化为内置默认装配（与 {@link #buildByCode} 同语义），
+     * 而不是抛「智能体定义不存在」。
+     *
+     * <p>为什么退化路径也要给整条档案链：SINGLE 链路此前调的是 {@code buildByCode}，
+     * 定义被停用时会静默回落内置装配并照常运行；若这里改成抛异常或单候选，
+     * 就会把「定义缺失」这个存量可容忍状态变成硬失败，或者让它失去故障切换能力。
+     */
+    public List<LabeledAgent> buildLabeledCandidatesByCode(String code, String fallbackStage,
+                                                           SkillContext skillContext,
+                                                           SkillPromptResult preAssembled,
+                                                           ToolResolver resolver) {
+        AgentDefinition definition = definitionMapper.findByCode(code);
+        if (definition != null && Boolean.TRUE.equals(definition.getEnabled())) {
+            return buildLabeledCandidates(definition, skillContext, preAssembled, resolver);
+        }
+        log.warn("智能体定义 {} 不存在或已停用，故障切换候选退化为内置默认装配（stage={}）", code, fallbackStage);
+        SkillPromptResult skillPrompt = preAssembled == null
+                ? skillPromptAssembler.assemble(skillContext) : preAssembled;
+        String description = AgentProtocols.byStage(fallbackStage) + skillPrompt.prompt();
+        List<Tool> resolved = resolver == null ? List.of() : resolver.resolve(defaultGroupsFor(fallbackStage));
+        List<Tool> tools = resolved == null ? List.of() : resolved;
+        List<LabeledAgent> candidates = new java.util.ArrayList<>();
+        for (ModelCandidate candidate : createModelCandidates(null)) {
+            candidates.add(new LabeledAgent(assemble("墨舟智能体", description, tools, candidate.model()),
+                    candidate.label()));
+        }
+        return candidates;
+    }
+
+    /** 用给定模型装配（description 与工具在候选间完全一致，只有模型不同）。 */
+    private AgentClient assemble(AgentDefinition definition, String description, List<Tool> tools, LLMModel model) {
+        return assemble(definition.getName() == null ? "墨舟智能体" : definition.getName(), description, tools, model);
+    }
+
+    private AgentClient assemble(String name, String description, List<Tool> tools, LLMModel model) {
         AgentClient agent = new AgentClient();
-        agent.setName(definition.getName() == null ? "墨舟智能体" : definition.getName());
-        agent.setDescription(assembleDescription(definition, skillContext, preAssembled));
-        agent.setModel(createModel(definition));
-        List<Tool> tools = resolver == null ? List.of() : resolver.resolve(groupKeys);
-        agent.setTools(tools == null ? List.of() : tools);
+        agent.setName(name);
+        agent.setDescription(description);
+        agent.setModel(model);
+        agent.setTools(tools);
         return agent;
+    }
+
+    private List<Tool> resolveTools(AgentDefinition definition, ToolResolver resolver) {
+        if (resolver == null) return List.of();
+        List<String> groupKeys = AgentDefinitionService.parseToolKeys(definition.getToolKeys());
+        List<Tool> tools = resolver.resolve(groupKeys);
+        return tools == null ? List.of() : tools;
+    }
+
+    /**
+     * 故障切换候选模型（按档案链顺序）。首个与 {@link #createModel} 的选择一致。
+     *
+     * <p>档案链由 {@link LlmProfileService#failoverChain} 给出（绑定 → 默认 → 兜底 → 其余已启用）。
+     * 链为空时退回 {@link #createModel} 的「默认档案 → llm_config」路径，保证存量行为不变。
+     */
+    public List<ModelCandidate> createModelCandidates(AgentDefinition definition) {
+        LlmProfile bound = null;
+        if (definition != null && definition.getLlmProfileId() != null) {
+            bound = llmProfileService.findById(definition.getLlmProfileId());
+            if (bound == null) {
+                log.warn("智能体 {} 绑定的模型档案 {} 已删除，按未绑定处理",
+                        definition.getCode(), definition.getLlmProfileId());
+            }
+        }
+        List<LlmProfile> chain = llmProfileService.failoverChain(bound);
+        List<ModelCandidate> models = new java.util.ArrayList<>(chain.size());
+        for (LlmProfile profile : chain) {
+            LlmProfileService.RuntimeProfile runtime = llmProfileService.runtime(profile);
+            if (runtime == null || !runtime.available()) continue;
+            models.add(new ModelCandidate(
+                    createModel(runtime.provider(), runtime.baseUrl(), runtime.modelName(), runtime.apiKey()),
+                    profile.getName() + "/" + runtime.modelName()));
+        }
+        if (models.isEmpty()) {
+            // 档案链为空（未配置任何可用档案）：回落原有的 llm_config 路径，保持存量兼容
+            if (definition != null) warnIfOverridden(definition);
+            return List.of(new ModelCandidate(createModel(definition), "llm_config 默认配置"));
+        }
+        if (definition != null) warnIfOverridden(definition);
+        return models;
+    }
+
+    /** 候选模型 + 档案标签（label 形如「档案名/模型名」）。 */
+    public record ModelCandidate(LLMModel model, String label) {
     }
 
     /** 定义缺失时的兜底装配：核心协议按 stage、模型走默认档案、工具由 resolver 按 fallbackStage 的默认组解析。 */

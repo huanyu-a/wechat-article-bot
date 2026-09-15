@@ -24,7 +24,15 @@ public class AgentDefinition extends PO {
     private Long id;
     @TableField(length = 50)
     private String code;
-    @TableField(length = 100)
+    /**
+     * 智能体名称。声明 255 而非 100：{@code name} 这个字段名在 5 个实体里存在
+     * （{@code WechatAccount} / {@code ScheduleTask} 用默认 255，本类与 {@code LlmProfile} / {@code Skill} 曾写 100），
+     * 而 smart-mybatis 的列声明缓存按**字段名**单键共享——声明不一致时谁先初始化谁说了算，
+     * 且 {@code MysqlDialect.buildAlterColumn} 会发 {@code MODIFY COLUMN}，赢家若是 100 就会把
+     * 公众号名 / 任务名这些**用户输入**的列一起收窄到 100 字符。
+     * 实测 5 张表的 NAME 列都已是 varchar(255)，统一成 255 与真实列宽一致：不发任何 DDL，结果与初始化顺序无关。
+     */
+    @TableField(length = 255)
     private String name;
     @TableField(length = 30)
     private String stage;

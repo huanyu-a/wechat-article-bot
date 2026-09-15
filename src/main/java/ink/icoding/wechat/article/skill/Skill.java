@@ -20,7 +20,12 @@ import java.time.LocalDateTime;
 public class Skill extends PO {
     @ID
     private Long id;
-    @TableField(length = 100)
+    /**
+     * 技能名称。声明 255 而非 100：{@code name} 在 5 个实体里同名，共用 smart-mybatis 的
+     * 字段名级列声明缓存，不一致时按初始化顺序二选一并可能发 {@code MODIFY COLUMN}。
+     * 实测 5 张表都是 varchar(255)，统一成 255 与真实列宽一致。
+     */
+    @TableField(length = 255)
     private String name;
     @TableField(length = 30)
     private String dimension;
