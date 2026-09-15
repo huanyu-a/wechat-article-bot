@@ -1,10 +1,13 @@
 {
   "agent": "main",
-  "timestamp": "2026-09-16T00:40:00",
+  "timestamp": "2026-09-16T02:25:00",
   "session": "sess_e09c7784-7835-4597-9cea-4fe764d76dff",
   "status": "completed",
-  "summary": "定时任务可靠性 + 效率 + 模型档案故障切换（一轮全做完）的代码侧全部落地。Phase 1 故障切换（档案链/AgentInvoker 模型级错误切换/三链路 runWithCandidates/编辑器链路切换）、Phase 2 按智能体分配模型（LlmProfileSeeder 建标准档案 + AgentSeeder 仅在 llm_profile_id 为空时绑定 + is_fallback 列与 set-fallback 端点/前端徽标）、Phase 3 效率（无进展检测 inactivity=180s、调研简报注入前截断、手动触发专用线程池、SINGLE 预算走 ToolCallBudget）、Phase 4 工具治理（只读去重 + 循环检测 + 预算提示 + REVIEW 协议完整 JSON 示例 + 参数解析失败单独计数 + 封面归属校验上提）、Phase 5 可观测性（每阶段耗时/工具数/档案进 stages_summary + 终态消息按失败类别给可读解释 + 4 条新巡检 SQL + TASK_RUN.MODE 改为插入前落库）、Phase 6 遗留缺陷（5 组同名字段声明冲突全部对齐到真实列宽 + 新增构建期回归护栏）均已完成。闸门 391 例全绿 + webui 自检与构建通过。",
+  "summary": "定时任务可靠性 + 效率 + 模型档案故障切换（一轮全做完）：Phase 0-6 代码侧 + 实机验收全部完成，已本地 commit 94d9a94。实机验收四项全部通过：①重启后新列/标准档案/7 个绑定/兜底标记/列宽未变均核对通过；②强制故障切换反例 run#122 通过（profilesUsed 两段 + switchedProfile=true + SUCCESS，验收后临时档案与绑定已清理）；③效率 run#125 COORDINATOR 1527s vs 基线 1801s（−15%）、run#126 SINGLE 895s 成功且零停滞事件；④验收证据写入 docs/dev/scheduled-task-reliability-round.md。验收过程发现并修掉 3 个缺陷（见 defects）。闸门 .mvn/mvn-local.sh -o test → 397 例全绿（基线 329）。",
   "artifacts": [
+    "docs/dev/scheduled-task-reliability-round.md",
+    "docs/dev/model-availability-probe.md",
+    "docs/dev/scheduled-task-failure-attribution.md",
     "src/main/java/ink/icoding/wechat/article/schedule/ToolCallGovernor.java",
     "src/main/java/ink/icoding/wechat/article/schedule/AgentInvoker.java",
     "src/main/java/ink/icoding/wechat/article/schedule/AgentRunner.java",
@@ -21,7 +24,6 @@
     "src/main/java/ink/icoding/wechat/article/agent/AgentProtocols.java",
     "src/main/java/ink/icoding/wechat/article/ai/ArticleAiService.java",
     "src/main/java/ink/icoding/wechat/article/ai/ScheduledAgentFactory.java",
-    "src/main/java/ink/icoding/wechat/article/ai/ArticleMediaTools.java",
     "src/test/java/ink/icoding/wechat/article/common/EntityColumnDeclarationConsistencyTest.java",
     "src/test/java/ink/icoding/wechat/article/schedule/ToolCallGovernorTest.java",
     "src/test/java/ink/icoding/wechat/article/schedule/TaskFailureMessageTest.java",
@@ -29,16 +31,14 @@
     "src/test/java/ink/icoding/wechat/article/agent/AgentSeederTest.java",
     "src/test/java/ink/icoding/wechat/article/schedule/TaskExecutionServiceCoverTest.java",
     "webui/src/views/TasksView.vue",
-    "webui/src/views/SettingsView.vue",
-    "docs/dev/model-availability-probe.md",
-    "docs/dev/scheduled-task-failure-attribution.md"
+    "webui/src/views/SettingsView.vue"
   ],
   "quality": {
     "checks": [
       {
         "name": "mvn -o test",
         "result": "pass",
-        "detail": "393 例全绿（改造前基线 329，新增 64）"
+        "detail": "Tests run: 397, Failures: 0, Errors: 0（基线 329，+68）；清空 surefire-reports 后重跑复现同一数字"
       },
       {
         "name": "webui check:imports",
@@ -58,14 +58,44 @@
       {
         "name": "回归护栏红证",
         "result": "pass",
-        "detail": "把 Asset.sourceUrl 改回 2000 后该测试 2 例立刻失败，改回即绿"
+        "detail": "① Asset.sourceUrl 改回 2000 → 该测试 2 例失败；② onThink 实现改空 → reasoningOnlyOutputCountsAsProgressNotStall 失败（报错与 run#123/#124 同形）。两者改回即绿"
+      },
+      {
+        "name": "实机验收",
+        "result": "pass",
+        "detail": "run#122 故障切换反例 + run#125 COORDINATOR + run#126 SINGLE，详见 docs/dev/scheduled-task-reliability-round.md"
       }
     ],
     "gate_passed": true
   },
+  "defects": [
+    {
+      "severity": "MAJOR",
+      "issue": "无进展检测把「正在思考」误判为「停滞」：agent4j 把 reasoning_content/reasoning/thinking/thinking_content 路由到 onThink，而检测只把 onMessage/onTool 计为进展。实测 hy4-preview 270s 生成里思维链 3322 条、正文仅 195 条，按正文计空档 254s > 180s 阈值；run#123/#124 因此在正常出字时被判停滞中止（判死后 3 分钟、11 分钟仍有该会话日志）。",
+      "verified": true,
+      "fix": "fixed",
+      "evidence": "AgentInvoker.attempt 覆写 onThink 只刷新活动时间（不写入 assistantText）；回归测试 AgentInvokerTest.reasoningOnlyOutputCountsAsProgressNotStall 已做红→绿反证；run#126 修复后 895s 成功且零停滞事件"
+    },
+    {
+      "severity": "MINOR",
+      "issue": "失败提示谎报「系统已自动尝试切换备用模型档案」——已调用工具时按安全边界有意不切换，switchedProfile=false、profilesUsed 为空。",
+      "verified": true,
+      "fix": "fixed",
+      "evidence": "措辞改为陈述机制并指向 stages_summary.profilesUsed；测试 TaskFailureMessageTest.stallMessageDoesNotFalselyClaimAProfileSwitch"
+    },
+    {
+      "severity": "MINOR",
+      "issue": "失败路径不留「用过哪个模型」：切换日志在 attempt 之外，局部日志列表随失败作废，profilesUsed 为空无法归因。",
+      "verified": true,
+      "fix": "fixed",
+      "evidence": "新增 AgentRunner.ProgressListener.profileUsed，AgentInvoker 在主用启动与两个切换点各上报一次；测试 AgentInvokerTest.reportsProfilesUsedEvenWhenAllCandidatesFail / reportsTheSingleCandidateWhenItFails"
+    }
+  ],
   "next": [
-    "需要用户单独确认后才可执行（方案第十一节）：① 重启服务让 IS_FALLBACK 新列 + 标准档案 + 智能体绑定生效；② 强制故障切换反例（把某智能体指向不存在的模型名，确认日志出现「切换 A → B」且整轮仍成功）；③ 手工触发 #4(SINGLE) / #5(COORDINATOR) 与 554s / 1801s 基线对照；④ 等一个自然日 09:00 定时触发后用新巡检 SQL 看成功率",
-    "本轮未做：线上部署；temperature/maxTokens 生效（agent4j 2.3.3 不支持）；PIPELINE 阶段并行化（有意不做，见方案十二）"
+    "可选调参：builtin_scheduled_creator 当前绑 glm-5.3-flash（能力优先），run#126 比基线慢 342s；若要 SINGLE 也快，改绑 deepseek-flash（445 tok/s）",
+    "等一个自然日 09:00 定时触发，用 scheduled-task-failure-attribution.md 第五~八节巡检 SQL 看成功率",
+    "编辑器链路的模型切换已按方案默认包含，但未做实机验证（需一次真实编辑器交互）",
+    "git push 未执行：推送到 huanyu/main（public 仓库）需单独授权，推送前要扫密钥"
   ],
   "read_files": [
     "src/main/java/ink/icoding/wechat/article/schedule/PipelineExecutor.java",
@@ -77,6 +107,8 @@
   "notes": [
     "本文件是旁路记录：.zcode/handoff/latest.json 为并行会话共用的单文件，按纪律未覆盖。",
     "smart-mybatis 的列声明缓存按字段名单键共享（MapperUtil.getColumnDeclaration），且 MysqlDialect.buildAlterColumn 会发 MODIFY COLUMN——已从 3.0.1 字节码确认（MapperUtil.updateTable → buildAlterTable → buildAlterColumn）。这是本轮 Phase 6 的判据来源。",
-    "开发库 wechat-article 的 LLM_PROFILE 目前仍无 IS_FALLBACK 列（旧实例在跑，未重启），wechat-article-test 库已有该列，验证走的是测试库。"
+    "排查「护栏误杀」类问题的关键教训：探针必须按护栏自己的判据算。本次先用 SseGapProbe（传输层）与 TtftProbe（prefill）都测出「阈值有百倍余量」，据此错判为「真实死流」；直到用 ReasonGapProbe 复刻检测器算法（只算正文）才定位到 onThink 盲区。传输层「一切正常」恰恰掩盖了回调层的问题。",
+    "服务当前运行实例：PID 2516，01:56:12 启动，已包含 onThink 修复（class 编译于 01:49:25）。",
+    "target/scratch/ 下的探针（ModelAvailabilityProbe/SseGapProbe/TtftProbe/RawSseProbe/ReasonGapProbe）均为临时只读工具，未纳入版本控制。"
   ]
 }
