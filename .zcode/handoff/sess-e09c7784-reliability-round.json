@@ -3,7 +3,7 @@
   "timestamp": "2026-09-16T02:25:00",
   "session": "sess_e09c7784-7835-4597-9cea-4fe764d76dff",
   "status": "completed",
-  "summary": "定时任务可靠性 + 效率 + 模型档案故障切换（一轮全做完）：Phase 0-6 代码侧 + 实机验收全部完成，已本地 commit 94d9a94。实机验收四项全部通过：①重启后新列/标准档案/7 个绑定/兜底标记/列宽未变均核对通过；②强制故障切换反例 run#122 通过（profilesUsed 两段 + switchedProfile=true + SUCCESS，验收后临时档案与绑定已清理）；③效率 run#125 COORDINATOR 1527s vs 基线 1801s（−15%）、run#126 SINGLE 895s 成功且零停滞事件；④验收证据写入 docs/dev/scheduled-task-reliability-round.md。验收过程发现并修掉 3 个缺陷（见 defects）。闸门 .mvn/mvn-local.sh -o test → 397 例全绿（基线 329）。",
+  "summary": "定时任务可靠性 + 效率 + 模型档案故障切换（一轮全做完）：Phase 0-6 代码侧 + 实机验收全部完成，已本地 commit 94d9a94 / 560a1d6 / 8dbd880。实机验收：①重启后新列/标准档案/7 个绑定/兜底标记/列宽未变均核对通过；②强制故障切换反例 run#122 通过（profilesUsed 两段 + switchedProfile=true + SUCCESS，验收后临时档案与绑定已清理）；③功能改善通过（run#125 COORDINATOR 无阶段中止且完整交付、run#126 SINGLE 895s 成功且零停滞事件）；④验收证据写入 docs/dev/scheduled-task-reliability-round.md。**效率提升不成立**——原方案的「换快模型就提速」假设已被实测证伪（glm-5.3-flash 在生成工具参数场景下并不比免费的 hy4-preview 快），且初版「COORDINATOR −15%」是拿最慢一次成功运行当基线的错误口径，已在 8dbd880 修正。验收过程发现并修掉 3 个缺陷（见 defects），其中最关键的是本轮自己引入的 onThink 误杀。闸门 .mvn/mvn-local.sh -o test → 397 例全绿（基线 329）。",
   "artifacts": [
     "docs/dev/scheduled-task-reliability-round.md",
     "docs/dev/model-availability-probe.md",
@@ -92,9 +92,10 @@
     }
   ],
   "next": [
-    "可选调参：builtin_scheduled_creator 当前绑 glm-5.3-flash（能力优先），run#126 比基线慢 342s；若要 SINGLE 也快，改绑 deepseek-flash（445 tok/s）",
+    "可选调参：builtin_scheduled_creator 当前绑 glm-5.3-flash（能力优先），run#126 比基线慢 342s；若要 SINGLE 提速，改绑 deepseek-flash——这是唯一被实测证明更快的档（273 字符/秒）",
     "等一个自然日 09:00 定时触发，用 scheduled-task-failure-attribution.md 第五~八节巡检 SQL 看成功率",
     "编辑器链路的模型切换已按方案默认包含，但未做实机验证（需一次真实编辑器交互）",
+    "效率提升本轮没有兑现：原方案假设（换快模型→更快）已证伪，真正能省时间的方向是减少每轮上下文重发 + 用 deepseek-flash 跑工具密集阶段",
     "git push 未执行：推送到 huanyu/main（public 仓库）需单独授权，推送前要扫密钥"
   ],
   "read_files": [
@@ -108,6 +109,8 @@
     "本文件是旁路记录：.zcode/handoff/latest.json 为并行会话共用的单文件，按纪律未覆盖。",
     "smart-mybatis 的列声明缓存按字段名单键共享（MapperUtil.getColumnDeclaration），且 MysqlDialect.buildAlterColumn 会发 MODIFY COLUMN——已从 3.0.1 字节码确认（MapperUtil.updateTable → buildAlterTable → buildAlterColumn）。这是本轮 Phase 6 的判据来源。",
     "排查「护栏误杀」类问题的关键教训：探针必须按护栏自己的判据算。本次先用 SseGapProbe（传输层）与 TtftProbe（prefill）都测出「阈值有百倍余量」，据此错判为「真实死流」；直到用 ReasonGapProbe 复刻检测器算法（只算正文）才定位到 onThink 盲区。传输层「一切正常」恰恰掩盖了回调层的问题。",
+    "效率口径的教训：run#125（1527s）与 run#119（1801s）的单点对照会得出「−15%」，但 task#5 全部 9 次成功运行均值是 1281s（区间 457~1801s）——run#119 恰是最慢的一次。**跨 4 倍的基线区间上，单样本证明不了任何效率变化。**",
+    "模型速度不能从评测表外推：评测表的 tok/s 是纯正文场景，而定时任务里模型输出几乎全是工具参数。实测「生成 save_article_draft 参数」的真实速率：deepseek-flash 273 字符/秒、glm-5.3-flash 69/111/125、hy4-preview 86/77/95（后两者区间重叠）。探针 target/scratch/ToolArgStreamProbe2.java 数的是反转义后的真实字符——**不能数 SSE 行长度**，行长度随分片粒度变化（实测 glm 的累计行长是 hy4 的 2.2 倍，会得出相反的结论）。",
     "服务当前运行实例：PID 2516，01:56:12 启动，已包含 onThink 修复（class 编译于 01:49:25）。",
     "target/scratch/ 下的探针（ModelAvailabilityProbe/SseGapProbe/TtftProbe/RawSseProbe/ReasonGapProbe）均为临时只读工具，未纳入版本控制。"
   ]
