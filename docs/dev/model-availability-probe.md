@@ -37,7 +37,9 @@
 
 > 关于「总耗时」：同一条 prompt（输出 1~120 的数字）下的端到端耗时，**横向可比**。
 > 探针里的「chars」计的是 SSE 原始行长度（含 JSON 包装），**不能当吞吐量读**，故本表不列。
-> 真正的吞吐量以评测表的 TPS 为准：deepseek-flash 445 tok/s、glm-5.3-flash 153 tok/s、hy4-preview **23.5 tok/s**。
+> ~~真正的吞吐量以评测表的 TPS 为准：deepseek-flash 445 tok/s、glm-5.3-flash 153 tok/s、hy4-preview 23.5 tok/s。~~
+> **⚠️ 这一句已被实测推翻，见第六节**——评测表的 tok/s 是纯正文场景，不能用于「工具调用为主」的
+> 定时任务链路。实测 hy4-preview 在生成工具参数时并不比 glm-5.3-flash 慢。
 
 ## 三、据此修正的分配方案
 
@@ -54,6 +56,10 @@
 | `builtin_reviewer` 审稿人 | **glm-5.3-flash** | 判断力关键、调用量低，取能力优先 |
 | `builtin_chief` 主编 | **glm-5.3-flash** | 规划质量决定整轮走向、调用量低 |
 | **兜底 fallback** | **hy4-preview** | 免费通道、能力 57，最后安全网 |
+
+> 本表的**「能力」理由全部成立**；但「速度」理由只对 `deepseek-flash` 成立——
+> 它是唯一被实测证明更快的档（273 字符/秒）。`glm-5.3-flash` 的三条都写的是「能力优先」，
+> 没有声称速度，因此**不需要修改**。见第六节。
 
 共 **3 个档案**（2 主用 + 1 兜底），全部实测可用。`dots3-note-prev` / `sensenova-6.8-flash-lite` /
 `step-router-v1` 虽返回 200 但分别有记忆缺陷、稳定性问题、输出异常，**不纳入**。
