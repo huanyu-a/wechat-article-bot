@@ -221,14 +221,16 @@ public void onThink(String thought) {
 判据由此从「吐正文了吗」回到它本该是的「上游还活着吗」。思维链是模型的草稿纸、不是交付内容，
 因此不混进正文（否则会污染草稿与终态消息）。
 
-**反证（红→绿）**：把 `onThink` 的实现临时改成空方法后，新增回归测试
-`AgentInvokerTest.reasoningOnlyOutputCountsAsProgressNotStall` 立刻失败，报错信息与 run#123/#124 同形：
+**反证（红→绿）**：把 `onThink` 的实现临时改成空方法后重跑，`AgentInvokerTest` 从 35 例全绿
+变成 **35 例 1 错**，且失败的正是新加的那一条（`AgentInvokerTest.java:254`），
+异常栈落在 `StageTimeout.inactivityTimeout` → `AgentInvoker.fail`：
 
 ```
-StageTimeout: 智能体会话停滞（1 秒无任何事件）；卡点：最后活动为「会话已启动，等待模型首个响应」；已调用工具 0 次
+StageTimeoutException: 智能体会话停滞（1 秒无任何事件）；卡点：最后活动为「会话已启动，等待模型首个响应」，距今 1 秒；已调用工具 0 次
 ```
 
-改回实现即绿。这证明该测试真的能拦住这个缺陷，不是一条跟着实现走的空断言。
+与 run#123/#124 的真实报错同形（那两条是「距今 180 秒」）。改回实现即恢复 35 例全绿。
+这证明该测试真的能拦住这个缺陷，不是一条跟着实现走的空断言。
 
 ### 5.3 修复后的成功样本（run#126）
 
