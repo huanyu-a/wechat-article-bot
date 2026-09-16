@@ -53,13 +53,16 @@ class LlmConfigServiceImageRuntimeTest {
      *
      * <p>这是本次改动最要紧的一条：默认档案的 image_model_name 在存量库里是 NULL，
      * 若这里返回一个不可用的通道，升级当天所有配图都会失败。
+     *
+     * <p>用 {@code forcedCarrier}（而不是传 null）来打：传 null 走的是「没绑定档案」那条路，
+     * 与本用例要钉的「档案在、但它没声明图片模型」是两条不同的分支，混同就丢了区分力。
      */
     @Test
     void undeclaredProfileFallsBackToTheGlobalImageTrio() {
-        LlmProfile carrier = null;
-        LlmProfileService profileService = profileService(carrier, null);
+        LlmProfile carrier = profile(1L, "未声明档", null, "https://profile.example.com");
 
-        LlmConfigService.ImageRuntime runtime = service(profileService, globalConfig()).imageRuntime(1L);
+        LlmConfigService.ImageRuntime runtime =
+                service(forcedCarrier(carrier), globalConfig()).imageRuntime(1L);
 
         assertThat(runtime.modelName()).isEqualTo(GLOBAL_MODEL);
         assertThat(runtime.apiKey()).isEqualTo(GLOBAL_KEY);
@@ -124,6 +127,43 @@ class LlmConfigServiceImageRuntimeTest {
         assertThat(runtime.available()).isFalse();
     }
 
+    /**
+     * 档案路径**同样**受全局开关约束：载体档案自己可用，不等于整站允许生图。
+     *
+     * <p>这是本次修复的回归钉：原先档案分支硬编码 {@code enabled=true}，于是
+     * 「在系统设置里取消勾选『启用 AI 服务』」的部署只要有个档案声明了图片模型，
+     * 仍会继续调付费生图接口。这条门禁的漏法是静默的——不报错，只花钱。
+     */
+    @Test
+    void carrierPathIsBlockedWhenTheGlobalLlmIsDisabled() {
+        LlmProfile carrier = profile(1L, "配图档", "profile-image-model", "https://profile.example.com");
+        LlmConfig cfg = globalConfig();
+        cfg.setEnabled(false);
+
+        LlmConfigService.ImageRuntime runtime = service(profileService(carrier, null), cfg).imageRuntime(1L);
+
+        assertThat(runtime.available())
+                .as("全局停用时，即便档案声明了图片模型也不得放行生图")
+                .isFalse();
+    }
+
+    /**
+     * 档案存在、且可用，但图片模型名只有空白 → 仍回落全局（`blankToNull` 那道防线）。
+     *
+     * <p>真实链路上 {@code imageCarrier} 已滤掉这种档案，本用例把它强行喂进第二道防线，
+     * 钉住「空白不等于声明」——否则一个空格就会让请求体带上 `"model": " "`。
+     */
+    @Test
+    void blankImageModelNameOnTheCarrierFallsBackToTheGlobalTrio() {
+        LlmProfile carrier = profile(1L, "空档", "   ", "https://profile.example.com");
+
+        LlmConfigService.ImageRuntime runtime =
+                service(forcedCarrier(carrier), globalConfig()).imageRuntime(1L);
+
+        assertThat(runtime.modelName()).isEqualTo(GLOBAL_MODEL);
+        assertThat(runtime.baseUrl()).isEqualTo("https://global.example.com");
+    }
+
     /** 档案路径下不需要 llm_config 的图片模型：档案声明了就不该读全局图片模型。 */
     @Test
     void profilePathDoesNotLeakTheGlobalModel() {
@@ -131,15 +171,44 @@ class LlmConfigServiceImageRuntimeTest {
         LlmConfigService.ImageRuntime runtime =
                 service(profileService(carrier, null), globalConfig()).imageRuntime(1L);
 
-        assertThat(runtime.modelName()).isNotEqualTo(GLOBAL_MODEL);
+        assertThat(runtime.modelName())
+                .as("必须正好是档案声明的那一个，既不是全局模型也不能是空值")
+                .isEqualTo("profile-image-model");
+        assertThat(runtime.baseUrl()).isEqualTo("https://profile.example.com");
     }
 
     // ---------- 构造 ----------
 
+    /**
+     * 与真实 {@code LlmProfileService.imageCarrier} 同判据的替身：只有「已启用 + 有 key +
+     * 图片模型非空白」的档案才算承载者，否则返回 null。
+     *
+     * <p>替身必须复刻这条判据，否则 {@code imageCarrier} 那一跳被架空，
+     * 「档案不可用 → 回落全局」的用例会退化成与「没绑定档案」同一条路径。
+     */
     private static LlmProfileService profileService(LlmProfile carrier, LlmProfile unused) {
+        LlmProfileService service = stub(carrier);
+        when(service.imageCarrier(any())).thenAnswer(invocation -> {
+            LlmProfile candidate = invocation.getArgument(0);
+            if (candidate == null || !Boolean.TRUE.equals(candidate.getEnabled())) return null;
+            if (candidate.getApiKeyEncrypted() == null || candidate.getApiKeyEncrypted().isBlank()) return null;
+            String imageModel = candidate.getImageModelName();
+            if (imageModel == null || imageModel.isBlank()) return null;
+            return candidate;
+        });
+        return service;
+    }
+
+    /** 强行让 {@code imageCarrier} 返回该档案，用于打第二道防线（真实链路上它已被滤掉）。 */
+    private static LlmProfileService forcedCarrier(LlmProfile carrier) {
+        LlmProfileService service = stub(carrier);
+        when(service.imageCarrier(any())).thenReturn(carrier);
+        return service;
+    }
+
+    private static LlmProfileService stub(LlmProfile carrier) {
         LlmProfileService service = mock(LlmProfileService.class);
         when(service.findById(any())).thenReturn(carrier);
-        when(service.imageCarrier(any())).thenReturn(carrier);
         when(service.runtime(any())).thenAnswer(invocation -> {
             LlmProfile p = invocation.getArgument(0);
             if (p == null) return null;

@@ -285,7 +285,7 @@
   没找到 → 回落 llm_config 的图片三件套（= 改造前的唯一来源，存量行为逐字不变）
 ```
 
-**三条设计约束**：
+**四条设计约束**（原标题写「三条」，实际四条，2026-09-16 校正）：
 
 1. **只加模型名，不加配套的 baseUrl/apiKey**：图片三件套里只有模型名是「换个模型」这一诉求的载体；端点和密钥沿用全局（同一网关、同一个 key），多带两列只会扩大迁移面。
 2. **可空是硬要求**：存量档案补列后全是 NULL，而 NULL 正是「本档案不指定」的表达。列若变成 NOT NULL、或字段写成基本类型，存量库补列/读取会直接失败。由 `LlmProfileImageModelColumnPersistenceTests` 打真库钉住。
@@ -293,6 +293,14 @@
 4. **`image_model_name` 字段名跨两张表共用**（`LlmConfig` / `LlmProfile`）：两处**都不得**加 `@TableField(length=...)`，否则 smart-mybatis 的字段名级列声明缓存会任选一份、并对真实列发 `MODIFY COLUMN`。由 `EntityColumnDeclarationConsistencyTest` 钉住。
 
 **透传路径**（装配点 → 工具 → 服务）：`AgentFactory.CODE_*` → `ArticleAiService.imageProfileId(code)` / `ScheduledAgentFactory.imageProfileId(definition)` → `ArticleMediaTools.create(..., imageProfileId)` → `GenerateImageTool`/`EditImageTool` → `ImageGenerationService.generate/edit(..., profileId)` → `LlmConfigService.imageRuntime(profileId)`。
+
+**全局门禁不可绕过**（2026-09-16 审查后补）：`imageRuntime` 先判 `runtime().enabled()` 再找承载档案。改造前 `RuntimeConfig.imageAvailable()` 读的就是这个 `enabled`（有默认档案时即该档案的可用性，设置页把 `llm_config` 写透到默认档案），档案路径若硬编码 `true`，一个「已在系统设置里停用」的部署仍会继续调付费生图接口 —— 而且不报错、只花钱。由 `carrierPathIsBlockedWhenTheGlobalLlmIsDisabled` 钉住（已做反例证明）。
+
+**要素跟随声明者**：端点与密钥跟着**声明图片模型的那个档案**走，不与全局三件套交叉拼接 —— 模型名属于某个供应商，塞进另一个供应商的端点和密钥必然失败。
+
+**界面必须与后端逐跳同口径**（2026-09-16 审查后补）：智能体卡片上的「配图模型」抄后端 `failoverChain` + `addIfUsable` 的完整判据（绑定 → 默认 → 兜底 → 其余已启用按 id 升序；每环要求 `enabled && hasApiKey`，按 id 去重）。少抄一跳或漏掉可用性过滤，界面就会报出一个后端根本不会用的模型名 —— 比不显示更糟，因为这张卡片存在的唯一目的就是如实告知。
+
+**可空字段的前端归范**（2026-09-16 审查后补）：`imageModelName` 在存量档案上就是 `null`，而 `Object.assign` 会把默认的 `''` **覆盖**成 `null`（null 会覆盖，不是被跳过）。表单打开与提交两处都要 `|| ''` 归范，否则 `.trim()` 抛 TypeError，表现为「编辑任何存量档案都存不进去」。
 
 ### 4.4 新表 `render_config`（排版渲染服务配置，2026-09-08 增补）
 

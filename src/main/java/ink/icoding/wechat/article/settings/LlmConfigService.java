@@ -118,16 +118,22 @@ public class LlmConfigService {
      * @param profileId 发起配图的智能体所绑定的档案，可为 null（未绑定/定义缺失）
      */
     public ImageRuntime imageRuntime(Long profileId) {
-        ink.icoding.wechat.article.agent.LlmProfile carrier =
-                llmProfileService.imageCarrier(llmProfileService.findById(profileId));
-        if (carrier != null) {
-            ink.icoding.wechat.article.agent.LlmProfileService.RuntimeProfile profile =
-                    llmProfileService.runtime(carrier);
-            if (profile != null && profile.available() && blankToNull(profile.imageModelName()) != null) {
-                return new ImageRuntime(true, profile.baseUrl(), profile.imageModelName(), profile.apiKey());
+        RuntimeConfig config = runtime();
+        // 全局门禁先行：改造前 imageAvailable() 要求 RuntimeConfig.enabled 为真，
+        // 而这个 enabled 在有默认档案时就是默认档案的可用性（见 record 注释）。
+        // 档案路径**不得绕过它**——否则「关掉 AI 服务」的部署仍会经档案继续调付费生图接口。
+        if (config.enabled()) {
+            ink.icoding.wechat.article.agent.LlmProfile carrier =
+                    llmProfileService.imageCarrier(llmProfileService.findById(profileId));
+            if (carrier != null) {
+                ink.icoding.wechat.article.agent.LlmProfileService.RuntimeProfile profile =
+                        llmProfileService.runtime(carrier);
+                String imageModel = profile == null ? null : blankToNull(profile.imageModelName());
+                if (profile != null && profile.available() && imageModel != null) {
+                    return new ImageRuntime(true, profile.baseUrl(), imageModel, profile.apiKey());
+                }
             }
         }
-        RuntimeConfig config = runtime();
         return new ImageRuntime(config.enabled(), config.imageBaseUrl(), config.imageModelName(),
                 config.imageApiKey());
     }
@@ -216,9 +222,16 @@ public class LlmConfigService {
      * 配图通道（见 {@link #imageRuntime(Long)}）：端点 + 图片模型名 + 密钥三件套，
      * 三者同源，调用方直接拿去拼 {@code /v1/images/generations}。
      *
-     * <p>{@code enabled} 是**全局开关**：改造前 {@code imageAvailable()} 要求
-     * {@code llm_config.enabled} 为真，这条门禁必须原样保留——关掉 LLM 的部署不该还能生图。
-     * 档案路径下它恒为 true（档案自身的 {@code enabled} 已在解析时校验过）。
+     * <p>{@code enabled} 保留的是改造前那道路径判断，但要说清它到底判的是什么：
+     * 旧 {@code RuntimeConfig.imageAvailable()} 读的 {@code enabled} 是
+     * {@code runtime()} 的产物，而 {@code runtime()} 在有默认档案时取的是**默认档案的
+     * {@code available()}**（{@code enabled && apiKey}），**不是** {@code llm_config.enabled}
+     * ——后者只在档案表为空（未迁移部署）那条回落路径上才直接生效。
+     * 所以门禁的真实语义是「得有一个可用档案」。
+     *
+     * <p>档案路径**也过这道门**（{@link #imageRuntime(Long)} 里先判 {@code config.enabled()}
+     * 再找承载档案）：载体档案自己可用，不等于整站允许生图——否则「关掉 AI 服务」的部署
+     * 仍会经档案继续调付费生图接口，而这条门禁偏偏是不报错的那种漏。
      */
     public record ImageRuntime(boolean enabled, String baseUrl, String modelName, String apiKey) {
         public boolean available() {

@@ -48,7 +48,7 @@ onMounted(()=>{load();loadRender()})
           <label class="full">API Key<input v-model="llm.apiKey" type="password" :placeholder="llm.hasApiKey?'已保存，留空表示不修改':'请输入 API Key'"><small>当前状态：{{llm.apiKeyMasked}}</small></label>
           <label>Temperature<input v-model.number="llm.temperature" type="number" min="0" max="2" step="0.1"><small>待 agent4j 支持后接线，当前仅保存不生效</small></label>
           <label>最大输出 Token<input v-model.number="llm.maxTokens" type="number" min="256" max="32768"><small>待 agent4j 支持后接线，当前仅保存不生效</small></label>
-          <label>图片模型<input v-model="llm.imageModelName" placeholder="gpt-image-1"><small>留空则禁用 AI 画图和图片编辑</small></label>
+          <label>图片模型<input v-model="llm.imageModelName" placeholder="gpt-image-1"><small>全局图片模型。留空表示这里不指定；若某个已启用模型档案声明了自己的图片模型，配图会优先用它</small></label>
           <label>图片服务 Base URL<input v-model="llm.imageBaseUrl" placeholder="留空则复用 LLM Base URL"></label>
           <label class="full">图片服务 API Key<input v-model="llm.imageApiKey" type="password" :placeholder="llm.hasImageApiKey?'已单独保存，留空表示不修改':'留空则复用 LLM API Key'"><small>当前状态：{{llm.imageApiKeyMasked}}</small></label>
           <label class="checkbox full"><input v-model="llm.enabled" type="checkbox">启用 AI 服务</label>

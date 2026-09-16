@@ -78,26 +78,46 @@ class ArticleMediaToolsImageProfileTests {
     }
 
     /**
-     * 只读检索工具**不受**配图档案影响：给 {@code create} 传了档案 id，也不该改变它们的构造。
+     * 只读检索工具**不受**配图档案影响：换一个档案 id（含「不带档案」）构造出的只读工具
+     * 必须逐位相同。
      *
      * <p>钉的是「新参数只作用于图片工具」这个边界——否则一次顺手重构就可能让检索工具
      * 也依赖上档案，把「配图模型」变成整条链路的隐式耦合。
+     *
+     * <p>断言方式是**两次构造逐一对比**，而不是「数出 7 个且包含某几个类名」：
+     * 后者对「只读工具是否受档案影响」没有区分力——它们的构造本来就不接收档案 id。
      */
     @Test
     void readOnlyToolsAreUnaffectedByTheProfileId() {
         ImageGenerationService imageService = mock(ImageGenerationService.class);
         ArticleMediaTools tools = tools(imageService);
 
-        List<ink.icoding.llm.core.tool.Tool> created = tools.create(7L, 99L,
+        List<ink.icoding.llm.core.tool.Tool> withProfile = tools.create(7L, 99L,
                 (toolName, paramJson, action) -> action.get(),
                 (toolName, paramJson, action) -> action.get(), 42L);
+        List<ink.icoding.llm.core.tool.Tool> withoutProfile = tools.create(7L, 99L,
+                (toolName, paramJson, action) -> action.get(),
+                (toolName, paramJson, action) -> action.get(), null);
 
-        assertThat(created).hasSize(7);
-        assertThat(created).extracting(t -> t.getClass().getSimpleName())
-                .contains("SearchWebTool", "BrowseWebpageTool", "SearchWebImagesTool", "ListAssetsTool");
-        // 只有两个图片工具携带了档案，且它们与不带档案时构造出的类型一致
-        assertThat(created).extracting(t -> t.getClass().getSimpleName())
-                .contains("GenerateImageTool", "EditImageTool", "ImportWebImageTool");
+        assertThat(withProfile).hasSize(7);
+        assertThat(withoutProfile).hasSize(7);
+        assertThat(classNames(withProfile)).hasSize(7);
+        // 只读的那几个（不含 Generate/Edit）必须两次一致
+        assertThat(readOnlyNames(withProfile))
+                .as("带档案与不带档案，只读工具必须逐位相同")
+                .isEqualTo(readOnlyNames(withoutProfile));
+        assertThat(readOnlyNames(withProfile)).hasSize(5);
+    }
+
+    private static List<String> classNames(List<ink.icoding.llm.core.tool.Tool> tools) {
+        return tools.stream().map(tool -> tool.getClass().getSimpleName()).collect(java.util.stream.Collectors.toList());
+    }
+
+    /** 去掉两个图片工具后的类型名单——它们才是随着档案 id 变化的那一对。 */
+    private static List<String> readOnlyNames(List<ink.icoding.llm.core.tool.Tool> tools) {
+        return classNames(tools).stream()
+                .filter(name -> !name.equals("GenerateImageTool") && !name.equals("EditImageTool"))
+                .collect(java.util.stream.Collectors.toList());
     }
 
     /** 三参重载（存量调用点）仍可用，且等价于「不指定档案」。 */

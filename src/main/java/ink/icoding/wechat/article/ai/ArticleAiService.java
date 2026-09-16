@@ -572,7 +572,11 @@ public class ArticleAiService {
     }
 
     /**
-     * 智能体绑定的模型档案 id（供配图通道解析）：定义缺失/停用或读取失败时返回 null。
+     * 智能体绑定的模型档案 id（供配图通道解析）：定义缺失/**停用**或读取失败时返回 null。
+     *
+     * <p>停用必须也返回 null：停用某智能体后装配会走内置兜底定义，那时「这个智能体」已经
+     * 不在了，继续沿用它的档案只会让「停用」只生效一半。口径与
+     * {@code ScheduledAgentFactory.imageProfileId} 一致——两处同名同职责，改一处务必改另一处。
      *
      * <p>为什么容错成 null 而不是抛：配图档案只影响「用哪个图片模型」，缺了它还有全局图片设置
      * 兜底。为了一个可选的覆盖项把整次编辑/创作打断，代价远大于收益。
@@ -580,7 +584,8 @@ public class ArticleAiService {
     private Long imageProfileId(String code) {
         try {
             ink.icoding.wechat.article.agent.AgentDefinition definition = agentDefinitionMapper.findByCode(code);
-            return definition == null ? null : definition.getLlmProfileId();
+            if (definition == null || !Boolean.TRUE.equals(definition.getEnabled())) return null;
+            return definition.getLlmProfileId();
         } catch (Exception exception) {
             log.warn("读取智能体 {} 绑定的模型档案失败，配图回落全局图片设置", code, exception);
             return null;

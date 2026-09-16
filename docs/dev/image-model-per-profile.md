@@ -107,19 +107,23 @@ ScheduledAgentFactory.build/buildCandidates（含 DELEGATE 委托的配图师）
 - **模型档案页**：卡片多一行「图片模型」（未设置时显示「跟随全局图片设置」）；编辑表单多一个「图片模型名称」输入框，留空即不指定。legend 补一条说明。
 - **智能体卡片**：具备 MEDIA 工具组（能生图/修图）的智能体多一行「配图模型：X（来自档案 / 来自系统设置）」—— 直接回答「这个智能体配图到底用哪个模型」。
 - **停用/启用开关**：`toggleProfile` 提交的是整条 PUT，后端 `apply()` 会把缺省字段当「清空」，因此必须原样带上 `imageModelName`，否则一次点开关就会悄悄抹掉已配好的图片模型。
+- **null 归范（审查后补，见 §八）**：存量档案该列是 NULL，而 `Object.assign` 会把 `blankProfile()` 的 `''` **覆盖**成 `null`（null 会覆盖，不是被跳过），于是 `profileForm.imageModelName.trim()` 抛 TypeError，表现为「编辑任何存量档案都存不进去」。`openProfile` 与 `profilePayload` 两处都做 `|| ''` 归范。
+- **前端档案链与后端逐跳同口径（审查后补，见 §八）**：卡片上的「配图模型」抄的是后端 `failoverChain` + `addIfUsable` 的完整判据（绑定 → 默认 → 兜底 → 其余已启用按 id 升序；每环要求 `enabled && hasApiKey`，按 id 去重）。少抄一跳或漏掉可用性过滤，界面就会报出一个后端根本不会用的模型名 —— 比不显示更糟，因为这张卡片存在的唯一目的就是如实告知。
 
 ## 四、测试与闸门
 
 | 用例 | 覆盖点 |
 | --- | --- |
 | `LlmProfileServiceTest`（+7 例，共 13） | 档案链顺序/去重/跳过不可用者；`imageCarrier` 绑定优先、沿链下落、全链无人声明返回 null、空白不算声明、停用档案声明的图片模型失效 |
-| `LlmConfigServiceImageRuntimeTest`（新增 7 例） | 档案优先且端点/密钥同源；未声明/未绑定/档案不可用三种情况回落全局；全局未配或 `enabled=false` 时不可用；档案路径不泄露全局模型 |
-| `ArticleMediaToolsImageProfileTests`（新增 5 例） | 生图/修图两条传参路径都真的把档案 id 交给图片服务；null 保持 null；只读工具不受影响；存量三参重载仍等价 |
-| `LlmProfileImageModelColumnPersistenceTests`（新增 4 例，打真库） | 列存在且可空、与 `LLM_CONFIG.IMAGE_MODEL_NAME` 类型同向；NULL 往返；整行更新不丢图片模型 |
+| `LlmConfigServiceImageRuntimeTest`（新增 7 例 + 审查后 2 例，共 9） | 档案优先且端点/密钥同源；未声明（载体在但没声明）/未绑定/档案不可用三种情况回落全局；全局未配或 `enabled=false` 时不可用；**档案路径也要过全局门禁**；空白模型名不算声明；档案路径不泄露全局模型 |
+| `ArticleMediaToolsImageProfileTests`（新增 5 例） | 生图/修图两条传参路径都真的把档案 id 交给图片服务；null 保持 null；只读工具在「带档案」与「不带档案」两次构造下逐位相同；存量三参重载仍等价 |
+| `LlmProfileImageModelColumnPersistenceTests`（新增 4 例，打真库） | 列存在且可空、与 `LLM_CONFIG.IMAGE_MODEL_NAME` 类型同向；NULL 往返；整行更新不丢图片模型；不干扰默认/兜底查找 |
 | `AgentJsonContractTest`（+1 例） | `imageModelName` 的序列化契约（含 null 必须在场） |
 | `EntityColumnDeclarationConsistencyTest`（既有） | 跨两张表的同名字段声明一致 |
 
-**闸门**：`.mvn/mvn-local.sh -o test` 全绿（基线 401 → 见 `target/gate-image-model.log`）；前端 `npm run check:imports` 通过 + `vite build` 成功。
+**闸门**：`.mvn/mvn-local.sh -o test` 全绿（基线 401 → 424 → 审查修复后见 `target/gate-image-model-final.log`）；前端 `npm run check:imports` 通过 + `vite build` 成功。
+
+> **两处 mock/替身的注意点（审查后补）**：`LlmConfigServiceImageRuntimeTest` 的替身必须复刻 `imageCarrier` 的真实判据（enabled + 有 key + 模型名非空白），否则那一跳被架空，「档案不可用 → 回落全局」的用例会退化成与「没绑定档案」同一条路径；需要打「载体被强行喂入」的第二道防线时用 `forcedCarrier`。
 
 ## 五、验收证据
 
@@ -161,3 +165,32 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/j
 - `docs/dev/skills-agent-plan.md` §4.3 / §4.3.1 —— 档案表结构与本节决策
 - `docs/dev/scheduled-task-reliability-round.md` —— 档案故障切换链的来源
 - `docs/dev/known-issues-handoff.md` —— 未实现清单（I8 编辑器链路无硬超时等）
+
+## 八、审查轮与修复（2026-09-16，commit `9ee6bc0` 之后）
+
+首次提交后按「重大功能强制审查」跑了一轮只读 reviewer。**结论：pass-with-issues**；接线（§3.3）与密钥处理两维干净，`imageRuntime` 的端点/密钥同源、`ImageRuntime.available()` 的空值检查均无问题。以下 findings 逐条**先验真再修**，假阳性明确驳回。
+
+### 8.1 已验真并修复
+
+| # | 严重度 | 问题 | 验真方式 | 修复 |
+| --- | --- | --- | --- | --- |
+| 1 | **CRITICAL** | 编辑**任何存量档案**都存不进去 | `node -e` 复现：`Object.assign` 会把 `''` 覆盖成 `null` → `.trim()` 抛 TypeError。**这是本次引入的回归**（改动前 `profilePayload()` 没有这个字段）。我原先的实机验收走的是 raw `curl`，恰好绕过了这条 UI 路径 | `openProfile` 与 `profilePayload` 两处 `|| ''` 归范 |
+| 2 | **MAJOR** | 档案路径硬编码 `enabled=true`，绕过全局「启用 AI 服务」开关 | 对比 `HEAD~1` 的 `imageAvailable()`：它读 `RuntimeConfig.enabled`，而该值在有默认档案时来自**默认档案的可用性**（设置页把 `llm_config` 写透到默认档案）。故档案路径确实能在一个「已停用」的部署上继续调付费生图接口 | `imageRuntime` 先判 `config.enabled()` 再找承载档案 |
+| 3 | **MAJOR** | 前端配图模型解析只走两跳、且不筛可用性，会显示后端不会用的模型与错误来源 | 逐行比对 `failoverChain` + `addIfUsable` 与前端 `chain.push` | 前端改为逐跳同口径（绑定→默认→兜底→其余已启用按 id 升序；`enabled && hasApiKey`；按 id 去重） |
+| 4 | MINOR | `ArticleAiService.imageProfileId` 不看 `enabled`，与 `ScheduledAgentFactory` 同名助手规则相反，且与自己的 javadoc 不符 | 两处源码并排对照 | 统一为「定义缺失或停用 → null」 |
+| 5 | MINOR | 设置页「图片模型」留空文案「留空则禁用 AI 画图和图片编辑」已不成立 | 档案路径不读全局图片模型名 | 文案改为说明「档案声明了就用档案的」 |
+| 6 | MINOR | 三处测试断言过松：替身架空了 `imageCarrier` 那一跳、`isNotEqualTo` 弱断言、只读工具用例无区分力 | 读替身实现：`when(service.imageCarrier(any())).thenReturn(carrier)` 无条件返回 | 替身复刻真实判据；新增 `forcedCarrier`；弱断言改 `isEqualTo`；只读工具改为两次构造逐位对比 |
+| 7 | MINOR | 真库用例自造第二个 `is_default` 行并断言 `findDefault()` 等于它 —— `findDefault()` 是按 id 升序取首，断言取决于行序 | 读 `LlmProfileMapper.findDefault()` | 改为反向判断「本行不应被选中」，并直接断言 `findById` 往返 |
+| 8 | MINOR | carrier 路径的模型名取未 trim 的原值（判定用 `blankToNull`、传值用原串，自相不一致） | 读 `LlmConfigService:126-127` | 统一用 `blankToNull` 后的值 |
+
+**修复的确定性验证**：新增用例 `carrierPathIsBlockedWhenTheGlobalLlmIsDisabled` 做了**反例证明** —— 把全局门禁改回硬编码 `true` 后重跑，该用例失败（`Expecting value to be false but was true`），确认断言真的能抓到这条缺陷，而不是恒真。随后已还原文件并核对与原文件逐字节相同。
+
+### 8.2 驳回的 finding
+
+- **「`RuntimeConfig.enabled` 是字面上的 `llm_config.enabled`」**：reviewer 以此为前提推导「fallback 路径措辞不成立」。**前半成立、结论驳回**：`runtime()` 在有默认档案时取的是默认档案的 `available()`，不是 `llm_config.enabled`。原 javadoc 的表述确实不准（已改正），但**行为本身没有变化** —— 修复 #2 的依据正是这条事实（旧的 `imageAvailable()` 门禁 = 「得有一个可用档案」），而不是「旧代码读的是 `llm_config.enabled`」。
+- **「`AgentJsonContractTest` 用进程内 `ObjectMapper`，未证明 HTTP 层也按 null 在场输出」**：属**有效的覆盖缺口**，但不是缺陷 —— 已由实机 `GET /api/llm-profiles` 实测确认（4 条档案的 `imageModelName` 字段在场且为 null，见 §5.2）。
+
+### 8.3 本轮之后仍存在的已知边界
+
+- **HTTP 层「null 在场」无自动化用例**（§8.2 第二条）：当前只有实机证据，未加集成测试。
+- **前端档案链逻辑无自动化用例**：`webui` 无测试框架，前端闸门只有 `check:imports` + `vite build`，因此 #3 的修复靠人工比对与构建产物核对（已确认 `|| ''` 与链逻辑都在产物里）。

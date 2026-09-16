@@ -104,15 +104,34 @@ class LlmProfileImageModelColumnPersistenceTests {
                 .as("整行更新不得丢掉图片模型").isEqualTo("glm-image-model");
     }
 
-    /** 图片模型列不参与「默认/兜底」的唯一性判断：随便几条档案都能带自己的图片模型。 */
+    /**
+     * 图片模型列不参与「默认/兜底」的唯一性判断：带图片模型的行既不会被当成默认档案，
+     * 也不会被当成兜底档案。
+     *
+     * <p>为什么不断言 {@code findDefault()} 等于本行：{@code findDefault()} 是
+     * 「按 id 升序取第一条 is_default」，而这条开发库与其它用例共享——库里一旦另有默认档案
+     * （种子档案正是如此），断言就取决于行序与执行顺序，而不是本用例喂进去的数据。
+     * 这里改成方向相反的判断：本行**不应**被这两个查找选中。
+     */
     @Test
     void imageModelNameDoesNotAffectDefaultAndFallbackLookups() {
         LlmProfile withImage = insert(TEST_PREFIX + "-with-image", "step-image-edit-2");
-        withImage.setIsDefault(true);
-        profileMapper.updateById(withImage);
 
-        assertThat(profileMapper.findDefault().getId()).isEqualTo(withImage.getId());
-        assertThat(profileMapper.findDefault().getImageModelName()).isEqualTo("step-image-edit-2");
+        LlmProfile defaulted = profileMapper.findDefault();
+        if (defaulted != null) {
+            assertThat(defaulted.getId())
+                    .as("带图片模型的行不该被当成默认档案")
+                    .isNotEqualTo(withImage.getId());
+        }
+        LlmProfile fallback = profileMapper.findFallback();
+        if (fallback != null) {
+            assertThat(fallback.getId())
+                    .as("带图片模型的行不该被当成兜底档案")
+                    .isNotEqualTo(withImage.getId());
+        }
+        assertThat(profileMapper.findById(withImage.getId()).getImageModelName())
+                .as("图片模型列只原样往返，不参与任何查找判据")
+                .isEqualTo("step-image-edit-2");
     }
 
     private List<String> columnType(String table, String column) {

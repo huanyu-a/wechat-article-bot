@@ -67,14 +67,19 @@ async function load(){
 
 function openProfile(profile){
   profileFormError.value=''
-  Object.assign(profileForm,blankProfile(),profile?{...profile,apiKey:'',clearApiKey:false}:{})
+  // imageModelName 显式归范成 ''：后端对存量档案返回 null，而 v-model 绑 null 的
+  // 输入框与随后的 .trim() 都不可靠（见 profilePayload 的注释）。
+  Object.assign(profileForm,blankProfile(),profile?{...profile,apiKey:'',clearApiKey:false,imageModelName:profile.imageModelName||''}:{})
   profileModal.open=true;profileModal.id=profile?profile.id:null;profileModal.hasApiKey=Boolean(profile?.hasApiKey);profileModal.apiKeyMasked=profile?.apiKeyMasked||'未配置'
 }
 function closeProfile(){profileModal.open=false;profileFormError.value=''}
 function profilePayload(){
   const temperature=profileForm.temperature===''||profileForm.temperature===null?null:Number(profileForm.temperature)
   const maxTokens=profileForm.maxTokens===''||profileForm.maxTokens===null?null:Number(profileForm.maxTokens)
-  return {name:profileForm.name.trim(),provider:profileForm.provider,baseUrl:profileForm.baseUrl.trim(),modelName:profileForm.modelName.trim(),imageModelName:profileForm.imageModelName.trim(),apiKey:profileForm.apiKey,clearApiKey:Boolean(profileForm.clearApiKey),enabled:profileForm.enabled,temperature,maxTokens}
+  // imageModelName 必须做 null 归范：存量档案该列就是 NULL，而 Object.assign 会把
+  // blankProfile() 的 '' 覆盖成 null（null 是会覆盖的，不是被跳过的），
+  // 直接 .trim() 会抛 TypeError —— 表现为「编辑任何存量档案都存不进去」。
+  return {name:profileForm.name.trim(),provider:profileForm.provider,baseUrl:profileForm.baseUrl.trim(),modelName:profileForm.modelName.trim(),imageModelName:(profileForm.imageModelName||'').trim(),apiKey:profileForm.apiKey,clearApiKey:Boolean(profileForm.clearApiKey),enabled:profileForm.enabled,temperature,maxTokens}
 }
 async function saveProfile(){
   profileFormError.value=''

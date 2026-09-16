@@ -60,30 +60,40 @@ const profileNameOf = id => {
   return profilesUnavailable.value ? `指定档案 #${id}` : `档案 #${id}`
 }
 /**
- * 配图实际生效的图片模型：绑定档案（或默认档案）声明了 imageModelName 就用它，
- * 都没有声明则用全局设置里的图片模型。
+ * 与后端 LlmProfileService.failoverChain 同口径的候选链：
+ * 绑定档案 → 默认档案 → 兜底档案 → 其余已启用档案（按 id 升序），
+ * 每环都要「已启用 + 有 key」（后端 addIfUsable 的判据），按 id 去重。
  *
- * <p>与后端 LlmProfileService.imageCarrier 同口径（沿故障切换链找第一个声明了图片模型的档案），
- * 前端只近似「绑定档案 → 默认档案」两跳——档案可用性判断在服务端，前端不做重复判断。
- * 返回空串表示「哪儿都没配图片模型」，此时后端会在生图时抛出可读的业务异常。
+ * <p>为什么要逐跳照抄而不是取「绑定 + 默认」两跳：这张卡片存在的唯一目的就是
+ * 如实告诉用户「配图会用哪个模型」。少抄一跳（兜底/其余已启用）或漏掉可用性过滤，
+ * 都会让界面报出一个后端根本不会用的模型名——那比不显示更糟。
  */
-const imageModelOf = id => {
+const imageCarrier = id => {
+  const usable = profiles.value
+    .filter(p => p.enabled && p.hasApiKey)
+    .slice()
+    .sort((a, b) => Number(a.id) - Number(b.id))
   const chain = []
-  if (id) { const bound = profiles.value.find(p => String(p.id) === String(id)); if (bound) chain.push(bound) }
-  const def = profiles.value.find(p => p.isDefault)
-  if (def && !chain.includes(def)) chain.push(def)
-  const carrier = chain.find(p => (p.imageModelName || '').trim())
-  if (carrier) return carrier.imageModelName
-  return globalImageModel.value
+  const seen = new Set()
+  const push = profile => {
+    if (!profile || profile.id == null || seen.has(String(profile.id))) return
+    seen.add(String(profile.id))
+    chain.push(profile)
+  }
+  if (id) push(usable.find(p => String(p.id) === String(id)))
+  push(usable.find(p => p.isDefault))
+  push(usable.find(p => p.isFallback))
+  usable.forEach(push)
+  return chain.find(p => (p.imageModelName || '').trim())
 }
+/**
+ * 配图实际生效的图片模型：档案链上第一个声明了 imageModelName 的档案，都没有则用全局设置。
+ *
+ * <p>返回空串表示「哪儿都没配图片模型」，此时后端会在生图时抛出可读的业务异常。
+ */
+const imageModelOf = id => (imageCarrier(id) || {}).imageModelName || globalImageModel.value
 /** 图片模型来自档案（true）还是全局设置（false）——卡片上据此区分措辞。 */
-const imageModelFromProfile = id => {
-  const chain = []
-  if (id) { const bound = profiles.value.find(p => String(p.id) === String(id)); if (bound) chain.push(bound) }
-  const def = profiles.value.find(p => p.isDefault)
-  if (def && !chain.includes(def)) chain.push(def)
-  return chain.some(p => (p.imageModelName || '').trim())
-}
+const imageModelFromProfile = id => Boolean(imageCarrier(id))
 const toolKeysOf = agent => parseToolKeys(agent.toolKeys)
 /** 只有具备 MEDIA 工具组（能生图/修图）的智能体才值得提图片模型，否则是噪音。 */
 const usesImage = agent => toolKeysOf(agent).includes('MEDIA')
