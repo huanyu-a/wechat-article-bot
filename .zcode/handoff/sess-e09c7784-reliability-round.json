@@ -97,7 +97,7 @@
     "等一个自然日 09:00 定时触发，用 scheduled-task-failure-attribution.md §四 的「巡检 SQL」小节（编号 5)～8)）看成功率",
     "编辑器链路的模型切换已按方案默认包含，但未做实机验证（需一次真实编辑器交互）",
     "效率提升本轮没有兑现：原方案假设（换快模型→更快）已证伪，真正能省时间的方向是减少每轮上下文重发 + 用 deepseek-flash 跑工具密集阶段",
-    "git push 未执行：推送到 huanyu/main（public 仓库）需单独授权，推送前要扫密钥"
+    "已推送：10 个 commit 到 huanyu/main（91286a9..01fad49，fast-forward；推后 ls-remote 核对远端 SHA 与本地 HEAD 一致）。public 仓库推送前扫过密钥：模式扫描 0 命中，三个真实凭据（MYSQL/ADMIN/APP_SECRET_KEY）对全量 range diff 逐个 grep -F 比对均 0 次出现。"
   ],
   "read_files": [
     "src/main/java/ink/icoding/wechat/article/schedule/PipelineExecutor.java",
@@ -116,6 +116,7 @@
     "环境事故（非代码缺陷）：09-16 08:58 机器重启 → Docker Desktop 未起 → momo-mysql-dev 未跑 → 09:00 定时触发整轮未发生。恢复后日志打「Handling 4 trigger(s) that missed their scheduled fire-time.」但不补跑：只配了 misfireThreshold、走 SMART_POLICY（对 cron 等价 DO_NOTHING）。today 的 TASK_RUN 无 SCHEDULED 记录，属预期行为。",
     "排查教训：application.yaml 的 spring.datasource.url 默认值是 100.73.43.10（fallback），而 .env 实际指向 127.0.0.1:3306。曾按 yaml 默认值去 ping 100.73.43.10 并误判为「Tailscale 断了」，真因是本地 Docker 容器没起。查库地址一律以 .env 为准；判断「服务为什么不通」先看 tasklist 里有没有 java 进程。",
     "target/scratch/ 下的探针（ModelAvailabilityProbe/SseGapProbe/TtftProbe/RawSseProbe/ReasonGapProbe）均为临时只读工具，未纳入版本控制。",
-    "收尾补齐：方案 §九 的测试清单里唯一没落地的是「IS_FALLBACK 真库用例」。已补 4 例（列可空 tinyint / true-false-NULL 三态往返 / findFallback 不认 NULL 与 false / 种子只标一次且不覆盖用户）。NULL 那档有真实依据：开发库 dots3-note-prev 的 IS_FALLBACK 就是 NULL（补列时的存量行）。红→绿反证：断言改 tinyint|NO 后实测 expected NO but was YES 并 FAILURE。"
+    "收尾补齐：方案 §九 的测试清单里唯一没落地的是「IS_FALLBACK 真库用例」。已补 4 例（列可空 tinyint / true-false-NULL 三态往返 / findFallback 不认 NULL 与 false / 种子只标一次且不覆盖用户）。NULL 那档有真实依据：开发库 dots3-note-prev 的 IS_FALLBACK 就是 NULL（补列时的存量行）。红→绿反证：断言改 tinyint|NO 后实测 expected NO but was YES 并 FAILURE。",
+    "本会话的工作树已与 huanyu/main 完全同步（0/0）。后续若要继续，注意 plan 模式覆盖 plan 文件那个坑（见 plan-save-workflow 记忆），以及机器重启后要按 Docker Desktop→momo-mysql-dev→spring-boot:run 三级恢复。"
   ]
 }

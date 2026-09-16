@@ -362,8 +362,11 @@ Phase 6 的回归护栏 `EntityColumnDeclarationConsistencyTest` 已做**反证*
 7. **`onThink` 之外是否还有其他未接的通道**：本次只修了思维链这一条。`ResultHandler` 还有
    `onUsage` / `onContextCompression` 两个回调（这两个是「用量的汇总上报」，不是逐 token 增量，
    不适合当活动信号）。agent4j 后续若新增流式通道，同样要一并接上。
-8. **git push 未执行**：本轮只做本地 commit。推送到 `huanyu/main`（public 仓库）需单独授权，
-   且推送前要扫密钥。
+8. **git push 已执行**（2026-09-16，用户授权后）：10 个 commit 已推送到 `huanyu/main`
+   （`91286a9..01fad49`，fast-forward，推后 `git ls-remote` 核对远端 SHA 与本地 HEAD 一致）。
+   因为是 **public 仓库**，推送前做了密钥扫描：模式扫描 0 命中，并用 `.env` 里
+   `ENV.MYSQL_PASSWORD` / `ADMIN_PASSWORD` / `APP_SECRET_KEY` 三个真实值对全量 range diff
+   逐个做 `grep -F` 比对，均 **0 次出现**；同时确认没有日志/token/dump/`.env` 混进改动（57 个文件）。
 9. **`.zcode/handoff/latest.json` 未改动**：并行会话共用单文件，本轮只写旁路文件
    `.zcode/handoff/sess-e09c7784-reliability-round.json`。
 
