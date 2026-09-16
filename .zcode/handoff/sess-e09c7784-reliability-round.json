@@ -3,7 +3,7 @@
   "timestamp": "2026-09-16T02:25:00",
   "session": "sess_e09c7784-7835-4597-9cea-4fe764d76dff",
   "status": "completed",
-  "summary": "定时任务可靠性 + 效率 + 模型档案故障切换（一轮全做完）：Phase 0-6 代码侧 + 实机验收全部完成，已本地 commit 94d9a94 / 560a1d6 / 8dbd880。实机验收：①重启后新列/标准档案/7 个绑定/兜底标记/列宽未变均核对通过；②强制故障切换反例 run#122 通过（profilesUsed 两段 + switchedProfile=true + SUCCESS，验收后临时档案与绑定已清理）；③功能改善通过（run#125 COORDINATOR 无阶段中止且完整交付、run#126 SINGLE 895s 成功且零停滞事件）；④验收证据写入 docs/dev/scheduled-task-reliability-round.md。**效率提升不成立**——原方案的「换快模型就提速」假设已被实测证伪（glm-5.3-flash 在生成工具参数场景下并不比免费的 hy4-preview 快），且初版「COORDINATOR −15%」是拿最慢一次成功运行当基线的错误口径，已在 8dbd880 修正。验收过程发现并修掉 3 个缺陷（见 defects），其中最关键的是本轮自己引入的 onThink 误杀。闸门 .mvn/mvn-local.sh -o test → 397 例全绿（基线 329）。",
+  "summary": "定时任务可靠性 + 效率 + 模型档案故障切换（一轮全做完）：Phase 0-6 代码侧 + 实机验收全部完成，已本地 commit 94d9a94 / 560a1d6 / 8dbd880。实机验收：①重启后新列/标准档案/7 个绑定/兜底标记/列宽未变均核对通过；②强制故障切换反例 run#122 通过（profilesUsed 两段 + switchedProfile=true + SUCCESS，验收后临时档案与绑定已清理）；③功能改善通过（run#125 COORDINATOR 无阶段中止且完整交付、run#126 SINGLE 895s 成功且零停滞事件）；④验收证据写入 docs/dev/scheduled-task-reliability-round.md。**效率提升不成立**——原方案的「换快模型就提速」假设已被实测证伪（glm-5.3-flash 在生成工具参数场景下并不比免费的 hy4-preview 快），且初版「COORDINATOR −15%」是拿最慢一次成功运行当基线的错误口径，已在 8dbd880 修正。验收过程发现并修掉 3 个缺陷（见 defects），其中最关键的是本轮自己引入的 onThink 误杀。闸门 .mvn/mvn-local.sh -o test → 401 例全绿（基线 329）。收尾时补齐了方案 §九 唯一漏项——LLM_PROFILE.IS_FALLBACK 的真库用例（commit 见 artifacts），397→401。",
   "artifacts": [
     "docs/dev/scheduled-task-reliability-round.md",
     "docs/dev/model-availability-probe.md",
@@ -31,14 +31,15 @@
     "src/test/java/ink/icoding/wechat/article/agent/AgentSeederTest.java",
     "src/test/java/ink/icoding/wechat/article/schedule/TaskExecutionServiceCoverTest.java",
     "webui/src/views/TasksView.vue",
-    "webui/src/views/SettingsView.vue"
+    "webui/src/views/SettingsView.vue",
+    "src/test/java/ink/icoding/wechat/article/LlmProfileFallbackColumnPersistenceTests.java"
   ],
   "quality": {
     "checks": [
       {
         "name": "mvn -o test",
         "result": "pass",
-        "detail": "Tests run: 397, Failures: 0, Errors: 0（基线 329，+68）；清空 surefire-reports 后重跑复现同一数字"
+        "detail": "Tests run: 401, Failures: 0, Errors: 0（基线 329，+72）；397 那轮清空 surefire-reports 后重跑复现同一数字；收尾补 4 例 IS_FALLBACK 真库用例后为 401，并以「断言改成 tinyint|NO 即 FAILURE」做了红→绿反证"
       },
       {
         "name": "webui check:imports",
@@ -114,6 +115,7 @@
     "服务当前运行实例：PID 33672，2026-09-16 09:35:01 启动（03:17 闸门那轮结束后、08:58 机器重启导致服务与 Docker 一起停止；已按「Docker Desktop → momo-mysql-dev → spring-boot:run」三级恢复并复验全部验收项）。此前的 PID 2516（01:56:12 启动）已随重启消失。",
     "环境事故（非代码缺陷）：09-16 08:58 机器重启 → Docker Desktop 未起 → momo-mysql-dev 未跑 → 09:00 定时触发整轮未发生。恢复后日志打「Handling 4 trigger(s) that missed their scheduled fire-time.」但不补跑：只配了 misfireThreshold、走 SMART_POLICY（对 cron 等价 DO_NOTHING）。today 的 TASK_RUN 无 SCHEDULED 记录，属预期行为。",
     "排查教训：application.yaml 的 spring.datasource.url 默认值是 100.73.43.10（fallback），而 .env 实际指向 127.0.0.1:3306。曾按 yaml 默认值去 ping 100.73.43.10 并误判为「Tailscale 断了」，真因是本地 Docker 容器没起。查库地址一律以 .env 为准；判断「服务为什么不通」先看 tasklist 里有没有 java 进程。",
-    "target/scratch/ 下的探针（ModelAvailabilityProbe/SseGapProbe/TtftProbe/RawSseProbe/ReasonGapProbe）均为临时只读工具，未纳入版本控制。"
+    "target/scratch/ 下的探针（ModelAvailabilityProbe/SseGapProbe/TtftProbe/RawSseProbe/ReasonGapProbe）均为临时只读工具，未纳入版本控制。",
+    "收尾补齐：方案 §九 的测试清单里唯一没落地的是「IS_FALLBACK 真库用例」。已补 4 例（列可空 tinyint / true-false-NULL 三态往返 / findFallback 不认 NULL 与 false / 种子只标一次且不覆盖用户）。NULL 那档有真实依据：开发库 dots3-note-prev 的 IS_FALLBACK 就是 NULL（补列时的存量行）。红→绿反证：断言改 tinyint|NO 后实测 expected NO but was YES 并 FAILURE。"
   ]
 }

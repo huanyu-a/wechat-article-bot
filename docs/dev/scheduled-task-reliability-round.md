@@ -2,7 +2,8 @@
 
 方案：`.zcode/plans/plan-sess_e09c7784-7835-4597-9cea-4fe764d76dff.md`（六个 Phase 全部落地）
 验收日期：2026-09-16
-闸门：`.mvn/mvn-local.sh -o test` → **Tests run: 397, Failures: 0, Errors: 0**（基线 329，本轮 +68）
+闸门：`.mvn/mvn-local.sh -o test` → **Tests run: 401, Failures: 0, Errors: 0**（基线 329，本轮 +72）。
+<br>（收尾时补齐了方案 §九 漏掉的一项——`LLM_PROFILE.IS_FALLBACK` 的真库用例，见 §十一；397 → 401。）
 
 ---
 
@@ -319,7 +320,7 @@ StageTimeoutException: 智能体会话停滞（1 秒无任何事件）；卡点�
 |---|---|---|
 | 0 | 模型可用性探测与基线 | `docs/dev/model-availability-probe.md` |
 | 1 | 档案故障切换 | `LlmProfileService.failoverChain`、`AgentFactory/ScheduledAgentFactory.buildCandidates`、`AgentInvoker.runWithCandidates` |
-| 2 | 按智能体分配模型 + 兜底 | `LlmProfile.isFallback`、`LlmProfileSeeder`、`AgentSeeder`（仅当为空才写） |
+| 2 | 按智能体分配模型 + 兜底 | `LlmProfile.isFallback`、`LlmProfileSeeder`、`AgentSeeder`（仅当为空才写）· 真库用例见 §十一 |
 | 3 | 效率：无进展检测 / 简报截断 / 专用线程池 / 预算统一 / 提示只组装一次 | `StageTimeout`、`ArticleAiService`、`TaskExecutionService`、`ToolCallBudget` |
 | 4 | 工具治理：只读去重 / 循环检测 / 预算提示 / 协议补 JSON 示例 / 封面校验上提 | `ToolCallGovernor`、`AgentProtocols`、`TaskExecutionService` |
 | 5 | 可观测性：分阶段耗时+工具数+档案 / 失败分类消息 / 巡检 SQL / MODE 落库时机 | `TaskWorkspace`、`TaskExecutionService`、`TasksView.vue` |
@@ -396,3 +397,35 @@ Phase 6 的回归护栏 `EntityColumnDeclarationConsistencyTest` 已做**反证*
 `ToolArgStreamProbe` 的原始用途是排除「`save_article_draft` 的长参数被网关整段缓冲导致误杀」——
 实测**不是**：6000 字参数的下发窗口里最大间隔只有 **1059ms**（阈值 180s，余量 169 倍）。
 它的 v2 顺手证伪了方案的效率假设（§4.1），属于计划外的收获。
+
+---
+
+## 十一、收尾补齐：`IS_FALLBACK` 的真库用例（方案 §九 的漏项）
+
+对照方案 §九 的测试清单逐项核实时，发现只有一项**没有落地**：
+
+> **打真库用例**（仿 `ArticleLongContentPersistenceTests`）：`IS_FALLBACK` 列由迁移幂等补上。
+
+已补上 `src/test/java/ink/icoding/wechat/article/LlmProfileFallbackColumnPersistenceTests.java`（4 例）：
+
+| 用例 | 钉住什么 |
+|---|---|
+| `fallbackColumnIsMaterializedAsNullableTinyint` | 列真实存在，且是**可空** `tinyint` |
+| `fallbackFlagRoundTripsThroughMapperIncludingNull` | true / false / **NULL** 三态原样往返 |
+| `findFallbackIgnoresNullAndFalseRows` | 故障切换链第三段取数正确，NULL/false 行不干扰 |
+| `seederMarksDefaultAsFallbackOnlyOnceAndNeverOverridesTheUser` | 种子「唯一一处替用户做决定」且不覆盖用户选择 |
+
+**为什么 NULL 那一档值得单列**：开发库里**真实存在** `IS_FALLBACK = NULL` 的存量行
+（smart-mybatis 补列时老行只能是 NULL，实测 `dots3-note-prev` 即如此）。若有人把类字段改成
+基本类型、或给列加 NOT NULL，`findFallback()` 的行为与存量库的补列都会崩——而那种故障
+只出现在真实列上，mock 用例永远绿。这正是 §六 那组「实体声明与真实列必须同向」结论的延续。
+
+**反例验证（红→绿）**：把断言里的 `tinyint|YES` 改成 `tinyint|NO` 后单跑该用例，
+实测 `expected: "tinyint|NO" but was: "tinyint|YES"` 并 FAILURE——证明它读的是真实列值，
+不是一条恒真的空断言。还原后逐字节一致。
+
+**该用例的验证边界（写清楚免得被高估）**：测试库的表结构由 smart-mybatis 按实体注解**新建**，
+所以它证明的是「新建出来的列可用」，**证明不了存量库的 ALTER 路径**——本列没有显式迁移 runner，
+补列完全由 smart-mybatis 完成，那一步的证据是 2026-09-16 的实机查库（新列已存在、兜底档案恰好 1 条）。
+
+**闸门**：397 → **401 例全绿**，`find src -newermt` 确认闸门后源码未再变动。
