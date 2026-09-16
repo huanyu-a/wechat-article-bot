@@ -25,7 +25,7 @@ const PROVIDERS = [
   { value: 'ANTHROPIC', label: 'Anthropic Messages' },
 ]
 const providerLabel = value => (PROVIDERS.find(p => p.value === value) || {}).label || value
-function blankProfile(){return {name:'',provider:'OPENAI_COMPATIBLE',baseUrl:'https://api.openai.com',modelName:'gpt-4.1-mini',apiKey:'',clearApiKey:false,enabled:true,temperature:0.7,maxTokens:4096}}
+function blankProfile(){return {name:'',provider:'OPENAI_COMPATIBLE',baseUrl:'https://api.openai.com',modelName:'gpt-4.1-mini',imageModelName:'',apiKey:'',clearApiKey:false,enabled:true,temperature:0.7,maxTokens:4096}}
 
 /** 每个档案被多少个智能体指定为专属档案（用于回答「删掉它会影响谁」）。 */
 const bindingCounts = computed(() => {
@@ -74,7 +74,7 @@ function closeProfile(){profileModal.open=false;profileFormError.value=''}
 function profilePayload(){
   const temperature=profileForm.temperature===''||profileForm.temperature===null?null:Number(profileForm.temperature)
   const maxTokens=profileForm.maxTokens===''||profileForm.maxTokens===null?null:Number(profileForm.maxTokens)
-  return {name:profileForm.name.trim(),provider:profileForm.provider,baseUrl:profileForm.baseUrl.trim(),modelName:profileForm.modelName.trim(),apiKey:profileForm.apiKey,clearApiKey:Boolean(profileForm.clearApiKey),enabled:profileForm.enabled,temperature,maxTokens}
+  return {name:profileForm.name.trim(),provider:profileForm.provider,baseUrl:profileForm.baseUrl.trim(),modelName:profileForm.modelName.trim(),imageModelName:profileForm.imageModelName.trim(),apiKey:profileForm.apiKey,clearApiKey:Boolean(profileForm.clearApiKey),enabled:profileForm.enabled,temperature,maxTokens}
 }
 async function saveProfile(){
   profileFormError.value=''
@@ -103,10 +103,12 @@ async function setFallbackProfile(profile){
   error.value='';message.value=''
   try{await api(`/api/llm-profiles/${profile.id}/set-fallback`,{method:'POST'});message.value=`已将「${profile.name}」设为兜底档案`;await load()}catch(e){error.value=e.message}
 }
+// 停用/启用走的是整条 PUT（后端 apply 会把缺省字段当「清空」），因此必须原样带上 imageModelName，
+// 否则一次「点开关」就会把已配好的图片模型悄悄抹掉。
 async function toggleProfile(profile){
   error.value='';message.value=''
   try{
-    await api(`/api/llm-profiles/${profile.id}`,{method:'PUT',body:JSON.stringify({name:profile.name,provider:profile.provider,baseUrl:profile.baseUrl,modelName:profile.modelName,apiKey:'',clearApiKey:false,enabled:!profile.enabled,temperature:profile.temperature,maxTokens:profile.maxTokens})})
+    await api(`/api/llm-profiles/${profile.id}`,{method:'PUT',body:JSON.stringify({name:profile.name,provider:profile.provider,baseUrl:profile.baseUrl,modelName:profile.modelName,imageModelName:profile.imageModelName||'',apiKey:'',clearApiKey:false,enabled:!profile.enabled,temperature:profile.temperature,maxTokens:profile.maxTokens})})
     message.value=`档案「${profile.name}」已${profile.enabled?'停用':'启用'}`;await load()
   }catch(e){error.value=e.message}
 }
@@ -142,6 +144,7 @@ onBeforeUnmount(()=>document.removeEventListener('keydown',onKeydown))
       <Info :size="15"/>
       <span><strong>默认档案</strong>：未被单独指定档案的智能体都用它（全局唯一）。</span>
       <span><strong>兜底档案</strong>：绑定档案与默认档案都不可用时才启用，应选最稳、最便宜的通道（全局唯一）。</span>
+      <span><strong>图片模型</strong>：留空表示该档案只负责文本模型，配图沿用「系统设置」里的图片模型。</span>
     </div>
     <div class="skill-engine-alert">
       <ShieldCheck :size="15"/>模型档案仅管理员可管理；停用或删除处于故障切换链上的档案，会让整轮创作退回到更慢的通道。
@@ -169,6 +172,7 @@ onBeforeUnmount(()=>document.removeEventListener('keydown',onKeydown))
         <p class="profile-provider">{{ providerLabel(profile.provider) }}</p>
         <dl>
           <div><dt>模型</dt><dd>{{ profile.modelName }}</dd></div>
+          <div><dt>图片模型</dt><dd :title="profile.imageModelName || ''">{{ profile.imageModelName || '跟随全局图片设置' }}</dd></div>
           <div><dt>Base URL</dt><dd :title="profile.baseUrl">{{ profile.baseUrl }}</dd></div>
           <div><dt>API Key</dt><dd>{{ profile.apiKeyMasked }}</dd></div>
           <div><dt>温度 / 上限</dt><dd>{{ profile.temperature ?? '—' }} · {{ profile.maxTokens ?? '—' }}</dd></div>
@@ -197,6 +201,7 @@ onBeforeUnmount(()=>document.removeEventListener('keydown',onKeydown))
           <label>服务类型<select v-model="profileForm.provider"><option v-for="provider in PROVIDERS" :key="provider.value" :value="provider.value">{{ provider.label }}</option></select></label>
           <label class="full">Base URL<input v-model="profileForm.baseUrl" required placeholder="https://api.openai.com"><small>只填写服务根地址，不要包含 /v1、/responses、/chat/completions 或 /messages</small></label>
           <label class="full">模型名称<input v-model="profileForm.modelName" required placeholder="gpt-4.1-mini"></label>
+          <label class="full">图片模型名称<input v-model="profileForm.imageModelName" placeholder="留空则跟随全局图片设置"><small>配图师等生成图片的智能体使用。留空表示该档案不指定，图片仍走「系统设置」里的图片模型。</small></label>
           <label class="full">API Key<input v-model="profileForm.apiKey" type="password" autocomplete="new-password" :placeholder="profileModal.hasApiKey?'已保存，留空表示不修改':'请输入 API Key'"><small v-if="profileModal.hasApiKey">当前状态：{{ profileModal.apiKeyMasked }}；留空表示不修改。</small><small v-else>启用档案前必须配置 API Key，密钥使用系统密钥 AES-GCM 加密保存。</small></label>
           <label v-if="profileModal.hasApiKey" class="checkbox full danger"><input v-model="profileForm.clearApiKey" type="checkbox">删除已保存的 API Key</label>
           <label>Temperature<input v-model="profileForm.temperature" type="number" min="0" max="2" step="0.1"><small>待 agent4j 支持后接线，当前仅保存不生效</small></label>

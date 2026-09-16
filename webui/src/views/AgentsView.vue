@@ -11,6 +11,10 @@ import {
 const agents = ref([]), toolGroups = ref([]), profiles = ref([])
 const loading = ref(true), saving = ref(false), error = ref(''), formError = ref(''), notice = ref('')
 const profilesUnavailable = ref(false)
+// 全局图片模型（系统设置里的「图片模型」）：档案没声明图片模型时配图就实际用它。
+// 卡片上要显示的是「实际生效的那个模型」，因此必须拿到它——否则用户看到的仍是
+// 「档案名」而不是「配图用的模型名」，正是这次要修的那个误会。
+const globalImageModel = ref('')
 const filterStage = ref(''), filterEnabled = ref('')
 const showForm = ref(false)
 
@@ -55,7 +59,34 @@ const profileNameOf = id => {
   if (found) return found.name
   return profilesUnavailable.value ? `指定档案 #${id}` : `档案 #${id}`
 }
+/**
+ * 配图实际生效的图片模型：绑定档案（或默认档案）声明了 imageModelName 就用它，
+ * 都没有声明则用全局设置里的图片模型。
+ *
+ * <p>与后端 LlmProfileService.imageCarrier 同口径（沿故障切换链找第一个声明了图片模型的档案），
+ * 前端只近似「绑定档案 → 默认档案」两跳——档案可用性判断在服务端，前端不做重复判断。
+ * 返回空串表示「哪儿都没配图片模型」，此时后端会在生图时抛出可读的业务异常。
+ */
+const imageModelOf = id => {
+  const chain = []
+  if (id) { const bound = profiles.value.find(p => String(p.id) === String(id)); if (bound) chain.push(bound) }
+  const def = profiles.value.find(p => p.isDefault)
+  if (def && !chain.includes(def)) chain.push(def)
+  const carrier = chain.find(p => (p.imageModelName || '').trim())
+  if (carrier) return carrier.imageModelName
+  return globalImageModel.value
+}
+/** 图片模型来自档案（true）还是全局设置（false）——卡片上据此区分措辞。 */
+const imageModelFromProfile = id => {
+  const chain = []
+  if (id) { const bound = profiles.value.find(p => String(p.id) === String(id)); if (bound) chain.push(bound) }
+  const def = profiles.value.find(p => p.isDefault)
+  if (def && !chain.includes(def)) chain.push(def)
+  return chain.some(p => (p.imageModelName || '').trim())
+}
 const toolKeysOf = agent => parseToolKeys(agent.toolKeys)
+/** 只有具备 MEDIA 工具组（能生图/修图）的智能体才值得提图片模型，否则是噪音。 */
+const usesImage = agent => toolKeysOf(agent).includes('MEDIA')
 
 async function load() {
   loading.value = true
@@ -75,6 +106,13 @@ async function loadProfiles() {
     profiles.value = []
     profilesUnavailable.value = true
   }
+}
+/** 全局图片模型（系统设置）：同样仅 ADMIN 可读，取不到就不显示配图模型这一行。 */
+async function loadGlobalImageModel() {
+  try {
+    const config = await api('/api/settings/llm')
+    globalImageModel.value = (config?.imageModelName || '').trim()
+  } catch { globalImageModel.value = '' }
 }
 
 const filteredAgents = computed(() => agents.value.filter(agent =>
@@ -175,7 +213,7 @@ async function save() {
 function onKeydown(event) {
   if (event.key === 'Escape' && showForm.value) showForm.value = false
 }
-onMounted(() => { document.addEventListener('keydown', onKeydown); load(); loadProfiles() })
+onMounted(() => { document.addEventListener('keydown', onKeydown); load(); loadProfiles(); loadGlobalImageModel() })
 onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
 </script>
 
@@ -236,6 +274,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
             </div>
             <div v-else class="agent-tool-row"><span class="agent-tool-tag empty">未配置工具组</span></div>
             <div class="agent-meta-line"><BrainCircuit :size="13" />{{ profileNameOf(agent.llmProfileId) }}</div>
+            <div v-if="usesImage(agent) && imageModelOf(agent.llmProfileId)" class="agent-meta-line"><Image :size="13" />配图模型：{{ imageModelOf(agent.llmProfileId) }}<span class="agent-meta-hint">{{ imageModelFromProfile(agent.llmProfileId) ? '（来自档案）' : '（来自系统设置）' }}</span></div>
             <footer>
               <span class="skill-meta">{{ stageLabelOf(agent.stage) }}</span>
               <span class="row-actions">

@@ -79,7 +79,7 @@ public class ScheduledAgentFactory {
                              ToolMutationDeduplicator mediaMutations) {
         AgentDefinition definition = agentDefinitionMapper.findByCode(code);
         AgentFactory.ToolResolver resolver = groups -> resolveTools(groups, workspace, accountId, userId,
-                delegateTools, mediaMutations);
+                delegateTools, mediaMutations, null, imageProfileId(definition));
         if (definition != null && Boolean.TRUE.equals(definition.getEnabled())) {
             // 复用已读到的定义，避免 buildByCode 内部再查一次库
             SkillContext effective = skillContextFor(accountId, context.taskSkillIds(), definition);
@@ -116,7 +116,7 @@ public class ScheduledAgentFactory {
                                                        ToolCallGovernor governor) {
         AgentDefinition definition = agentDefinitionMapper.findByCode(code);
         AgentFactory.ToolResolver resolver = groups -> resolveTools(groups, workspace, accountId, userId,
-                delegateTools, mediaMutations, governor);
+                delegateTools, mediaMutations, governor, imageProfileId(definition));
         if (definition != null && Boolean.TRUE.equals(definition.getEnabled())) {
             SkillContext effective = skillContextFor(accountId, context.taskSkillIds(), definition);
             return agentFactory.buildLabeledCandidates(definition, effective, null, resolver).stream()
@@ -127,17 +127,44 @@ public class ScheduledAgentFactory {
                 agentFactory.buildByCode(code, fallbackStage, context, resolver), fallbackStage, governor));
     }
 
+    /**
+     * 配图用的模型档案 id：取该智能体绑定的档案；未绑定或定义不可用时返回 null（配图回落全局设置）。
+     *
+     * <p>为什么未绑定时不替它选默认档案：{@code imageCarrier} 会沿整条故障切换链找，
+     * 传 null 与传默认档案的结果在「默认档案没声明图片模型」时完全一致，
+     * 而传 null 少一次查库、也少一处「谁才是默认」的重复判断。
+     *
+     * <p>为什么定义停用时也返回 null：停用的智能体走的是内置兜底装配（工具组由 stage 决定），
+     * 那条路径上它已经不是「这个智能体」了，沿用它的绑定会让「停用」这个动作只生效一半。
+     */
+    private static Long imageProfileId(AgentDefinition definition) {
+        if (definition == null || !Boolean.TRUE.equals(definition.getEnabled())) return null;
+        return definition.getLlmProfileId();
+    }
+
     /** 工具组 → 工具实例。 */
     public List<Tool> resolveTools(List<String> groups, TaskWorkspace workspace, Long accountId, Long userId,
                                    Function<TaskWorkspace, List<Tool>> delegateTools,
                                    ToolMutationDeduplicator mediaMutations) {
-        return resolveTools(groups, workspace, accountId, userId, delegateTools, mediaMutations, null);
+        return resolveTools(groups, workspace, accountId, userId, delegateTools, mediaMutations, null, null);
     }
 
     /** 工具组 → 工具实例（可带只读检索治理器，见 {@link ToolCallGovernor}）。 */
     public List<Tool> resolveTools(List<String> groups, TaskWorkspace workspace, Long accountId, Long userId,
                                    Function<TaskWorkspace, List<Tool>> delegateTools,
                                    ToolMutationDeduplicator mediaMutations, ToolCallGovernor governor) {
+        return resolveTools(groups, workspace, accountId, userId, delegateTools, mediaMutations, governor, null);
+    }
+
+    /**
+     * 工具组 → 工具实例（可带只读检索治理器与配图档案，见 {@link ToolCallGovernor}）。
+     *
+     * @param imageProfileId 发起配图的智能体所绑定的模型档案，可为 null（回落全局图片设置）
+     */
+    public List<Tool> resolveTools(List<String> groups, TaskWorkspace workspace, Long accountId, Long userId,
+                                   Function<TaskWorkspace, List<Tool>> delegateTools,
+                                   ToolMutationDeduplicator mediaMutations, ToolCallGovernor governor,
+                                   Long imageProfileId) {
         List<Tool> tools = new ArrayList<>();
         if (groups == null) return tools;
         if (groups.contains(ToolRegistry.DRAFT_READ) && !groups.contains(ToolRegistry.DRAFT_WRITE)) {
@@ -156,7 +183,7 @@ public class ScheduledAgentFactory {
             // 与编辑器链路一致：同参数重复调用复用首次结果，避免重复生图/计费
             tools.addAll(mediaTools.create(accountId, userId,
                     (mediaMutations == null ? new ToolMutationDeduplicator() : mediaMutations)::execute,
-                    readExecutor(governor)));
+                    readExecutor(governor), imageProfileId));
         }
         if (groups.contains(ToolRegistry.DELEGATE) && delegateTools != null) {
             tools.addAll(delegateTools.apply(workspace));

@@ -42,11 +42,22 @@ public class ArticleMediaTools {
      */
     public List<Tool> create(Long accountId, Long userId, MutationExecutor mutationExecutor,
                              ReadExecutor readExecutor) {
+        return create(accountId, userId, mutationExecutor, readExecutor, null);
+    }
+
+    /**
+     * @param imageProfileId 发起配图的智能体所绑定的模型档案（可为 null）。生图 / 修图工具把它透传给
+     *                       {@link ImageGenerationService}——该档案声明了图片模型就用它，否则回落
+     *                       全局图片设置。为什么由工具携带而不是让图片服务自己查：图片服务不知道
+     *                       「这次配图是谁要的」，而装配点（AgentFactory / 各执行器）恰好知道。
+     */
+    public List<Tool> create(Long accountId, Long userId, MutationExecutor mutationExecutor,
+                             ReadExecutor readExecutor, Long imageProfileId) {
         return List.of(new SearchWebTool(readExecutor), new BrowseWebpageTool(readExecutor),
                 new SearchWebImagesTool(readExecutor), new ListAssetsTool(accountId, readExecutor),
                 new ImportWebImageTool(accountId, userId, mutationExecutor),
-                new GenerateImageTool(accountId, userId, mutationExecutor),
-                new EditImageTool(accountId, userId, mutationExecutor));
+                new GenerateImageTool(accountId, userId, mutationExecutor, imageProfileId),
+                new EditImageTool(accountId, userId, mutationExecutor, imageProfileId));
     }
 
     @FunctionalInterface
@@ -178,14 +189,21 @@ public class ArticleMediaTools {
         private final Long accountId;
         private final Long userId;
         private final MutationExecutor mutationExecutor;
+        private final Long imageProfileId;
         public GenerateImageTool(Long accountId, Long userId, MutationExecutor mutationExecutor) {
+            this(accountId, userId, mutationExecutor, null);
+        }
+        public GenerateImageTool(Long accountId, Long userId, MutationExecutor mutationExecutor,
+                                 Long imageProfileId) {
             this.accountId = accountId;
             this.userId = userId;
             this.mutationExecutor = mutationExecutor;
+            this.imageProfileId = imageProfileId;
         }
         @Override public String execute(GenerateImageParam param) {
             return mutationExecutor.execute("generate_image", json(param), () ->
-                    json(assetView(imageService.generate(accountId, param.getPrompt(), param.getFilename(), userId))));
+                    json(assetView(imageService.generate(accountId, param.getPrompt(), param.getFilename(),
+                            userId, imageProfileId))));
         }
     }
 
@@ -200,15 +218,21 @@ public class ArticleMediaTools {
         private final Long accountId;
         private final Long userId;
         private final MutationExecutor mutationExecutor;
+        private final Long imageProfileId;
         public EditImageTool(Long accountId, Long userId, MutationExecutor mutationExecutor) {
+            this(accountId, userId, mutationExecutor, null);
+        }
+        public EditImageTool(Long accountId, Long userId, MutationExecutor mutationExecutor,
+                             Long imageProfileId) {
             this.accountId = accountId;
             this.userId = userId;
             this.mutationExecutor = mutationExecutor;
+            this.imageProfileId = imageProfileId;
         }
         @Override public String execute(EditImageParam param) {
             return mutationExecutor.execute("edit_image", json(param), () ->
                     json(assetView(imageService.edit(accountId, param.getAssetId(), param.getPrompt(),
-                            param.getFilename(), userId))));
+                            param.getFilename(), userId, imageProfileId))));
         }
     }
 

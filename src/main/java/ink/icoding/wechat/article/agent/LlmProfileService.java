@@ -113,6 +113,26 @@ public class LlmProfileService {
         chain.add(profile);
     }
 
+    /**
+     * 图片模型来源档案：沿着**同一条故障切换链**找第一个声明了 {@code imageModelName} 的档案。
+     *
+     * <p>为什么复用失败切换链而不是只看绑定档案：配图模型与文本模型面对的是同一个现实——
+     * 某个档案被停用/删掉/没配 key 时它就不该再被使用。链上的每一环都已经过
+     * {@link #addIfUsable} 过滤，直接复用比另写一套「可用性」判断更不容易漂移。
+     *
+     * <p>顺序因此是：绑定档案 → 默认档案 → 兜底档案 → 其余已启用档案。绑定档案声明了图片模型时
+     * 它自然胜出；没声明就往下找，全链无人声明则返回 {@code null}，由调用方回落全局图片模型
+     * （{@code LLM_CONFIG.IMAGE_MODEL_NAME}，也就是改造前的唯一来源）。
+     *
+     * @param bound 智能体绑定的档案，可为 null（未绑定）
+     */
+    public LlmProfile imageCarrier(LlmProfile bound) {
+        for (LlmProfile profile : failoverChain(bound)) {
+            if (profile.getImageModelName() != null && !profile.getImageModelName().isBlank()) return profile;
+        }
+        return null;
+    }
+
     @Transactional
     public ProfileView create(ProfileRequest request, Long userId) {
         LlmProfile profile = new LlmProfile();
@@ -193,6 +213,8 @@ public class LlmProfileService {
         profile.setProvider(request.provider());
         profile.setBaseUrl(normalizeBaseUrl(request.baseUrl()));
         profile.setModelName(request.modelName().strip());
+        // 图片模型可空：空 = 该档案不指定（配图回落全局设置），因此不走 strip 之外的任何校验
+        profile.setImageModelName(blankToNull(request.imageModelName()));
         profile.setTemperature(request.temperature() == null ? new BigDecimal("0.70") : request.temperature());
         profile.setMaxTokens(request.maxTokens() == null ? 4096 : request.maxTokens());
         profile.setEnabled(request.enabled() == null || request.enabled());
@@ -210,6 +232,10 @@ public class LlmProfileService {
         if (existing != null && !existing.getId().equals(excludeId)) {
             throw new BusinessException("档案名称已存在：" + name);
         }
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     /** Base URL 归一化：去尾斜杠并剥离常见端点后缀（与 LlmConfigService 逻辑一致）。 */
@@ -242,12 +268,14 @@ public class LlmProfileService {
                 normalizeBaseUrl(profile.getBaseUrl()), profile.getModelName(),
                 profile.getApiKeyEncrypted() != null, masked, profile.getTemperature(), profile.getMaxTokens(),
                 profile.getEnabled(), Boolean.TRUE.equals(profile.getIsDefault()),
-                Boolean.TRUE.equals(profile.getIsFallback()), profile.getUpdatedAt());
+                Boolean.TRUE.equals(profile.getIsFallback()), profile.getImageModelName(),
+                profile.getUpdatedAt());
     }
 
     /** 供 LlmConfigService 与 AgentFactory 使用的运行时视图（含解密后的 apiKey）。 */
     public record RuntimeProfile(boolean enabled, String provider, String baseUrl, String modelName, String apiKey,
-                                 BigDecimal temperature, Integer maxTokens, boolean isDefault) {
+                                 BigDecimal temperature, Integer maxTokens, boolean isDefault,
+                                 String imageModelName) {
         public boolean available() {
             return enabled && apiKey != null && !apiKey.isBlank();
         }
@@ -292,17 +320,19 @@ public class LlmProfileService {
                 ? null : cryptoService.decrypt(profile.getApiKeyEncrypted());
         return new RuntimeProfile(Boolean.TRUE.equals(profile.getEnabled()), profile.getProvider(),
                 normalizeBaseUrl(profile.getBaseUrl()), profile.getModelName(), apiKey,
-                profile.getTemperature(), profile.getMaxTokens(), Boolean.TRUE.equals(profile.getIsDefault()));
+                profile.getTemperature(), profile.getMaxTokens(), Boolean.TRUE.equals(profile.getIsDefault()),
+                profile.getImageModelName());
     }
 
     public record ProfileRequest(@NotBlank String name, @NotBlank String provider, @NotBlank String baseUrl,
                                  @NotBlank String modelName, String apiKey, Boolean clearApiKey, Boolean enabled,
                                  @DecimalMin("0.0") @DecimalMax("2.0") BigDecimal temperature,
-                                 @Min(256) @Max(32768) Integer maxTokens) {
+                                 @Min(256) @Max(32768) Integer maxTokens, String imageModelName) {
     }
 
     public record ProfileView(Long id, String name, String provider, String baseUrl, String modelName,
                               boolean hasApiKey, String apiKeyMasked, BigDecimal temperature, Integer maxTokens,
-                              Boolean enabled, boolean isDefault, boolean isFallback, LocalDateTime updatedAt) {
+                              Boolean enabled, boolean isDefault, boolean isFallback, String imageModelName,
+                              LocalDateTime updatedAt) {
     }
 }

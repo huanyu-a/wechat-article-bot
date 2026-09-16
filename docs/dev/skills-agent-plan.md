@@ -258,10 +258,12 @@
 | provider                             | VARCHAR(50)  | `OPENAI_COMPATIBLE` / `OPENAI_RESPONSES` / `ANTHROPIC`（沿用现有白名单） |
 | base_url                             | VARCHAR(500) | 归一化逻辑复用`LlmConfigService`                                         |
 | model_name                           | VARCHAR(200) |                                                                          |
+| image_model_name                     | VARCHAR(255) | **可空**：该档案要用的图片模型。为空 = 本档案不指定，配图回落 `llm_config.IMAGE_MODEL_NAME`（2026-09-16 增补，见 4.3.1） |
 | api_key_encrypted                    | TEXT         | AES 加密入库，API 返回掩码                                               |
 | temperature / max_tokens             |              | 可空                                                                     |
 | enabled                              | BOOLEAN      |                                                                          |
 | is_default                           | BOOLEAN      | 全局唯一一条默认档案（应用层保证）                                       |
+| is_fallback                          | BOOLEAN      | 全局唯一一条兜底档案（应用层保证，2026-09-16 增补）                       |
 | created_by / created_at / updated_at |              | 惯例字段                                                                 |
 
 **与现有 `llm_config` 的关系（重要，兼容设计）：**
@@ -269,7 +271,28 @@
 - 启动 Seeder（`LlmProfileMigrationRunner`）检测：`llm_profile` 表为空且 `llm_config` 有数据 → 将该行迁移为「默认档案」（name="默认配置"，is_default=true）
 - `LlmConfigService.runtime()` **签名不变**，内部改读默认档案 → 现有调用点零改动
 - 存量 `GET/PUT /api/settings/llm` API 保留，读写映射到默认档案 → 前端现有设置页**不破坏**
-- 图片模型三件套（imageBaseUrl/imageModelName/imageApiKey）继续留在 `llm_config`（或随默认档案迁移，二选一，实施时以改动最小为准——**推荐继续留在 llm_config**，避免图片配置的迁移面）
+- 图片模型三件套（imageBaseUrl/imageModelName/imageApiKey）**继续留在 `llm_config`**（避免图片配置的迁移面）；档案侧只增一个**可空**的 `image_model_name` 作为覆盖项，见 4.3.1
+
+#### 4.3.1 图片模型：档案覆盖 + 全局兜底（2026-09-16 增补）
+
+**要解决的问题**：配图师（`builtin_illustrator`）卡片上显示的模型档案是「默认配置」，用户据此以为配图用的是 hy4-preview —— 而实际生成图片的模型是全局设置里的 `step-image-edit-2`。两者都没错，但界面上**没有任何地方**表达「这个智能体的配图模型是哪个」。本节把图片模型变成档案的一个可选项，让「按智能体配图片模型」成为可能。
+
+**解析顺序**（`LlmProfileService.imageCarrier` + `LlmConfigService.imageRuntime`）：
+
+```
+沿故障切换链找第一个声明了 image_model_name 的档案（绑定 → 默认 → 兜底 → 其余已启用）
+  找到 → 用它的 baseUrl + image_model_name + apiKey（三者同源，不跨供应商拼接）
+  没找到 → 回落 llm_config 的图片三件套（= 改造前的唯一来源，存量行为逐字不变）
+```
+
+**三条设计约束**：
+
+1. **只加模型名，不加配套的 baseUrl/apiKey**：图片三件套里只有模型名是「换个模型」这一诉求的载体；端点和密钥沿用全局（同一网关、同一个 key），多带两列只会扩大迁移面。
+2. **可空是硬要求**：存量档案补列后全是 NULL，而 NULL 正是「本档案不指定」的表达。列若变成 NOT NULL、或字段写成基本类型，存量库补列/读取会直接失败。由 `LlmProfileImageModelColumnPersistenceTests` 打真库钉住。
+3. **全局设置仍是兜底而不是被取代**：存量部署的图片模型只配在全局里，若档案一出现就无视全局，升级当天所有配图都会失败。
+4. **`image_model_name` 字段名跨两张表共用**（`LlmConfig` / `LlmProfile`）：两处**都不得**加 `@TableField(length=...)`，否则 smart-mybatis 的字段名级列声明缓存会任选一份、并对真实列发 `MODIFY COLUMN`。由 `EntityColumnDeclarationConsistencyTest` 钉住。
+
+**透传路径**（装配点 → 工具 → 服务）：`AgentFactory.CODE_*` → `ArticleAiService.imageProfileId(code)` / `ScheduledAgentFactory.imageProfileId(definition)` → `ArticleMediaTools.create(..., imageProfileId)` → `GenerateImageTool`/`EditImageTool` → `ImageGenerationService.generate/edit(..., profileId)` → `LlmConfigService.imageRuntime(profileId)`。
 
 ### 4.4 新表 `render_config`（排版渲染服务配置，2026-09-08 增补）
 

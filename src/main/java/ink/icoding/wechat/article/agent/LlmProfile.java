@@ -47,6 +47,22 @@ public class LlmProfile extends PO {
      */
     @TableField(length = 200)
     private String modelName;
+    /**
+     * 图片模型名（可空）：为空表示该档案不指定图片模型，配图回落全局设置
+     * （{@code LLM_CONFIG.IMAGE_MODEL_NAME}）。
+     *
+     * <p>为什么只加模型名、不加配套的 baseUrl / apiKey：图片三件套里**只有模型名**是
+     * 「换个模型」这一诉求的载体。端点与密钥沿用全局设置（同一网关、同一个 key），
+     * 多带两列只会扩大迁移面，换不来任何能力。
+     *
+     * <p>为什么**不加** {@code @TableField}：同名字段 {@code LlmConfig.imageModelName}
+     * 也不加注解，而 smart-mybatis 的列声明缓存按**字段名**单键共享——两处声明文本不一致时
+     * 结果取决于实体初始化顺序，且同步会发 {@code MODIFY COLUMN} 把真实列改向赢家。
+     * 实测 {@code LLM_CONFIG.IMAGE_MODEL_NAME} 与 smart-mybatis 默认值同为 {@code varchar(255)}，
+     * 故「不加注解」既与真实列宽同向、也与另一处声明逐字一致。
+     * （由 {@code EntityColumnDeclarationConsistencyTest} 钉住。）
+     */
+    private String imageModelName;
     @TableField(length = 65535)
     private String apiKeyEncrypted;
     private BigDecimal temperature;

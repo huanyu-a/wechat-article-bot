@@ -125,6 +125,92 @@ class LlmProfileServiceTest {
                 .containsExactly("默认档", "其他档");
     }
 
+    /**
+     * 图片模型来源：绑定档案声明了就它胜出，即便默认档案也声明了。
+     *
+     * <p>这是「配图模型可以按智能体分开配」的全部意义——配图师挂一个便宜快的图片模型，
+     * 编辑器挂一个质量高的，两者不该互相覆盖。
+     */
+    @Test
+    void imageCarrierPrefersTheBoundProfile() {
+        LlmProfile bound = profile(1L, "绑定档", true, false);
+        bound.setImageModelName("bound-image");
+        LlmProfile def = profile(2L, "默认档", true, false);
+        def.setImageModelName("default-image");
+        LlmProfileMapper mapper = mapper(List.of(bound, def), def, null);
+
+        assertThat(service(mapper).imageCarrier(bound).getImageModelName()).isEqualTo("bound-image");
+    }
+
+    /**
+     * 绑定档案没声明图片模型时，沿链往下找到声明了的那个。
+     *
+     * <p>这就是「只给一个档案配图片模型，其余智能体自动跟随」的用法：用户不必给每个档案
+     * 都填一遍图片模型。
+     */
+    @Test
+    void imageCarrierFallsThroughToTheChain() {
+        LlmProfile bound = profile(1L, "绑定档", true, false);
+        LlmProfile def = profile(2L, "默认档", true, false);
+        LlmProfile fallback = profile(3L, "兜底档", true, true);
+        fallback.setImageModelName("fallback-image");
+        LlmProfileMapper mapper = mapper(List.of(bound, def, fallback), def, fallback);
+
+        assertThat(service(mapper).imageCarrier(bound).getId()).isEqualTo(3L);
+    }
+
+    /**
+     * 全链没人声明图片模型时返回 null，由调用方回落全局图片设置。
+     *
+     * <p>这条路径就是**改造前的存量行为**：所有档案的 image_model_name 都是 NULL（补列时老行
+     * 只能是 NULL），配图必须继续走 {@code LLM_CONFIG.IMAGE_MODEL_NAME}。返回 null 而不是
+     * 随便挑一个档案，是「存量部署升级后配图行为不变」的唯一保证。
+     */
+    @Test
+    void imageCarrierIsNullWhenNobodyDeclaresOne() {
+        LlmProfile bound = profile(1L, "绑定档", true, false);
+        LlmProfile def = profile(2L, "默认档", true, false);
+        LlmProfileMapper mapper = mapper(List.of(bound, def), def, null);
+
+        assertThat(service(mapper).imageCarrier(bound)).isNull();
+    }
+
+    /**
+     * 未绑定时从默认档案开始找；绑定的档案已停用/无 Key 时它压根不在链上，
+     * 声明的图片模型也随之失效——可用性判断只有一处（{@link LlmProfileService#addIfUsable}）。
+     */
+    @Test
+    void imageCarrierSkipsUnusableProfilesEvenIfTheyDeclareOne() {
+        LlmProfile disabled = profile(1L, "已停用档", false, false);
+        disabled.setImageModelName("disabled-image");
+        LlmProfile def = profile(2L, "默认档", true, false);
+        def.setImageModelName("default-image");
+        LlmProfileMapper mapper = mapper(List.of(disabled, def), def, null);
+
+        assertThat(service(mapper).imageCarrier(disabled).getImageModelName()).isEqualTo("default-image");
+    }
+
+    /** 空白字符串不算「声明了图片模型」：只填了空格应等同于没填。 */
+    @Test
+    void blankImageModelNameCountsAsUndeclared() {
+        LlmProfile bound = profile(1L, "绑定档", true, false);
+        bound.setImageModelName("   ");
+        LlmProfile def = profile(2L, "默认档", true, false);
+        LlmProfileMapper mapper = mapper(List.of(bound, def), def, null);
+
+        assertThat(service(mapper).imageCarrier(bound)).isNull();
+    }
+
+    /** 档案被删（调用方传 null）：不中断，从默认档案继续找。 */
+    @Test
+    void imageCarrierWithNoBindingStartsFromTheDefault() {
+        LlmProfile def = profile(2L, "默认档", true, false);
+        def.setImageModelName("default-image");
+        LlmProfileMapper mapper = mapper(List.of(def), def, null);
+
+        assertThat(service(mapper).imageCarrier(null).getId()).isEqualTo(2L);
+    }
+
     private static LlmProfile profile(Long id, String name, boolean enabled, boolean fallback) {
         LlmProfile profile = new LlmProfile();
         profile.setId(id);

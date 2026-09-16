@@ -37,10 +37,18 @@ public class ImageGenerationService {
     }
 
     public Asset generate(Long accountId, String prompt, String filename, Long userId) {
-        LlmConfigService.RuntimeConfig config = requiredConfig();
+        return generate(accountId, prompt, filename, userId, null);
+    }
+
+    /**
+     * @param profileId 发起配图的智能体所绑定的模型档案（可为 null）：该档案声明了图片模型时
+     *                  以它为准，否则回落全局设置（{@code llm_config} 图片三件套）。
+     */
+    public Asset generate(Long accountId, String prompt, String filename, Long userId, Long profileId) {
+        LlmConfigService.ImageRuntime config = requiredConfig(profileId);
         try {
             byte[] body = MAPPER.writeValueAsBytes(Map.of(
-                    "model", config.imageModelName(), "prompt", prompt,
+                    "model", config.modelName(), "prompt", prompt,
                     "size", "1024x1024", "n", 1, "response_format", "b64_json"));
             HttpRequest request = request(config, "/v1/images/generations")
                     .header("Content-Type", "application/json")
@@ -56,12 +64,18 @@ public class ImageGenerationService {
     }
 
     public Asset edit(Long accountId, Long sourceAssetId, String prompt, String filename, Long userId) {
-        LlmConfigService.RuntimeConfig config = requiredConfig();
+        return edit(accountId, sourceAssetId, prompt, filename, userId, null);
+    }
+
+    /** @param profileId 同 {@link #generate(Long, String, String, Long, Long)}。 */
+    public Asset edit(Long accountId, Long sourceAssetId, String prompt, String filename, Long userId,
+                      Long profileId) {
+        LlmConfigService.ImageRuntime config = requiredConfig(profileId);
         Asset source = assetService.required(sourceAssetId);
         byte[] sourceBytes = assetService.readBytes(sourceAssetId);
         try {
             String boundary = "----WechatArticle" + UUID.randomUUID().toString().replace("-", "");
-            byte[] body = multipart(boundary, config.imageModelName(), prompt, source, sourceBytes);
+            byte[] body = multipart(boundary, config.modelName(), prompt, source, sourceBytes);
             HttpRequest request = request(config, "/v1/images/edits")
                     .header("Content-Type", "multipart/form-data; boundary=" + boundary)
                     .POST(HttpRequest.BodyPublishers.ofByteArray(body)).build();
@@ -75,16 +89,16 @@ public class ImageGenerationService {
         }
     }
 
-    private LlmConfigService.RuntimeConfig requiredConfig() {
-        LlmConfigService.RuntimeConfig config = configService.runtime();
-        if (!config.imageAvailable()) throw new BusinessException("尚未在系统设置中配置图片模型");
+    private LlmConfigService.ImageRuntime requiredConfig(Long profileId) {
+        LlmConfigService.ImageRuntime config = configService.imageRuntime(profileId);
+        if (!config.available()) throw new BusinessException("尚未在系统设置中配置图片模型");
         return config;
     }
 
-    private HttpRequest.Builder request(LlmConfigService.RuntimeConfig config, String path) {
-        return HttpRequest.newBuilder(URI.create(config.imageBaseUrl() + path))
+    private HttpRequest.Builder request(LlmConfigService.ImageRuntime config, String path) {
+        return HttpRequest.newBuilder(URI.create(config.baseUrl() + path))
                 .timeout(IMAGE_REQUEST_TIMEOUT)
-                .header("Authorization", "Bearer " + config.imageApiKey())
+                .header("Authorization", "Bearer " + config.apiKey())
                 .header("Accept", "application/json");
     }
 

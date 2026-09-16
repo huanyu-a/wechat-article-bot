@@ -461,7 +461,9 @@ public class ArticleAiService {
             }
             if (groups.contains(ink.icoding.wechat.article.agent.ToolRegistry.MEDIA)) {
                 tools.addAll(mediaTools.create(editorSession.article.getAccountId(), editorSession.user.id(),
-                        editorSession.mediaMutations::execute));
+                        editorSession.mediaMutations::execute,
+                        (toolName, paramJson, action) -> action.get(),
+                        imageProfileId(AgentFactory.CODE_EDITOR)));
             }
             if (groups.contains(ink.icoding.wechat.article.agent.ToolRegistry.RENDER)
                     && engine == LayoutEngine.MARKFLOW) {
@@ -569,6 +571,22 @@ public class ArticleAiService {
         return ink.icoding.wechat.article.account.WechatAccountService.parseSkillIds(skillIdsJson);
     }
 
+    /**
+     * 智能体绑定的模型档案 id（供配图通道解析）：定义缺失/停用或读取失败时返回 null。
+     *
+     * <p>为什么容错成 null 而不是抛：配图档案只影响「用哪个图片模型」，缺了它还有全局图片设置
+     * 兜底。为了一个可选的覆盖项把整次编辑/创作打断，代价远大于收益。
+     */
+    private Long imageProfileId(String code) {
+        try {
+            ink.icoding.wechat.article.agent.AgentDefinition definition = agentDefinitionMapper.findByCode(code);
+            return definition == null ? null : definition.getLlmProfileId();
+        } catch (Exception exception) {
+            log.warn("读取智能体 {} 绑定的模型档案失败，配图回落全局图片设置", code, exception);
+            return null;
+        }
+    }
+
     /** 解析本次任务的生效排版引擎（TaskExecutionService 构造工作区时需要，避免重复组装 prompt）。 */
     public ink.icoding.wechat.article.skill.LayoutEngine resolveLayoutEngine(ScheduledAgentRequest request) {
         WechatAccount account = request.accountId() == null
@@ -628,7 +646,8 @@ public class ArticleAiService {
         List<ink.icoding.llm.core.tool.Tool> draftTools = new ArrayList<>(ScheduledArticleTools.all(draftState));
         List<ink.icoding.llm.core.tool.Tool> mediaToolList = mediaTools.create(request.accountId(),
                 request.userId(), mediaMutations::execute,
-                ink.icoding.wechat.article.ai.ScheduledAgentFactory.readExecutor(governor));
+                ink.icoding.wechat.article.ai.ScheduledAgentFactory.readExecutor(governor),
+                imageProfileId(AgentFactory.CODE_SCHEDULED_CREATOR));
         AgentFactory.ToolResolver resolver = groups -> {
             List<ink.icoding.llm.core.tool.Tool> tools = new ArrayList<>();
             if (groups.contains(ink.icoding.wechat.article.agent.ToolRegistry.DRAFT_READ)

@@ -99,6 +99,39 @@ public class LlmConfigService {
                 blankToNull(config.getImageModelName()), imageApiKey);
     }
 
+    /**
+     * 配图通道解析：**指定档案**声明了图片模型就用它，否则回落全局设置（{@code llm_config} 图片三件套）。
+     *
+     * <p>为什么要单独一个入口而不是扩展 {@link #runtime()}：{@code runtime()} 回答的是
+     * 「文本模型用什么」，它只认默认档案——因为文本链路的调用点没有「智能体」这个上下文。
+     * 配图不同：它总是由某个具体智能体（配图师 / 编辑 / SINGLE 主智能体）发起，
+     * 因此有机会把**该智能体的档案**带进来。硬塞进 {@code runtime()} 只会让两者互相污染。
+     *
+     * <p>为什么图片通道是「档案优先、全局兜底」而不是「档案独占」：改造前图片模型只能配在
+     * 全局设置里，存量部署就是这么用的（{@code LLM_CONFIG.IMAGE_MODEL_NAME} 有值）。若档案
+     * 一出现就无视全局设置，那些部署的配图会突然不可用；而「只有档案显式声明了图片模型才用它」
+     * 让存量行为逐字不变——默认档案的 {@code image_model_name} 是空的，走的仍是全局那一条。
+     *
+     * <p>端点与密钥跟着**声明图片模型的那个档案**走，不与全局三件套交叉拼接：
+     * 图片模型名属于某个供应商，把它塞进另一个供应商的端点和密钥里只会得到一个必然失败的请求。
+     *
+     * @param profileId 发起配图的智能体所绑定的档案，可为 null（未绑定/定义缺失）
+     */
+    public ImageRuntime imageRuntime(Long profileId) {
+        ink.icoding.wechat.article.agent.LlmProfile carrier =
+                llmProfileService.imageCarrier(llmProfileService.findById(profileId));
+        if (carrier != null) {
+            ink.icoding.wechat.article.agent.LlmProfileService.RuntimeProfile profile =
+                    llmProfileService.runtime(carrier);
+            if (profile != null && profile.available() && blankToNull(profile.imageModelName()) != null) {
+                return new ImageRuntime(true, profile.baseUrl(), profile.imageModelName(), profile.apiKey());
+            }
+        }
+        RuntimeConfig config = runtime();
+        return new ImageRuntime(config.enabled(), config.imageBaseUrl(), config.imageModelName(),
+                config.imageApiKey());
+    }
+
     private synchronized LlmConfig required() {
         LlmConfig config = mapper.current();
         if (config == null) {
@@ -177,10 +210,19 @@ public class LlmConfigService {
         public boolean available() {
             return enabled && apiKey != null && !apiKey.isBlank();
         }
+    }
 
-        public boolean imageAvailable() {
-            return enabled && imageModelName != null && !imageModelName.isBlank()
-                    && imageApiKey != null && !imageApiKey.isBlank();
+    /**
+     * 配图通道（见 {@link #imageRuntime(Long)}）：端点 + 图片模型名 + 密钥三件套，
+     * 三者同源，调用方直接拿去拼 {@code /v1/images/generations}。
+     *
+     * <p>{@code enabled} 是**全局开关**：改造前 {@code imageAvailable()} 要求
+     * {@code llm_config.enabled} 为真，这条门禁必须原样保留——关掉 LLM 的部署不该还能生图。
+     * 档案路径下它恒为 true（档案自身的 {@code enabled} 已在解析时校验过）。
+     */
+    public record ImageRuntime(boolean enabled, String baseUrl, String modelName, String apiKey) {
+        public boolean available() {
+            return enabled && modelName != null && !modelName.isBlank() && apiKey != null && !apiKey.isBlank();
         }
     }
 }

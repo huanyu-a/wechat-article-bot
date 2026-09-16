@@ -40,7 +40,7 @@ class AgentFactoryTest {
 
     private static LlmProfileService.RuntimeProfile profile(String provider, String model) {
         return new LlmProfileService.RuntimeProfile(true, provider, "https://api.example.com", model,
-                "key-123", new BigDecimal("0.7"), 4096, true);
+                "key-123", new BigDecimal("0.7"), 4096, true, null);
     }
 
     private static AgentDefinition definition(String code, String stage, String persona, String toolKeys) {

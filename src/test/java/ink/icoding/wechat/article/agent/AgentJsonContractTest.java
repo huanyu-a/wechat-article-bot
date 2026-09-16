@@ -19,10 +19,32 @@ class AgentJsonContractTest {
     void profileViewSerializesIsDefault() throws Exception {
         LlmProfileService.ProfileView view = new LlmProfileService.ProfileView(
                 1L, "默认配置", "OPENAI_COMPATIBLE", "https://api.openai.com", "gpt-4.1-mini",
-                true, "••••••••abcd", new BigDecimal("0.7"), 4096, true, true, false, null);
+                true, "••••••••abcd", new BigDecimal("0.7"), 4096, true, true, false, null, null);
         String json = mapper.writeValueAsString(view);
         assertThat(json).contains("\"isDefault\":true").doesNotContain("\"default\":");
         assertThat(json).doesNotContain("apiKey\""); // 不得回传完整 key
+    }
+
+    /**
+     * 图片模型名同样要出现在档案响应里：模型档案页要用它回填编辑表单、并显示「跟随全局」还是具体模型。
+     *
+     * <p>它是**可空**的，因此额外钉住两件事：值为 null 时序列化成 {@code null}（而不是字段消失，
+     * 否则前端 {@code profile.imageModelName} 与「空字符串」两种语义会在回填时混淆），
+     * 且字段名就是 {@code imageModelName}（改名即破坏前后端契约）。
+     */
+    @Test
+    void profileViewSerializesImageModelName() throws Exception {
+        LlmProfileService.ProfileView withImage = new LlmProfileService.ProfileView(
+                4L, "配图档", "OPENAI_COMPATIBLE", "https://nexus.bx9y.com.cn", "deepseek-flash",
+                true, "••••••••abcd", null, null, true, false, false, "step-image-edit-2", null);
+        assertThat(mapper.writeValueAsString(withImage))
+                .contains("\"imageModelName\":\"step-image-edit-2\"");
+
+        LlmProfileService.ProfileView withoutImage = new LlmProfileService.ProfileView(
+                5L, "纯文本档", "OPENAI_COMPATIBLE", "https://nexus.bx9y.com.cn", "deepseek-flash",
+                true, "••••••••abcd", null, null, true, false, false, null, null);
+        // 字段必须在、值为 null：前端据「null/空串」判断是否显示「跟随全局图片设置」
+        assertThat(mapper.writeValueAsString(withoutImage)).contains("\"imageModelName\":null");
     }
 
     /**
@@ -36,7 +58,7 @@ class AgentJsonContractTest {
     void profileViewSerializesIsFallback() throws Exception {
         LlmProfileService.ProfileView view = new LlmProfileService.ProfileView(
                 3L, "兜底档案", "OPENAI_COMPATIBLE", "https://nexus.bx9y.com.cn", "hy4-preview",
-                true, "••••••••wxyz", null, null, true, false, true, null);
+                true, "••••••••wxyz", null, null, true, false, true, null, null);
         String json = mapper.writeValueAsString(view);
         assertThat(json).contains("\"isFallback\":true").doesNotContain("\"fallback\":");
     }
@@ -56,7 +78,7 @@ class AgentJsonContractTest {
     void profileViewWithoutApiKeyReportsMaskedState() throws Exception {
         LlmProfileService.ProfileView view = new LlmProfileService.ProfileView(
                 2L, "无 key 档案", "ANTHROPIC", "https://api.anthropic.com", "claude", false, "未配置",
-                null, null, false, false, false, null);
+                null, null, false, false, false, null, null);
         String json = mapper.writeValueAsString(view);
         assertThat(json).contains("\"hasApiKey\":false").contains("\"isDefault\":false");
     }

@@ -118,6 +118,7 @@
 .agent-tool-tag.browser{background:#e8eff8;color:#426b99}
 .agent-tool-tag.empty{background:#f4f7f4;color:#5f6b64;font-weight:600}
 .agent-meta-line{display:flex;align-items:center;gap:6px;font-size:11px;color:#526159;background:#f4f7f4;border-radius:8px;padding:8px 10px}
+.agent-meta-hint{color:#8a958e}
 .agent-form-modal{width:min(820px,100%)}
 .agent-persona-note{display:block;font-weight:400;font-size:11px;color:#1f7155;background:#e5f3ec;border-radius:7px;padding:7px 9px;line-height:1.5}
 .agent-section{border:1px solid #dce3de;border-radius:11px;background:#fbfcfa;padding:14px;display:grid;gap:10px}
