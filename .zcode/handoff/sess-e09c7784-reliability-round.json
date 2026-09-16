@@ -93,7 +93,7 @@
   ],
   "next": [
     "下一轮第一优先项（调参）：builtin_scheduled_creator 当前绑 glm-5.3-flash（能力优先）。task#4 全部 7 次成功运行均值 204s（区间 66~553s），run#126（895s）比均值慢 691s 且是 SINGLE 最慢的一次成功运行；改绑 deepseek-flash 提速——这是唯一被实测证明更快的档（273 字符/秒）",
-    "等一个自然日 09:00 定时触发，用 scheduled-task-failure-attribution.md 第五~八节巡检 SQL 看成功率",
+    "等一个自然日 09:00 定时触发，用 scheduled-task-failure-attribution.md §四 的「巡检 SQL」小节（编号 5)～8)）看成功率",
     "编辑器链路的模型切换已按方案默认包含，但未做实机验证（需一次真实编辑器交互）",
     "效率提升本轮没有兑现：原方案假设（换快模型→更快）已证伪，真正能省时间的方向是减少每轮上下文重发 + 用 deepseek-flash 跑工具密集阶段",
     "git push 未执行：推送到 huanyu/main（public 仓库）需单独授权，推送前要扫密钥"

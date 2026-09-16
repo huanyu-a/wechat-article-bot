@@ -32,7 +32,7 @@
 
 ## 二、实机① 重启后的落地状态
 
-重启后查库（只读 SQL，见 `docs/dev/scheduled-task-failure-attribution.md` §五）：
+重启后查库（只读 SQL 见 `docs/dev/scheduled-task-failure-attribution.md` **§四**——该文件里全部 SQL 代码块都在 §四的「第 ③ 批」与「巡检 SQL」两个子节下；§五 只有验收叙述，没有任何 SQL）：
 
 **新列**：`LLM_PROFILE.IS_FALLBACK` 已由 smart-mybatis 自动补上（`tinyint(1)`）。
 
@@ -362,7 +362,8 @@ Phase 6 的回归护栏 `EntityColumnDeclarationConsistencyTest` 已做**反证*
 
 ## 九、复现本文结论的只读 SQL
 
-见 `docs/dev/scheduled-task-failure-attribution.md` 第五～八节：按档案统计成功率与耗时、发生过切换的运行、`JSON_TABLE` 拆 `stages_summary` 看分阶段明细、失败类别分布。
+见 `docs/dev/scheduled-task-failure-attribution.md` **§四 的「巡检 SQL」小节（编号 5)～8)）**：按档案统计成功率与耗时、发生过切换的运行、`JSON_TABLE` 拆 `stages_summary` 看分阶段明细、失败类别分布。
+（该文件只有 §一~§五 五个大节，巡检 SQL 在 §四 的 `###` 子节里——不要按「第五～八节」去找。）
 
 ---
 
