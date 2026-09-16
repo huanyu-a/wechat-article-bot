@@ -1,0 +1,74 @@
+{
+  "agent": "main",
+  "task": "配图师的模型应为 LLM 服务里设置的图片模型（或为档案增加图片模型维度）",
+  "timestamp": "2026-09-16",
+  "status": "completed",
+  "note": "本文件是旁路 sidecar，**不是** .zcode/handoff/latest.json（并行会话共用单文件，本轮未触碰）。",
+  "summary": "用户反馈「配图师的模型应该是 llm 服务里设置的图片模型，而不是其它模型」。核实结论是**半误判 + 半真实缺口**：渲染链路本来就对（ImageGenerationService 的请求体 model 取自 LLM_CONFIG.IMAGE_MODEL_NAME，开发库实测 step-image-edit-2，当日已产出 10 个 AI_GENERATED 素材）；配图师绑定的档案（id=5 builtin_illustrator → 档案 1）管的是「谁写提示词、谁调工具」这个文本模型；子智能体误绑也已排除（DelegateTools 按 CODE 解析，各用各的绑定）。真实缺口有两个：档案里没有图片维度（图片模型只能在全局设置里配），以及界面上没有任何地方表达「这个智能体的配图模型是什么」。本轮按用户给的第二个选项实施：档案侧可空覆盖 + 全局兜底，并让界面如实显示。首次提交 9ee6bc0 后按「重大功能强制审查」跑了一轮只读 reviewer（pass-with-issues），逐条验真后修掉 3 个 MAJOR/CRITICAL 与 5 个 MINOR（commit 10ee722），其中一项是**本次引入的回归**：编辑任何存量档案都存不进去。",
+  "artifacts": [
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfile.java",
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfileService.java",
+    "src/main/java/ink/icoding/wechat/article/settings/LlmConfigService.java",
+    "src/main/java/ink/icoding/wechat/article/ai/ImageGenerationService.java",
+    "src/main/java/ink/icoding/wechat/article/ai/ArticleMediaTools.java",
+    "src/main/java/ink/icoding/wechat/article/ai/ScheduledAgentFactory.java",
+    "src/main/java/ink/icoding/wechat/article/ai/ArticleAiService.java",
+    "webui/src/views/ModelProfilesView.vue",
+    "webui/src/views/AgentsView.vue",
+    "webui/src/views/SettingsView.vue",
+    "webui/src/style.css",
+    "src/test/java/ink/icoding/wechat/article/settings/LlmConfigServiceImageRuntimeTest.java",
+    "src/test/java/ink/icoding/wechat/article/agent/LlmProfileServiceTest.java",
+    "src/test/java/ink/icoding/wechat/article/agent/AgentJsonContractTest.java",
+    "src/test/java/ink/icoding/wechat/article/agent/AgentFactoryTest.java",
+    "src/test/java/ink/icoding/wechat/article/ai/ArticleMediaToolsImageProfileTests.java",
+    "src/test/java/ink/icoding/wechat/article/LlmProfileImageModelColumnPersistenceTests.java",
+    "docs/dev/image-model-per-profile.md",
+    "docs/dev/skills-agent-plan.md"
+  ],
+  "quality": {
+    "checks": [
+      {"name": "full-gate", "result": "pass", "detail": ".mvn/mvn-local.sh -o test → Tests run: 426, Failures: 0, Errors: 0, Skipped: 0, BUILD SUCCESS, 5:41（基线 401 → 424 → 426）。日志 target/gate-image-model-final.log"},
+      {"name": "frontend-gate", "result": "pass", "detail": "npm run check:imports 通过（8 个导出符号）+ vite build --outDir ../target/classes/static 成功"},
+      {"name": "reverse-proof", "result": "pass", "detail": "把 imageRuntime 的全局门禁改回硬编码 true → carrierPathIsBlockedWhenTheGlobalLlmIsDisabled 失败（Expecting value to be false but was true），确认断言非恒真；随后还原并 diff -q 确认与原文件逐字节相同"},
+      {"name": "real-machine", "result": "pass", "detail": "重启后（PID 9296）新列 varchar(255) YES 由 smart-mybatis 建出、存量 4 条全 NULL；按修复后前端的确切载荷 PUT 档案 4（imageModelName:\"\"）→ 200，读回仍 null；服务端两个分片 sha256 与本次构建产物逐字节相同且含两处修复标记；编译产物时序 源码13:42:32 → class13:46:44 → 启动13:53:54"},
+      {"name": "secret-scan", "result": "pass", "detail": "两次提交前均用 .env 真实值（MYSQL_PASSWORD/ADMIN_PASSWORD/APP_SECRET_KEY/MYSQL_URL/MYSQL_TEST_URL/STORAGE_PATH）对全量 staged diff 逐个 grep -F，hits=0；唯一泛化命中是 task-reliability-round 里的 sk-reliability-round 子串（已知假阳性边界）"}
+    ],
+    "gate_passed": true
+  },
+  "review": {
+    "round": 1,
+    "verdict": "issues",
+    "findings": [
+      {"severity": "CRITICAL", "issue": "编辑任何存量档案都存不进去：Object.assign 把 blankProfile() 的 '' 覆盖成 null（存量档案该列就是 NULL），profilePayload() 对它 .trim() 抛 TypeError，被 catch 成读不懂的报错。**本次引入的回归**——改前的实机验收走 raw curl，恰好绕过这条唯一 UI 路径", "verified": true, "fix": "fixed：openProfile 与 profilePayload 两处 || '' 归范（node -e 复现；已核对在服务端产物里）"},
+      {"severity": "MAJOR", "issue": "档案路径硬编码 enabled=true，绕过全局「启用 AI 服务」开关，停用了仍会继续调付费生图接口（且不报错）", "verified": true, "fix": "fixed：imageRuntime 先判 config.enabled() 再找承载档案；新增反例证明过的用例"},
+      {"severity": "MAJOR", "issue": "前端配图模型解析只走「绑定→默认」两跳且不筛可用性，会报出后端根本不会用的模型名与错误来源", "verified": true, "fix": "fixed：前端逐跳同口径补齐 failoverChain + addIfUsable"},
+      {"severity": "MINOR", "issue": "两处同名 imageProfileId 助手对「停用」处理相反（ArticleAiService 不看 enabled），且与自身 javadoc 不符", "verified": true, "fix": "fixed：统一为「定义缺失或停用 → null」"},
+      {"severity": "MINOR", "issue": "设置页「图片模型」留空文案「留空则禁用 AI 画图和图片编辑」已不成立", "verified": true, "fix": "fixed：文案改为说明「档案声明了自己的就用档案的」"},
+      {"severity": "MINOR", "issue": "三处测试断言过松：替身无条件返回架空了 imageCarrier 那一跳；isNotEqualTo 弱断言；只读工具用例无区分力", "verified": true, "fix": "fixed：替身复刻真实判据 + forcedCarrier；改 isEqualTo；改为两次构造逐位对比"},
+      {"severity": "MINOR", "issue": "真库用例自造第二个 is_default 行并断言 findDefault() 等于它，而 findDefault() 按 id 升序取首，断言取决于行序", "verified": true, "fix": "fixed：改为反向判断「本行不应被选中」+ 直接断言 findById 往返"},
+      {"severity": "MINOR", "issue": "carrier 路径的模型名取未 trim 的原值（判定用 blankToNull、传值用原串，自相不一致）", "verified": true, "fix": "fixed：统一用 blankToNull 后的值"},
+      {"severity": "MINOR", "issue": "「RuntimeConfig.enabled 就是字面上的 llm_config.enabled」，据此推导 fallback 路径措辞不成立", "verified": false, "fix": "rejected：runtime() 在有默认档案时取的是默认档案的 available()，不是 llm_config.enabled。原 javadoc 表述确实不准（已改正），但行为没有变化；修复 MAJOR-1 的依据正是这条事实"},
+      {"severity": "MINOR", "issue": "AgentJsonContractTest 用进程内 ObjectMapper，未证明 HTTP 层也按 null 在场输出", "verified": false, "fix": "rejected（作为缺陷）：属有效覆盖缺口而非缺陷，已由实机 GET /api/llm-profiles 确认（4 条档案 imageModelName 字段在场且为 null）；缺口本身记入文档 §8.3"}
+    ]
+  },
+  "environment_notes": [
+    "本轮重启过一次本地服务（8081）：PID 27844(包装器)/35600 → PID 9296。重启前已确认 TASK_RUN 无 RUNNING/PENDING，不打断在飞运行。",
+    "taskkill 在 Git Bash 下会把 /PID 当路径（'C:/Program Files/Git/PID'），改用 powershell Stop-Process。",
+    "javap 在本机不可用（exit 127），故用「源码 mtime → class mtime → 应用启动时刻」的时序证明运行实例包含修复。"
+  ],
+  "next": [
+    "已本地 commit 两个（9ee6bc0 + 10ee722），**未 push**：推送到 public 的 huanyu/main 仍需单独授权 + 推前扫密钥",
+    "仍存边界（本轮明确未做）：HTTP 层「null 在场」无自动化用例（仅实机证据）；前端档案链逻辑无自动化用例（webui 无测试框架，闸门只有 check:imports + vite build）",
+    "计划内下一轮第一优先项：把 builtin_scheduled_creator 改绑 deepseek-flash（已有两条独立实测支持，属计划外调参故本轮未动）",
+    "本轮未做（需真实交互或等自然日）：09:00 自然定时触发观察、编辑器链路模型切换的实机验证",
+    "既存独立缺陷、本轮未触及：run#129 配图委托的 HTTP 400（messages[10]: missing field 'id'）",
+    "上游项：temperature/maxTokens 生效需 agent4j 支持（2.3.3 的 LLMModel.create 只收 4 参数）"
+  ],
+  "read_files": [
+    "src/main/java/ink/icoding/wechat/article/settings/LlmConfigService.java",
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfileService.java",
+    "webui/src/views/AgentsView.vue",
+    "webui/src/views/ModelProfilesView.vue"
+  ]
+}
