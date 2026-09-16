@@ -1,0 +1,129 @@
+{
+  "agent": "main",
+  "task": "将「模型档案」从系统设置页抽出为独立菜单 + 独立页",
+  "timestamp": "2026-09-16",
+  "status": "completed",
+  "note": "旁路文件：不动并行会话共用的 .zcode/handoff/latest.json",
+  "summary": "模型档案管理 UI 从 SettingsView 抽出为 /model-profiles 独立页（ModelProfilesView.vue，212 行）。SettingsView 155→89 行，档案状态/函数/导入全部移除，仅保留一句指路提示。新增侧栏菜单项（第 12 项）。顺带修复该菜单项引入的侧栏溢出回归。新页新增「绑定用量」提示（每个档案被多少智能体指定 / 是否默认 / 是否兜底）。",
+  "artifacts": [
+    "webui/src/views/ModelProfilesView.vue (新增, 212 行)",
+    "webui/src/views/SettingsView.vue (155→89 行)",
+    "webui/src/router.js (新增 /model-profiles 路由)",
+    "webui/src/App.vue (侧栏菜单项 + BrainCircuit 图标)",
+    "webui/src/style.css (新页样式 + 死规则清理 + 侧栏滚动修复)"
+  ],
+  "quality": {
+    "checks": [
+      {
+        "name": "frontend-gate:check-imports",
+        "result": "pass",
+        "detail": "npm run check:imports → ✓ 共享工具导入自检通过（8 个导出符号）"
+      },
+      {
+        "name": "frontend-gate:build",
+        "result": "pass",
+        "detail": "npx vite build → ✓ built in 382ms；ModelProfilesView-BtfHm8aX.js 13.62 kB"
+      },
+      {
+        "name": "artifact-determinism",
+        "result": "pass",
+        "detail": "临时目录构建产物 vs 在跑服务所依赖的 target/classes/static：逐文件 sha256 + 文件名完全一致（diff 空）→ 保证实测页面就是当前源码"
+      },
+      {
+        "name": "backend-tests",
+        "result": "skip",
+        "detail": "纯前端改动，git status 无 java/yaml/sql/xml/pom 变更；pom.xml 的 frontend-maven-plugin 绑在 prepare-package（在 test 之后），且无后端测试读取前端产物（grep 已空）。故 mvn test 不覆盖本次改动，329/397 基线不加改动地继续有效。"
+      },
+      {
+        "name": "live-ui-acceptance",
+        "result": "pass",
+        "detail": "浏览器实测：12 个菜单项 @44px、footer 常驻可见；/model-profiles 路由可达；4 张档案卡片；新建/编辑/删除往返成功；VIEWER 角色无管理控件且提示语正确"
+      },
+      {
+        "name": "function-level-verbatim-diff",
+        "result": "pass",
+        "detail": "git show HEAD:webui/src/views/SettingsView.vue 与新版逐函数对比：blankProfile/openProfile/closeProfile/profilePayload/onKeydown/PROVIDERS/providerLabel 逐字节一致；saveProfile 的 8 处 profileFormError 赋值（1 重置 + 7 校验）全部保留"
+      },
+      {
+        "name": "secret-scan",
+        "result": "pass",
+        "detail": "全量 458 行改动：密钥形态正则 0 命中；.env 中每个凭据字面值 0 命中"
+      }
+    ],
+    "gate_passed": true
+  },
+  "review": {
+    "round": 1,
+    "verdict": "issues",
+    "note": "审查者只读出清单不改码；以下 verified/fix 由执行者（我）验真后回填。审查者一处纠错已采纳：saveProfile 的前置校验是 7 处而非我先前描述的 6 处（用 git show HEAD: 复核，审查者正确）。",
+    "findings": [
+      {
+        "severity": "MAJOR",
+        "issue": "F3：isAdmin 在 /me 未返回前会 fail-open，非管理员可能短暂看到管理按钮，点开后才收 403",
+        "verified": true,
+        "fix": "fixed",
+        "detail": "实测：改为 computed(() => auth.user?.role === 'ADMIN')，角色未知时按非管理员处理。真建 VIEWER 账号复验：按钮全程不出现，直接请求 /api/llm-profiles → 403（不是 500/401，故不会误登出）。fail-open 窗口在 /me 返回后不再存在。"
+      },
+      {
+        "severity": "MAJOR",
+        "issue": "F4：/api/agents 取不到时把「绑定情况未知」显示成「暂无智能体指定」，是错误断言",
+        "verified": true,
+        "fix": "fixed",
+        "detail": "实测：新增 agentsReady 标志 + bindingText() 分支，未知时显示「智能体绑定情况暂不可用」；删除确认语同分支改为「绑定情况暂不可用，引用它的智能体将回落默认档案。」用 window.fetch 覆写让 /api/agents 失败并 SPA 导航重挂载，4 张卡片全部显示「暂不可用」，未再出现「暂无智能体指定」。"
+      },
+      {
+        "severity": "MINOR",
+        "issue": "F5：审查者提示 saveProfile 前置于 HEAD 的校验数可能记少了",
+        "verified": true,
+        "fix": "rejected",
+        "detail": "这是我（执行者）先前的描述错误，源码本身无误：新文件已逐字保留全部 7 处校验。审查者的更正成立，采纳到文档表述中，无需改码。"
+      },
+      {
+        "severity": "MINOR",
+        "issue": "F6：绑定计数用 Map 直接以 id 取值，类型不一致（数字 vs 字符串）会静默漏计",
+        "verified": true,
+        "fix": "fixed",
+        "detail": "实测：bindingCounts 的键与取值统一 String(id) 归一化；bindingText/removeProfile 亦同。卡片用量行数字与 /api/agents 实查一致。"
+      },
+      {
+        "severity": "MINOR",
+        "issue": "F7：抽出后错误面板丢掉了「非管理员可忽略此项」的安抚语，非管理员看到红字会误以为故障",
+        "verified": true,
+        "fix": "fixed",
+        "detail": "实测确为真实回归（抽离时丢了）。已补回：错误面板文案带上「（模型档案仅管理员可管理，非管理员可忽略此项）」，并以 VIEWER 账号复验可见。"
+      },
+      {
+        "severity": "MINOR",
+        "issue": "F8：用量提示未点明兜底档案的特殊语义，用户可能以为「没有智能体指定」等于没用",
+        "verified": true,
+        "fix": "fixed",
+        "detail": "bindingText 逐条拼接：被指定数、默认档案的兜住语义、兜底档案的接手语义；默认与兜底可落在同一档案上（种子即如此），故不做二选一。"
+      },
+      {
+        "severity": "MINOR",
+        "issue": "F1/F2：抽离后遗留 .profile-card 系列死规则与死导入",
+        "verified": true,
+        "fix": "fixed",
+        "detail": "实测：.profile-card{margin-top}/.profile-card>header .profile-add{margin-left:auto} 引用数 0 → 已删；media query 中同名分支同步收窄。SettingsView 保留的 12 个导入全部在用，computed/useAuthStore/Layers/Pencil/Plus/Shield/Star/Trash2/X 已移除。"
+      },
+      {
+        "severity": "MAJOR",
+        "issue": "回归（非审查者提出，我自测发现）：新增第 12 个菜单项触发侧栏纵向溢出，页脚被挤出视口且 nav 无法滚动",
+        "verified": true,
+        "fix": "fixed",
+        "detail": "DOM 移除反例定量证明因果：1366×700 下 12 项时 footer 底边 733px（不可达）vs 移除该项的 11 项时 684px（可见）。修法：.sidebar nav 加 min-height:0;overflow-y:auto，.sidebar nav a 加 flex:0 0 auto（否则 44px 被压成 39/33px）。复验：12 项全 44px，footer 常驻，nav 可滚。"
+      }
+    ]
+  },
+  "environment_notes": [
+    "临时 VIEWER 探针账号 __tmp_viewer_probe__ (id=2) 已清理：SystemUserController 无 DELETE 端点（DELETE → 500 HttpRequestMethodNotSupportedException，属既有缺口），改为直连 momo-mysql-dev 删行；复核 GET /api/system-users 仅剩 admin。",
+    "并行会话痕迹：审计日志见 10:14:39 POST /api/llm-profiles/3/set-fallback（兜底从 1 移到 3）与 10:04:32 PUT /api/agents/5，均非我所为（源码树仅我的 5 个文件为脏）。未改动这些配置，也未归因到本次改动。",
+    "/assets 直接访问返回 500 JSON 系既有行为，非本次引入：WebUiConfig.BACKEND_ROOTS 含 assets，与 Vite 的 assets/ 目录冲突，故 isFrontendRoute 有意排除。"
+  ],
+  "next": [
+    "已本地 commit（未 push）：推送到 public 的 huanyu/main 仍需单独授权 + 推前扫密钥",
+    "计划内下一轮第一优先项：把 builtin_scheduled_creator 改绑 deepseek-flash（已有两条独立实测支持，属计划外调参故本轮未动）",
+    "本轮未做（需真实交互或等自然日）：09:00 自然定时触发观察、编辑器链路模型切换的实机验证",
+    "上游项：temperature/maxTokens 生效需 agent4j 支持（2.3.3 的 LLMModel.create 只收 4 参数）"
+  ]
+}
