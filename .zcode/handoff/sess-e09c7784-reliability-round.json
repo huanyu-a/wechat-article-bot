@@ -111,7 +111,9 @@
     "排查「护栏误杀」类问题的关键教训：探针必须按护栏自己的判据算。本次先用 SseGapProbe（传输层）与 TtftProbe（prefill）都测出「阈值有百倍余量」，据此错判为「真实死流」；直到用 ReasonGapProbe 复刻检测器算法（只算正文）才定位到 onThink 盲区。传输层「一切正常」恰恰掩盖了回调层的问题。",
     "效率口径的教训（本文件三处结论错误全是同一个毛病：拿 1 个样本当基线）：run#125（1527s）与 run#119（1801s）的单点对照会得出「−15%」，但 task#5 全部 9 次成功运行均值是 1281s（区间 457~1801s）——run#119 恰是最慢的一次。SINGLE 同理：task#4 全部 7 次成功均值 204s，run#126（895s）慢 691s，而初版只跟 run#116（553s）单点比、写成「+342s」。**跨 4 倍的基线区间上，单样本证明不了任何效率变化。**",
     "模型速度不能从评测表外推：评测表的 tok/s 是纯正文场景，而定时任务里模型输出几乎全是工具参数。实测「生成 save_article_draft 参数」的真实速率：deepseek-flash 273 字符/秒、glm-5.3-flash 69/111/125、hy4-preview 86/77/95（后两者区间重叠）。探针 target/scratch/ToolArgStreamProbe2.java 数的是反转义后的真实字符——**不能数 SSE 行长度**，行长度随分片粒度变化（实测 glm 的累计行长是 hy4 的 2.2 倍，会得出相反的结论）。",
-    "服务当前运行实例：PID 2516，01:56:12 启动，已包含 onThink 修复（class 编译于 01:49:25）。",
+    "服务当前运行实例：PID 33672，2026-09-16 09:35:01 启动（03:17 闸门那轮结束后、08:58 机器重启导致服务与 Docker 一起停止；已按「Docker Desktop → momo-mysql-dev → spring-boot:run」三级恢复并复验全部验收项）。此前的 PID 2516（01:56:12 启动）已随重启消失。",
+    "环境事故（非代码缺陷）：09-16 08:58 机器重启 → Docker Desktop 未起 → momo-mysql-dev 未跑 → 09:00 定时触发整轮未发生。恢复后日志打「Handling 4 trigger(s) that missed their scheduled fire-time.」但不补跑：只配了 misfireThreshold、走 SMART_POLICY（对 cron 等价 DO_NOTHING）。today 的 TASK_RUN 无 SCHEDULED 记录，属预期行为。",
+    "排查教训：application.yaml 的 spring.datasource.url 默认值是 100.73.43.10（fallback），而 .env 实际指向 127.0.0.1:3306。曾按 yaml 默认值去 ping 100.73.43.10 并误判为「Tailscale 断了」，真因是本地 Docker 容器没起。查库地址一律以 .env 为准；判断「服务为什么不通」先看 tasklist 里有没有 java 进程。",
     "target/scratch/ 下的探针（ModelAvailabilityProbe/SseGapProbe/TtftProbe/RawSseProbe/ReasonGapProbe）均为临时只读工具，未纳入版本控制。"
   ]
 }
