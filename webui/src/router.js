@@ -10,6 +10,7 @@ const routes = [
   { path: '/tasks', name: 'tasks', component: () => import('./views/TasksView.vue'), meta: { title: '定时任务' } },
   { path: '/skills', name: 'skills', component: () => import('./views/SkillsView.vue'), meta: { title: '技能库' } },
   { path: '/agents', name: 'agents', component: () => import('./views/AgentsView.vue'), meta: { title: '智能体' } },
+  { path: '/model-profiles', name: 'model-profiles', component: () => import('./views/ModelProfilesView.vue'), meta: { title: '模型档案' } },
   { path: '/followers', name: 'followers', component: () => import('./views/FollowersView.vue'), meta: { title: '公众号用户' } },
   { path: '/system-users', name: 'system-users', component: () => import('./views/SystemUsersView.vue'), meta: { title: '系统用户' } },
   { path: '/assets', name: 'assets', component: () => import('./views/AssetsView.vue'), meta: { title: '素材库' } },

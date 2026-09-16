@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
 import {
-  LayoutDashboard, Radio, FileText, Bot, Shapes, Users, UserCog, Images, ShieldCheck,
+  LayoutDashboard, Radio, FileText, Bot, BrainCircuit, Shapes, Users, UserCog, Images, ShieldCheck,
   LogOut, Menu, Search, Sparkles, X, Settings,
 } from 'lucide-vue-next'
 
@@ -20,6 +20,7 @@ const items = [
   { to: '/tasks', label: '定时任务', icon: Bot },
   { to: '/skills', label: '技能库', icon: Shapes },
   { to: '/agents', label: '智能体', icon: Bot },
+  { to: '/model-profiles', label: '模型档案', icon: BrainCircuit },
   { to: '/followers', label: '公众号用户', icon: Users },
   { to: '/system-users', label: '系统用户', icon: UserCog },
   { to: '/assets', label: '素材库', icon: Images },
