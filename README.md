@@ -292,6 +292,18 @@ npm run dev
 
 Open <http://localhost:5173>. Vite proxies `/api` and `/uploads` to `http://localhost:8081`.
 
+To skip the Vite dev server and let the backend serve the frontend directly (single process, <http://localhost:8081>):
+
+```bash
+scripts/dev-start.sh                 # build the frontend into target/classes/static, then spring-boot:run
+scripts/dev-start.sh --build-only    # build the frontend only, do not start the app
+```
+
+Plain `./mvnw spring-boot:run` does **not** build the frontend: `build-webui` is bound to `prepare-package`
+in `pom.xml`, while `spring-boot:run` only reaches `test-compile`. You may therefore get an interface that is
+several rounds old, and after `mvn clean` there is **no frontend at all**. The app self-checks at startup and
+logs a WARN (`WebUiArtifactCheck`); `scripts/dev-start.sh` avoids the trap outright.
+
 ## Verification
 
 ```bash

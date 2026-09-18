@@ -292,6 +292,18 @@ npm run dev
 
 访问 <http://localhost:5173>。Vite 会将 `/api` 和 `/uploads` 代理到 `http://localhost:8081`。
 
+如果不想另开 Vite 开发服务器、而是让后端直接提供前端（单进程，访问 <http://localhost:8081>）：
+
+```bash
+scripts/dev-start.sh                 # 先构建前端到 target/classes/static，再 spring-boot:run
+scripts/dev-start.sh --build-only    # 只对齐前端产物，不启动
+```
+
+直接 `./mvnw spring-boot:run` 时**不会**构建前端：`pom.xml` 的 `build-webui` 绑在 `prepare-package`，
+而 `spring-boot:run` 只走到 `test-compile`。因此那样启动拿到的可能是几轮以前的界面，
+`mvn clean` 之后更是**没有前端**。应用启动时会自检并打一条 WARN（`WebUiArtifactCheck`），
+`scripts/dev-start.sh` 则直接把这个坑绕开。
+
 ## 验证
 
 ```bash
