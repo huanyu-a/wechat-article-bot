@@ -52,14 +52,19 @@
 | `builtin_illustrator` 配图师 | **deepseek-flash** | 以提示词与工具调用为主，速度优先 |
 | `builtin_editor` 编辑器 | **deepseek-flash** | 用户在场，445 tok/s 交互最跟手 |
 | `builtin_writer` 撰稿人 | **glm-5.3-flash** | 能力 57.5（可用模型最高）；写作质量关键 |
-| `builtin_scheduled_creator` 定时创作(SINGLE) | **glm-5.3-flash** | 一人做完调研+写作+配图，能力优先 |
+| `builtin_scheduled_creator` 定时创作(SINGLE) | **deepseek-flash**（2026-09-17 由 glm-5.3-flash 改） | 负载是**生成工具参数**（整篇正文即 `save_article_draft` 的 `content`），实测 273 vs 69~125 字符/秒 |
 | `builtin_reviewer` 审稿人 | **glm-5.3-flash** | 判断力关键、调用量低，取能力优先 |
 | `builtin_chief` 主编 | **glm-5.3-flash** | 规划质量决定整轮走向、调用量低 |
 | **兜底 fallback** | **hy4-preview** | 免费通道、能力 57，最后安全网 |
 
 > 本表的**「能力」理由全部成立**；但「速度」理由只对 `deepseek-flash` 成立——
-> 它是唯一被实测证明更快的档（273 字符/秒）。`glm-5.3-flash` 的三条都写的是「能力优先」，
-> 没有声称速度，因此**不需要修改**。见第六节。
+> 它是唯一被实测证明更快的档（273 字符/秒）。`glm-5.3-flash` 的两条（writer/reviewer/chief）
+> 都写的是「能力优先」，没有声称速度，因此**不需要修改**。见第六节。
+>
+> **`builtin_scheduled_creator` 是唯一的例外**：它当初按「一人做完调研+写作+配图、能力优先」
+> 绑定，但这个理由**用错了负载口径**——该链路几乎没有「写正文」的自由生成，输出几乎全是
+> 工具参数。按实际负载实测（`scheduled-task-reliability-round.md` §4.1），glm 在这个场景下
+> 与免费的 hy4-preview 区间重叠，故改绑 `deepseek-flash`。见该文 §八.1。
 
 共 **3 个档案**（2 主用 + 1 兜底），全部实测可用。`dots3-note-prev` / `sensenova-6.8-flash-lite` /
 `step-router-v1` 虽返回 200 但分别有记忆缺陷、稳定性问题、输出异常，**不纳入**。
@@ -100,7 +105,8 @@
 
 ### 5.3 验收方式（重启后按此逐条核对）
 
-1. 重启后确认：`LLM_PROFILE.IS_FALLBACK` 列已由 smart-mybatis 补上；2 条标准档案已建；
+1. 重启后确认：`LLM_PROFILE.IS_FALLBACK` 列已由 smart-mybatis 补上；标准档案已建
+   （~~2 条~~ → **12 条**，见第七节；09-15 时只有 deepseek-flash 与 glm-5.3-flash 可用）；
    7 个内置智能体的 `LLM_PROFILE_ID` 已写入；默认档案 `IS_FALLBACK=1`。
 2. **强制故障切换反例**（新功能的确定性证据）：把某个智能体的 `LLM_PROFILE_ID` 临时指向一个不存在的模型名
    → 触发运行 → 日志出现「模型档案不可用（…），切换：A → B」且**整轮仍然成功**。
@@ -140,3 +146,61 @@ hy4-preview 23.5）当作选型依据。**这个依据对「工具调用为主�
 
 > 教训：**模型速度不能从评测表外推**。要判断「换模型能不能提速」，必须按实际工作负载测。
 > 本文件第 40 行那句「真正的吞吐量以评测表的 TPS 为准」在本项目的场景下是不成立的。
+
+
+---
+
+## 七、复测：换 key 后可用性**整体改变**（2026-09-18）
+
+第二节那张表是 2026-09-15 用**当时那把 key** 测的。2026-09-18 换用新 key 复测，结论大面积反转：
+**上一轮判「503 无可用渠道」的模型，本轮全部可用。**
+
+| 模型 | 09-15 结论 | 09-18 复测 | 耗时 |
+|---|---|---|---|
+| `glm-5.3` | ❌ 503 无可用渠道 | ✅ 200 正常出字 | 1.07s（探针）/ 4.45s（应用口径） |
+| `kimi-k3` | ❌ 503 无可用渠道 | ✅ 200 正常出字 | 2.41s |
+| `dots3-note-prev` | ⚠️ 多轮记忆失败，排除 | ✅ 200 正常出字 | 1.36s |
+| `deepseek-v4-flash-0731` | ❌ 503 | ✅ 200 正常出字 | 0.41s |
+| `deepseek-v4-pro-0813` | （未列） | ❌ 400「模型未找到」 | — |
+| `kimi-k2.8-preview` | （未列） | ❌ 400 只接受 `temperature=1` | — |
+| `step-image-edit-2` | （未列） | ❌ 503 `engine_overloaded` | — |
+
+> **这不是「上一轮测错了」。** 两次都测对了，测的是**不同的渠道组**。
+> 教训要记在方法上：**可用性结论必须带「哪把 key / 哪个渠道组」这个前提**，
+> 否则文档会互相打脸，而且看不出是谁错了。本文件第二节的结论只对 09-15 那把 key 成立。
+
+### 7.1 复测方法（与第二节的差异）
+
+第二轮用 `target/scratch/probe_nexus_models.py`：先 `GET /v1/models` 拿**网关自报的**模型清单（31 个），
+再逐个发最小 chat 请求；图片模型单独打 `/v1/images/generations`。结果 28 通过 / 3 失败。
+
+关键改进：**探针参数按应用真实下发值取**（`temperature=0.70`、`maxTokens=8192`），而不是
+探针惯用的 `temperature=0`。`kimi-k2.8-preview` 就是被这个差异抓出来的——它只接受
+`temperature=1`，而档案默认下发 0.70，用 0 去测同样会 400，但错误信息会指向参数而非模型能力。
+
+### 7.2 图片模型
+
+`/v1/models` 里 5 个图片模型实测：
+
+| 模型 | 结果 | 返回形态 |
+|---|---|---|
+| **`sensenova-u1.5-lite`** | ✅ 30.5s | `b64_json`（5.7 MB） |
+| `qwen-image-3.0` | ✅ 65.5s | 仅 `url` |
+| `qwen-image-3.0-pro` | ✅ 54.7s | 仅 `url` |
+| `qwen-image-2.0-pro` | ✅ 69.5s | 仅 `url` |
+| `step-image-edit-2` | ❌ 503 | `engine_overloaded` |
+
+选 `sensenova-u1.5-lite` 作图片模型：**返回 `b64_json` 直接落盘**，不依赖第三方图床 URL 的
+有效期与可达性（`qwen-image-*` 只回 `url`，多一个外部依赖）；且它比 qwen 系快约 2 倍。
+`ImageGenerationService.parseImageResponse` 两种形态都支持，所以换回 qwen 系也不改代码。
+
+### 7.3 据此建立的档案
+
+`LlmProfileSeeder.seeds()` 已同步为这份清单（S/A/B 三档共 12 条，按评测表档位取交集），
+默认档案 `deepseek-flash`，兜底档案 `hy4-preview`，图片模型挂在默认档案上。
+**有意不建**的模型与理由写在 `seeds()` 的 javadoc 里（实测不可用 + 评测表弱档 + 单次响应 111 秒的
+`nemotron-3.5-lightning-free`）。
+
+> 实机验收（2026-09-18）：用这份档案跑通了一次完整 SINGLE 定时任务——
+> 38 次工具调用、生成 1 篇文章 + 3 张配图、`status=SUCCESS`，全程无故障切换
+> （`profilesUsed: ["deepseek-flash/deepseek-flash"]`、`switchedProfile: false`）。

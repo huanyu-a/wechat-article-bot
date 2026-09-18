@@ -121,6 +121,9 @@
 | D43 | **`:::case-flow` 的保存自检把行首 `-` 当成可选**：`*` / `+` / `1.` / 裸行 / 漏 `[标签]` 五种写法上游**整块归零**（产物 0 字符、`ok:true`、`warnings:[]`）却一路放行 | `round8_caseflow_bullet.txt`：7 种列表符号 × 容器式/标签式逐个实测，只有「行首 `-` + `[标签]`」有产出，其余 5 种全 0 字符（两式结果逐项相同） | 第八轮 | `ai/ScheduledArticleTools`（`CASE_FLOW_LABEL` 收紧为 `^-\s*\[\s*\S`、新增 `CASE_FLOW_TAG_BLOCK` 覆盖标签式、抽出 `blockHasRowWithoutPrefix`）、`skill/SkillSeeder`、`ai/ScheduledArticleToolsDraftTests` |
 | D44 | **技能与自检都不知道 `layout-*` 家族**：16 个名字 × {容器式, 标签式} = **32 组全部把语法原样留在正文**，`meta.warnings` 为空；`guide` 全文不提这些名字 | `round8_unknown_tags.txt`：32 组全部 `leak=True`（容器式如 `:::layout-hero` → 可见文字 `:::layout-heroZQLH内容:::`；标签式 → 字面 `<layout-hero>` 留在正文） | 第八轮 | `ai/ScheduledArticleTools`（新增 `UNSUPPORTED_LAYOUT_TAG` + 替代方案提示）、`skill/SkillSeeder`（新增禁写名单）、`ai/ScheduledArticleToolsDraftTests`（`unsupportedLayoutFamilyIsReported`） |
 | D45 | **技能的「自闭合」规则方向写反**：只说了 `<badge>`/`<icon>` 必须自闭合，模型很容易当成通用规则——而 `<slider>` **自闭合整行标签会留在正文且轮播完全不出现**（方向相反）；另 `<hint>` 只有容器式，`:::callout type="danger|success"` 的替代方案措辞有误 | `round8_na_discriminator.txt`：`na-slider-selfclose` 产物 303 字符 / 文字 **0** / svg **0** / 残留 `<slider`；对照标签式「开+闭」（单图）214 字符、svg **0**（无残留，渲染成一张普通 `<img>`）。`round8_callout_types.txt`：`danger`=`#dc2626` ❌、`success`=`#16a34a` ✅，「渲染器不认」的旧措辞不成立 | 第八轮 | `ai/ScheduledArticleTools`（`CONTAINER_ONLY_AS_TAG` 6→7 加 `hint`）、`skill/SkillSeeder`（轮播条点明方向相反、`hint` 入名单、type 列表补 `danger`/`success` —— **技能文案要等下次应用重启才落库，见 §3.13③**）、`ai/ScheduledArticleToolsDraftTests` |
+| D46 | **重试 / 换档案的闸门把「只读工具」当成副作用**：`retryable = attempt.toolCalls() == 0`，于是只要调过一次 `read_article_draft` 就不再重试、不换档案 | run#14 / run#18（task#2 PIPELINE）写作阶段停滞前**只调过一次 `read_article_draft`**，12 个故障切换候选一个都没用上，整轮 FAILED、`saved=false`；run#20 的调研阶段在 **24 次只读检索**后仍走到换档案分支（说明判据确已改变） | 2026-09-18 | `schedule/AgentInvoker`（`Attempt` 增 `paidSideEffect`，两处闸门改 `!attempt.paidSideEffect()`）、`schedule/ToolCallGovernor`（`SIDE_EFFECT_FREE_TOOLS` 判据，含未知工具名按有副作用处理的约定） |
+| D47 | **写作阶段用全局 300s 硬超时（误杀而非止损）**：写作要一次生成 30k+ 字符成稿，量级与 SINGLE（900s）相当，300s 会在「会话仍在正常出字」时被墙钟砍掉 | run#14 / run#18 的写作阶段**恰好停在 300.0s**，且超时时「最后活动距今 0 秒」；run#19（COORDINATOR）的委托写作同样停在 300.0s | 2026-09-18 | `schedule/StageTimeoutPolicy`（`forStage` / `isWriting`，委托前缀 `DELEGATE_` 归一）、`schedule/PipelineExecutor`、`schedule/CoordinatorExecutor`、`application.yaml`（`writing-timeout-seconds`） |
+| D48 | **编辑器把「一个带样式的 `<span>`」按内联格式拆成多个**：`<span style="flex:1"><strong>时间</strong>：每天…</span>` 往返后变成**两个** `flex:1 1 0%` 的兄弟 span，flex 行从「圆点 + 一栏正文」变成「圆点 + 左标签 / 右正文」两栏 | 文章 8 第 04 节的两条列表行：落库 HTML **每行 1 个 `flex:1` span**，编辑器实测 **每行 2 个**（探针 `tools/render-verify/browser/r39-article8-sec04.mjs` 输出 `每行flex栏数: [2, 2]`）。对照：p-title 版式**没有坏**（`CHAPTER 04` 在、`strong` computed 为 60px/700 与 30px/900、圆点 6×6 可见）——首版探针按 `data-block="ptitle"` 判定「0 个 p-title」是假阴性，已改判据。截图 `target/probe/browser/shots/r39-article8-sec04.png` 可见「时间」与正文各占半行 | **未修**（本轮只出结论） | `webui/src/editorExtensions.js`（`PreservedMarkStyle` 把样式挂在 mark 上，同一源 span 内 bold/非 bold 混排即落成两个标记不同的文本节点，序列化时各带一份 flex；与 D35「相邻同款 span 被合并」是同一条链路的反方向） |
 
 **↑ D30–D39 是 2026-09-13 第五轮（组件渲染能力全量核查）的成果，逐条红→绿证据、77 项组件清单、
 两条路径对照表与未修项，见 §3.9。** 这一轮的改动**全在 `webui/`**，Java 侧一行未动。
@@ -158,7 +161,7 @@ D43–D45 是从「9 条 `na` 逐条核对」里查出来的，见 §3.12。**
 - **症状**：阶段超时（300 秒）到点后，工作线程只能中断并放弃等待；底层 `OkHttpClient` 是 `OpenAIChatModel` 内 `final` 自建的，HTTP 连接与服务端 SSE 流仍然开着。若流随后恢复，它可能与**下一次**运行（可能是重试后的新会话）同时产出。
 - **影响**：停滞后仍占网关名额（正是 D2 级联的来源之一）；重试后若两个流都恢复，可能重复执行付费副作用（生图、图片编辑）。
 - **根因**：`LLMModel.create` 仅 4/5 参且无超时项；`AgentSessionResult` / `AgentClientSession` 无 `cancel()`/`close()`；全项目不存在 readTimeout。
-- **当前规避**：运行级并发闸门把总在飞请求压到 4，配合 300 秒止损，让「卡死」不再无限累积；停滞重试加「零工具调用」前置条件，避免在已有副作用时重试。
+- **当前规避**：运行级并发闸门把总在飞请求压到 4，配合 300 秒止损，让「卡死」不再无限累积；停滞重试的前置条件是「**未调用过有副作用的工具**」（只读检索不算，见 D46），避免在已有副作用时重试。
 - **根治方案**：向上游索取 `cancel()`/`close()` 与可配置读超时；本仓库侧接入点已预留（`AgentInvoker.attempt` 的失败分支与 `StageTimeout`）。
 - **还需一并确认的两件事**（来自现场采集，见 5.1）：①核实 agent4j 的流式解析是否**只读 `delta.content` 而忽略 `reasoning_content`**，并用「带工具调用的流式响应」验证工具调用返回体的形状（若确有此问题，会让带推理的模型出现「吐出 0–2 字符后无输出」的假停滞）；②在读层补 readTimeout / 心跳 / 兜底 `onFailure`，并让 `runSubAgent` 的**内层超时与外层超时在报错里可区分**。
 - **涉及文件**：`schedule/AgentInvoker.java`、`schedule/StageTimeout.java`、`agent/AgentFactory.java`、`ai/DelegateTools.java`
@@ -1924,6 +1927,18 @@ node target/probe/browser/run-article.mjs     # 产物 articles_result.json、sh
 > （严格说它也是「语法没被消费」，只是残留形态是元素不是文本）。
 > 同批还查出 `cmb-inline-in-container` 的 `<Badge>新</Badge>` 也是原样透传，
 > 但那是**探针自己写错的形态**（官方是自闭合 `<badge … />`），按 R4-附 的教训不计为上游缺陷。
+>
+> **第三十六轮订正**：上面这段话里「只有 `tagHistogram` 才暴露」是**基于一个坏掉的计数器**说的。
+> `gen/round8_combos.py` 的 `leakedTag` 当时在**剥掉标签后的文本**里找字面标签，结构上恒为 0
+> （详见 §4.2 第 10 条的完整反证），所以它印出来的「字面标签 **0** 处」既骗人、又给不出线索。
+> 已修：`cmb-callout-steps` 现在如实报 **4 处**、`cmb-inline-in-container` 报 **1 处**。
+> 判定口径未动（`leakedTag` 仍不参与 `upstreamVerdict`），闸 9b 重跑仍 **17 组合 / 失败项 0**。
+>
+> **最刺眼的一点**：下面 ③ 里第 1934-1937 行**早就写下了同一条教训**——
+> 「泄漏检测扫**原始产物 HTML**——先剥标签会把『标签被当未知元素原样透传』这种情况洗掉
+> （那是第七轮踩过的坑）」。也就是说：**这条坑第七轮踩过、写进了文档，第八轮的 `round8_combos.py`
+> 还是踩了同一脚。** 文档写了不等于代码改了——这是「声明与真实必须同向」的又一次发作，
+> 而且是最直接的一次：判据就写在同一个仓库的隔壁文件里。
 
 #### ③ 9 条 `na` 的「等上游」清单（**不改判据凑 pass**）
 
@@ -5982,7 +5997,27 @@ docker exec momo-mysql-dev mysql -uroot -p"$PW" -D wechat-article -e "SELECT ...
 2. **I7（补一次 COORDINATOR 全绿实跑）**（P1，取决于网络）：把工具预算与委托计数的实机证据补上，这是当前唯一「只有离线回归、没有线上证据」的链路。
 3. **实测校验 I1–I10 的验收结论**：本轮以单元/集成测试 + 代码审查交付；按 4.2 的原则，涉及并发、心跳回收与重渲染的结论应在真实多实例/真实令牌/真实浏览器上再采样一次（尤其 I1 的跨实例配额、I4 的重渲染版式、I8 的超时释放）。
 4. **继续采样，把「间歇性」变成可量化的结论**：在网关抖动窗口反复跑停滞率探测（6.3），累积 `hung` 样本；并趁某次运行真卡住时同步抓一次真实阻塞帧（目前只有 `#33` 一次现场）。
-5. ~~**补「组合条件下的组件渲染」覆盖**（第七轮新增，P2）~~ **第八轮已做，见 §3.12②**：17 个组合用例在真实浏览器里两级判定，编辑器侧 17/17 pass，9 例差异全在上游（容器套容器是结构性不支持）。**剩下的**：只挑了代表，`:::` 容器两两组合共 19×18 种未穷举；下一轮值得补的是**三层嵌套**、`:::table title=` 嵌在 `:::timeline` 里（`cmb-timeline-table` 的反方向）、以及**超长内容 + 嵌套**的叠加（见 §3.12⑧ 第 4 条）。第九轮把 17 例连同 79 例**重跑了一遍真实浏览器**（结论与第八轮逐项一致），并自证了第八轮的泄漏判据修正（差异 2/17、方向全变严），但**没有新增组合用例**，上一条「剩下的」原样有效。**第十轮**同样没有新增组合用例（它做的是注册表全族收口：把 63 个注册 ID 的每一格补上实测证据，见 §3.14①②），上一条「剩下的」依旧有效。
+5. ~~**补「组合条件下的组件渲染」覆盖**（第七轮新增，P2）~~ **第八轮已做，见 §3.12②**：17 个组合用例在真实浏览器里两级判定，编辑器侧 17/17 pass，9 例差异全在上游（容器套容器是结构性不支持）。**剩下的**：只挑了代表，`:::` 容器两两组合共 19×18 种未穷举；下一轮值得补的是**三层嵌套**、`:::table title=` 嵌在 `:::timeline` 里（`cmb-timeline-table` 的反方向）、以及**超长内容 + 嵌套**的叠加（见 §3.12⑧ 第 4 条）。第九轮把 17 例连同 79 例**重跑了一遍真实浏览器**（结论与第八轮逐项一致），并自证了第八轮的泄漏判据修正（差异 2/17、方向全变严），但**没有新增组合用例**，上一条「剩下的」原样有效。**第十轮**同样没有新增组合用例（它做的是注册表全族收口
+
+    > **第三十七轮：这条「剩下」的阻塞原因已查清，顺手订正一个容易搞错的混淆。**
+    >
+    > 此前把它记成「本机渲染服务（`127.0.0.1:8081`）拒绝连接」——**这是把两个不同的东西混为一谈了**：
+    >
+    > | | 是什么 | 什么时候才需要 |
+    > | --- | --- | --- |
+    > | `127.0.0.1:8081` | **本应用**（Spring Boot 起的那个） | 只有 `run-article.mjs` / `verify-live-app.mjs` 这类**要真应用**的套件需要 |
+    > | `https://www.bx9y.com.cn/__markflow_render` | **远端渲染服务**（`paths.py` 的 `RENDER_URL`） | 一切要打渲染 API 的套件（M/C/A/R/X）需要 |
+    >
+    > 实测（第三十七轮）：远端渲染服务**活着且可达**——DNS 与 TCP 443 都通，`GET` / `POST` 均返回 **401**，
+    > 且带一个**假 token 也是 401** ⇒ 它是在按 token 正常鉴权，**不是服务挂了**。
+    >
+    > **所以这条的唯一真阻塞就是令牌**：`MARKFLOW_RENDER_TOKEN` 未设、`~/.zcode/secrets/markflow-render-token`
+    > 不存在、生产库里那份是 AES 加密的且库不可达。令牌按 §「环境准备」**只能向渲染服务方索取**
+    > （外部输入，不可自行补出）。
+    >
+    > 订正的意义：接手方**不必再去查「本机服务为什么起不来」**，拿到令牌即可直接跑
+    > `python tools/render-verify/gen/round8_combos.py` 补这三个用例。
+    > **一个把 A 说成 B 的阻塞记录，会让下一个人去修一个根本没坏的东西。**：把 63 个注册 ID 的每一格补上实测证据，见 §3.14①②），上一条「剩下的」依旧有效。
 6. **在库稿件的图片外链治理**（第七轮发现、第八轮量清范围，P2，**仍未动数据**）：全库 44 篇里 **31 篇**正文含绝对 URL，唯一外部 URL 62 个探活 **404 × 21**；**裂图集中在 4 篇 20 张**（16/21/26/35，全是 `robocopmao.github.io`），另有 1 篇坏链（13）。根因是模型自己编了远程图片地址而不是调素材工具（见 §3.12④）。**三个方案已列，推荐 A（只治未来、不碰存量）**；B/C 都要在「动生产数据」上再做一次产品决策。另：`localhost:8081` 那 19 篇**烧域名**的存量稿件（D42）同样未回改——机制已修，存量清洗是独立决策。
 7. ~~**让 D45 的技能文案真正落库**~~（第九轮新增、第十一轮做成可自动化验证的待办、**第十四轮已闭合**，P1）：
    **已于 2026-09-13 晚随「修 43/44 故障」的那次重启落库**，实测 `db_len = 6649`、五个 `LOCATE` 全部 `> 0`、
@@ -6054,6 +6089,105 @@ docker exec momo-mysql-dev mysql -uroot -p"$PW" -D wechat-article -e "SELECT ...
 8. **补 D42 的真实轮次对照**（第九轮新增，P1，需重启 + 新建文章）：目前「新产出不会再烧域名」的证据是「落库入口唯一 + 单元红绿 + 存量未回改」三条（见 §3.13③），**缺一次真实调度轮次产出新稿的对照**。执行代价是要重启应用并产生生产数据，属于产品决策，先记在这里。
 9. **让 31 个组件升到 A 级证据**（第十轮新增，P2，内容侧工作量）：终稿对照表里注册表 63 个 ID 中只有 **13 个**有「真实稿件写过 + 那篇在真实 SPA 里回归过」的 A 级证据，其余 50 个停在 B 级（最小样例 + 真实浏览器）。表 B 的 40 条非注册语法同理。这不是缺陷——B 级已经是真实浏览器实测——只是**证据强度**可以再上一层。做法是让调度轮次真的产出含这些组件的成稿，逐篇补进 `round10_article_coverage.py` 的命中表。
 10. **把「元素形态透传」的判据泛化**（第十轮新增，P2）：本轮的 `leakRaw` 是**按用例声明的标记**判的（`round10_registry_closure.py` 里逐条给 `marker`），不是「产物里出现任何未注册元素就报警」的通用规则。泛化它需要一份**已知合法元素白名单**（含 `svg`/`foreignObject`/`animateTransform`/`katex` 等上游会自造的元素），否则误报会淹掉真信号。泛化后 `silently-lost` 那一条（`cmb-callout-steps` 的 `<steps>`/`<step>`）才有可能被自动抓住，见 §3.13② 末尾。
+
+    > **第三十六轮进展：先修掉了一个让「泛化」无从下手的缺陷——计数本身是坏的。**
+    >
+    > `gen/round8_combos.py` 的 `stats()` 里，`leakedTag` 是这样算的：
+    >
+    > ```python
+    > text = re.sub(r'<[^>]+>', '', html)          # 先剥掉全部标签
+    > text = re.sub(r'\s+', '', text)
+    > ...
+    > 'leakedTag': len(re.findall(r'<(?:steps|step|...)\b', text, re.I)),   # 再在剥完的文本里找 "<steps"
+    > ```
+    >
+    > 剥完之后 `text` 里已经**不可能有 `<`**，所以在它上面找 `<steps` 是**结构上恒为 0**：
+    > 这个计数器报的 0 不是「测出来没有残留」，而是「根本算不出来」。它出现在产物里、
+    > 被 `summarize-combos.mjs` 印成「正文里的字面标签 **0** 处」——**一个坏掉的计数器，
+    > 比没有计数器更糟，因为它看起来像证据。**
+    >
+    > - **对照写法**：同一仓库的 `gen/round11_crosscheck.py:233` 是对的——
+    >   `element_hits` 在 `html` 上找、`colon_hits` 在 `text` 上找。两条判据的**搜索对象本来就不同**：
+    >   `:::` 是文字（该在剥完标签的文本里找），`<steps>` 是标签（必须在原始 html 里找）。
+    > - **实测反证**（`target/scratch/verify_leakedtag_fix.py`，用 `ast` 从源文件摘出**真实的** `stats()`
+    >   执行，避免 import 触发渲染服务）：把实参 `html` 换回 `text` ⇒ 17 例**全部 0**；
+    >   改回 `html` ⇒ `cmb-callout-steps` **4 处**（`<steps>` + 3×`<step>`）、
+    >   `cmb-inline-in-container` **1 处**（`<Badge>新</Badge>`）。红/绿差异恰为这 2 例。
+    > - **产物已重算**：用同一个 `stats()` 作用在已落盘的 `combos/<id>.html` 上重算 `backend`
+    >   （`target/scratch/recompute_combos_backend.py`）。diff 证明**只有 `backend` 一个字段变了、
+    >   只有那 2 例变了**，17 例顺序未动、`ok`/`warnings` 沿用落盘值（来自渲染服务响应，本机 8081 不可达）。
+    > - **判定一条未翻**：`summarize-combos.mjs` 的 `upstreamVerdict` 只看 `leakedColon` 与
+    >   `missingMust`/`missingHtml`，`leakedTag` 仅作展示。重跑闸 9b：**17 组合 / 失败项 0**，
+    >   上游汇总仍是 `nested-unsupported 8 / silently-lost 1 / ok 8`。
+    >
+    > **白名单的实际边界（本轮查清，供泛化时用）**：从 552 份 render-service 产物里提取元素词汇表，
+    > 结果是**非标准词汇只出现在「判定为 na 的故意喂坏样例」里，pass 样例里一个都没有**
+    > （`target/scratch/passthrough_classify.py`）：
+    >
+    > | 非标准元素 | 出现位置 | 性质 |
+    > | --- | --- | --- |
+    > | `slider` | `blk-slider-selfclose`（na） | 上游自造、交给前端水合的**合法**元素（注册表里有 `slider`） |
+    > | `hint` | `reg-hint-tag`（na） | 故意用未支持标签式语法喂的样例 |
+    > | `layout-hero` | `reg-layout-hero-tag`（na） | 故意喂的未支持 `layout-*` 标签式 |
+    >
+    > 即：**合法自造元素（`slider`/`katex`/`svg` 系）与真残留（`steps`/`layout-*`）在词汇上无法只靠
+    > 「是不是 HTML」区分**——这正是第 10 条说「需要白名单，否则误报淹掉真信号」的实证依据。
+    > ~~泛化时要按**元素名白名单**放行，而不是按「未知标签」一律报警。~~
+    >
+    > ---
+    >
+    > **第三十七轮：上面这句「要按元素名白名单放行」被实测否决了——改用形态判据。**
+    >
+    > 我把「按元素名白名单」这条路真的算了一遍（`target/scratch/leakedtag_scope_all.py`）：
+    >
+    > - 口径 A（原设想）＝「凡不是 HTML5/SVG/MathML 的元素都算透传」，在全量 **552 份**产物上命中 **44 份**。
+    > - 这 44 份里 **41 份**是 `registry/tag-layout-*`，而这些样例的 `expect` 原文就是
+    >   「上游没有这一族的语法分支，**产物里必然留着字面语法**（这就是『等上游』的判据）」。
+    > - 也就是说：**收益 0、噪声 +44**——正是当初担心的「误报淹掉真信号」，而且淹得干干净净。
+    > - 根因是**合法与残留无法按名字区分**：`<slider images="…" interval="3" … />` 是**合法**的
+    >   （上游有意留下、交给前端水合，`component_matrix.json` 里 `ok:true`），
+    >   `<layout-hero>内容</layout-hero>` 是**真残留**——而两者**都在 `component_registry.json` 里**。
+    >
+    > **真正的区别是形态，不是名字**（`target/scratch/predicate_by_form.py`）：
+    >
+    > | | 形态 | 含义 |
+    > | --- | --- | --- |
+    > | 合法占位 | **自闭合、无内容**：`<slider … />` | 上游有意交给前端水合的占位符 |
+    > | 真残留 | **成对、包着可见文字**：`<layout-hero>文字</layout-hero>` | 语法没被消费，原样透传 |
+    >
+    > 判据因此改成：**非标准元素包着可见文本 ⇒ 语法未被消费；自闭合且无文本 ⇒ 占位符。**
+    > 这条判据**不需要任何元素名清单**，对 `steps` / `layout-*` / `hint` / `badge` 一视同仁，
+    > 且能正确把 `slider` 判为占位。
+    >
+    > **已落地**：
+    >
+    > - 新增可复用纯函数 **`tools/render-verify/gen/passthrough.py`**（`classify()` / `counts()`），
+    >   带 `--selftest`：8 条已知形态输入全过（含真实形态的 `slider` 自闭合、`layout-hero` 配对、
+    >   `steps` 嵌套 4 处、大小写混合的 `</Badge>`、空内容配对、纯标准元素、空串）。
+    > - `round8_combos.py` 的 `stats()` 新增 `elementPassthrough` / `elementPlaceholder` 两项
+    >   （连同名字清单）；`summarize-combos.mjs` 每个用例都印出形态判据的结论。
+    > - **产物重算是纯增量**（`target/scratch/diff_combos_r37.py`）：只新增那 4 个字段，
+    >   既有字段（含 `backend` 的全部子键）**一字未动**、17 例顺序未动。
+    > - **判定一条未翻**：重跑闸 9b 仍 **17 组合 / 失败项 0**，上游汇总仍
+    >   `nested-unsupported 8 / silently-lost 1 / ok 8`。
+    >
+    > **⚠️ 边界（不许当定理用）**：
+    >
+    > 1. 「自闭合 ⇒ 占位」在现有语料里**只有 `slider` 一个正例（n=1）**。若上游将来真把某个未消费的
+    >    元素自闭合输出，本判据会**漏报**。
+    > 2. 「包文本 ⇒ 透传」在现有语料里 38 份故意喂坏样例 + 2 个真残留**全部命中、零反例**；
+    >    但若上游有意输出一个「包着文本的水合容器」，本判据会**误报**。
+    > 3. 因此本判据**只作线索，仍不进判定**。它回答的是 **Q1「语法被消费了吗」**（事实问题，形态可判）；
+    >    而 **Q2「这算不算缺陷」**取决于「这份输入本来就该渲染吗」，只能由用例声明的
+    >    `must`/`mustHtml` 回答——这就是 `cmb-callout-steps` 依然留在 `silently-lost` 的原因。
+    >
+    > **这一条至此可以收口**：判据已泛化落地，剩余的不确定性（两条边界）**无法靠现有语料消除**，
+    > 需等上游出现新的形态样本（归入第 3 条「继续采样」）。
+    >
+    > **踩坑记录（本模块开发时真实踩到）**：找闭标签时第一版写了大小写敏感的
+    > `html.find('</badge>')`，而产物里是 `</Badge>` ⇒ 找不到 ⇒ 把「成对包文本」误判成「自闭合占位」。
+    > 已改为 `re.I` 匹配，并把这条写进模块文档与 selftest 用例（那条 `<Badge>新</Badge>`）。
+    > **又一次「看起来算出来了、其实是算错了」。**
 11. **「等上游」清单已降级**（第十轮结论，无需动作，仅记录）：9 条里每一条都有**只改写法**的替代方案且 10 条全部通过两条路径（§3.14④），所以它们**不阻塞**「所有组件两条路径都渲染正确」这个验收标准。上游若哪天实现了这些写法，仍按 §3.12③ 表里记的验证动作复跑；不复跑也不影响当前交付。
 12. **前端静态产物不会随启动自动构建**（第十五轮新增，**P1，会复发的用户可见故障，需用户拍板**）：
     `frontend-maven-plugin` 的三个 execution 都绑在 `prepare-package`，而 `spring-boot:run` 只到 `test-compile`；
@@ -6070,11 +6204,234 @@ docker exec momo-mysql-dev mysql -uroot -p"$PW" -D wechat-article -e "SELECT ...
     缺失/陈旧就 WARN 或拒绝启动（不动构建配置，兜底）；C 只在 README/复现手册写明（零风险但靠人记）；
     D 提供一个先构建再启动的 `dev-start.sh`。**建议 A + B + C。**
     完整对照表（改动位置 / 风险 / 回滚）见 `docs/dev/render-verification.md` §3.11④，触发条件与补救命令见 §六 第 19 条。
-13. **把汇总脚本的输出改成按 id 排序**（第十五轮新增，P3，可选）：`all_summary.json` /
-    `round10_component_paths.json` 目前按 `target/probe/components/` 的目录列举顺序排列，
-    导致同一份判定在不同机器/不同 clone 上**行序不同**（第十五轮实测：79 行集合相同、顺序不同）。
-    判定数字不受影响，但「逐字节可复现」做不到。加一次按 id 排序即可（**本轮未改**，属可选优化）。
+
+    > **落地进展（2026-09-17，第三十六轮）**：**B、C、D 均已做，A 经证据否决**，因此这一条的
+    > 「需用户拍板」只剩 A 那一条分支——而 A 已被否决（`frontend-maven-plugin` 不在本地仓库，
+    > 前移 phase 会让每一次 `mvn -o test` 都在插件解析阶段失败，即为了修前端陈旧而打破项目自己的离线闸门）。
+    > - **B**：`WebUiArtifactCheck`（`@Order(35)`，启动自检，只 WARN 不阻塞）。
+    > - **C**：README.md / README_CN.md 已写明「直接 `spring-boot:run` 不会构建前端」。
+    > - **D**：`scripts/dev-start.sh`（构建前端到 `target/classes/static` 再启动；`--build-only`；
+    >   无 `webui`/`node`/`npm` 时给明确退出码 69；构建后断言 `index.html` 真落地，否则 70；cwd 无关）。
+    > - **A**：否决理由与前提见 `render-verification.md` §3.11 ④-1（要重启 A 必须先把插件装进本地仓库）。
+    >
+    > 故本条**不再阻塞**：故障已从「用户看到空白页」降级为「启动日志一条 WARN」，
+    > 且想自动修就走 `scripts/dev-start.sh`。原始观测与四方案对照保留在上面，历史汇报不重写。
+13. ~~**把汇总脚本的输出改成按 id 排序**（第十五轮新增，P3，可选）~~ **已完成（第三十六轮）**。
+    原描述写的成因**不准确**，实测更正如下：
+
+    - **只有 `all_summary.{md,json}` 会随输入行序变化**，`round10_component_paths.{md,json}` **本来就不变**——
+      后者遍历的是 `component_matrix.json`（`matrixRows`，手写清单），不是 `all_result.json` 的 `samples`。
+      原描述把两支并列说成同一成因，是错的。
+    - 成因也**不是「`target/probe/components/` 的目录列举顺序」**：这两支脚本都不读那个目录来定行序
+      （`readdirSync` 只出现在 `r25-*` / `r28-*` / `r34-*` 等浏览器驱动器里，且大多已 `.sort()`）。
+      真因在 `tools/render-verify/gen/component_matrix.py` 的**产物合并历史**：
+      `by_id = {row['id']: row for row in existing}` 再逐条覆盖，于是 dict 插入序 = **老行在前、新行追加在后**，
+      同一份样例集在不同 clone / 不同跑次上顺序可以不同。
+    - 修复：`tools/render-verify/browser/summarize-all.mjs` 遍历 `[...raw.samples].sort(by id)`。
+      **只改产物行序，不改任何判定**——已验：`counts` 逐字节相同（pass 70 / na 9）、
+      79 条逐条 verdict 差异 **0 条**、`byCategory` 值全等（只有 key 顺序随之确定化）。
+
+    **反例证明（第三十六轮实测）**：借 `paths.mjs` 现成的 `RENDER_VERIFY_PROBE_DIR` 把产物复制到临时目录，
+    把 `all_result.json` 的 `samples` **整体反转**（集合不变、顺序不同）后重跑——
+    修复前 `all_summary.{md,json}` 的 SHA256 均 **DIFFERS**（行序确实跟着输入走，且 `round10` 两支 IDENTICAL，
+    与上面的成因更正一致）；修复后同样反转输入，两份产物 SHA256 **IDENTICAL**。
+    另验：`--selftest` 仍绿（5 条用例全过）、`round29_gate_audit.mjs` 的 9a 红队项仍判红
+    （把第 1 例编辑器侧文字改坏 → `fail md-heading`、退出码 1），即排序没有削弱闸的判别力。
+    ⚠️ 注意 `--selftest` 里的「第 1 条 / 第 2 条」现在是**按 id 排序后**的第 1/2 条
+    （`attr-callout-title` / `attr-compare-marker-cn`，此前是 `md-heading` / `md-list`）——这是排序的预期副作用，非回归。
 14. **保存侧语法自检的定位需要明确**（第十五轮新增，P2，产品决策）：现状是**提示而非拒绝**，
     且只覆盖智能体 `save_article_draft`，编辑器 REST 保存路径没有这项检查（证据见 §3.19③）。
     若产品上需要「人工保存也拦一下」，那是新增行为，需用户拍板——注意与 D19 的教训冲突
     （硬拒会让整轮白干，所以当初选了提示）。
+15. ~~**「读语义的方法被拿来当写目标」值得在别处也扫一遍**（第三十六轮遗留的建议）~~ **第三十七轮已做，全量扫完，仓库里没有第二处**：
+
+    **背景**：第三十六轮修掉一个真实缺陷——`LlmProfileService.syncDefaultFromConfig` 用
+    `defaultProfile()`（语义是「运行时挑一个来用」，实现是 `findDefault() ?? findFirst()`）
+    **当作写入目标**，于是当 `LLM_PROFILE` 有行但都不是 `IS_DEFAULT=1` 时，legacy
+    `PUT /api/settings/llm` 会**静默且不可逆地**覆盖掉第一条用户档案的字段。
+    根因是**命名**：`defaultProfile()` 读起来像「那条实体」，实际是「挑一条来用」。
+    当时的遗留建议是「同类模式在别处也扫一遍」。
+
+    **扫描结果**（`target/scratch/audit_read_as_write.py`，只读，扫 `src/main` 全部 Java）：
+
+    | 判据 | 结果 |
+    | --- | --- |
+    | **Q1** 带「回落到另一行」语义的方法（空值判断 + 三目 + 体内 ≥2 个不同调用 + 被判断为 null 的变量本身来自某个调用） | **64 个**（`defaultProfile()` 已确认在列） |
+    | **Q2** 这些方法的返回值被**当写目标**（`var.setXxx()` / `mapper.update(var)`）的地方 | **0 处** |
+
+    人工复核过 Q1 里最像的两个候选：`ScheduleTaskService.apply()` 是**改值器**
+    （判断并返回自己的参数，不是去挑一行）；`LlmConfigService.required()` 是单行表
+    「先 `current()` 取、取不到再 `insert`」的**正确**写法——它们不假装自己读到的就是目标行。
+
+    **结论：这一类缺陷在仓库里没有第二处。**
+
+    > **为什么必须再做一步红/绿反证（`target/scratch/prove_audit_is_alive.py`）**
+    >
+    > 上面那张表的最终输出是一个 **0**。而 **0 既可能是「仓库真的干净」，也可能是
+    > 「判据被改到再也打不着任何东西」——两者的输出一模一样。** 本项目已经在这上面栽过两次：
+    > `round8_combos.py` 的 `leakedTag` 恒为 0（第三十六轮，在剥掉标签的文本里找标签）、
+    > `passthrough.py` 第一版的大小写 bug（第三十七轮，`</badge>` 找不到 `</Badge>`）。
+    >
+    > 而本次审计的判据在开发过程中**被改了三次**，所以这个 0 尤其需要自证。
+    > 反证脚本从**真实源码**取出方法体（`defaultProfile()` / `required()` / `apply()`），
+    > 用审计脚本**直接 import 的真实判据**（不复制实现）去判：**7/7 与期望一致，EXIT=0**。
+    > 红例 2 个判可疑，绿例 5 个判不可疑。
+    >
+    > **反证第一次跑就红了**——正是它逼出了下面这条缺陷。
+
+    > **踩坑记录：这次审计自己犯了两次「看起来算出来了、其实是算错了」**
+    >
+    > **① Q1 漏掉了它本来要抓的那个方法。** 第一版要求三目的分支写成方法调用
+    > （`... : word()`），但 `defaultProfile()` 的真实写法是
+    > ```java
+    > LlmProfile profile = mapper.findDefault();
+    > return profile == null ? mapper.findFirst() : profile;   // 分支是**局部变量**
+    > ```
+    > 于是 Q1 把它直接排除，**整个审计退化成「永远报 0 处可疑」**。
+    > 一个打不着目标的判据，输出的 0 看起来和「干净」完全一样。
+    > 最终判据补了第 4 条：**被判断为 null 的那个变量，本身必须来自某个调用**——
+    > 这条同时排除了 `apply(task, request)` 这类改值器（它判断的是自己的参数）。
+    >
+    > **② 改判据的过程中连着踩掉三个假阳性，每个都让结论「看起来更严重」：**
+    >
+    > | 假阳性 | 根因 | 教训 |
+    > | --- | --- | --- |
+    > | `service.saveImage(..., image.bytes(), ...)` 被算成「把 `image` 当写目标」 | 判据过宽，把**变量当实参**也算成了写 | 写目标只有两种：变量**自己是接收者**的 setter、变量是 `mapper.update/upsert/insert` 的**首参** |
+    > | `LlmConfigService.imageRuntime` 里的 `config` 被判在 `required()` 里被写 | **固定 25 行窗口跨过了方法边界** | 文本扫描必须按**所属方法体**为界，不能用固定行数 |
+    > | `task = apply(...)` 被算成可疑 | ①`lines[j]` 应为 `lines[j-1]`（**差一**，整体多读一行）；②Q2 **只按方法名**匹配，把 A 文件的 `apply()` 错配到 B 文件里同名的回落方法上 | `j` 是 1-based 而 `lines` 是 0-based；**方法名在 Java 里根本不唯一**，必须按文件索引 |
+    >
+    > 三个假阳性全部朝「更严重」的方向偏。**如果只看输出不追根因，会得到三个并不存在的缺陷。**
+
+16. **第 5 条的阻塞原因已订正**（第三十七轮）：此前记成「本机渲染服务（`127.0.0.1:8081`）拒绝连接」，
+    **这是把两个不同的东西混为一谈了**——`127.0.0.1:8081` 是**本应用**，渲染服务是**远端的**
+    `https://www.bx9y.com.cn/__markflow_render`。实测远端服务**活着且可达**（GET/POST 均 **401**，
+    带假 token 也是 401 ⇒ 在按 token 正常鉴权，不是挂了）。唯一真阻塞是**令牌**：
+    `MARKFLOW_RENDER_TOKEN` 未设、`~/.zcode/secrets/markflow-render-token` 不存在
+    （`~/.zcode` 整个目录都不存在）、全盘搜 `*markflow*token*` 无任何文件。
+    令牌属**外部输入**，只能向渲染服务方索取。详见第 5 条下的订正块。
+
+17. **I10「运行中周期刷写」的接线此前没有任何测试钉住——已补上，并且这次是「真红过」的**（第三十八轮）：
+    第三十七轮发现「把 `executeRun` 里那行 `scheduleProgressFlush(...)` 改成 `= null`，53 个 schedule
+    相关用例全绿」，本轮把缺口补成 `TaskExecutionProgressWiringTest`（2 个用例）：
+
+    | 用例 | 钉住什么 |
+    | --- | --- |
+    | `progressIsFlushedByTheExecutorItselfWhileRunning` | 运行期间**执行线程自己**会周期调 `runMapper.updateProgress`；且刷进去的 `EXECUTION_LOG`/`TOOL_CALL_COUNT` 是**真工作区**的值（不是空壳） |
+    | `flushHonoursTheConfiguredInterval` | `progress-flush-seconds` **真被用上**：设成 3600 时，2.5 秒运行窗口内**不得**发生刷写（防「写死小值」「schedule 前先刷一次」这类假修复） |
+
+    反向验证（本轮实做）：改 `TaskExecutionService.java:247` 为 `= null` → 正例**红**、反向例**绿**；
+    还原 → 2/2 绿、`git diff` 为空。全套 **467 用例 / 0 失败 / BUILD SUCCESS**。
+
+    > **⚠️ 本轮踩到的坑比缺陷本身更值得记：变异验证差点全程测的是变异体自己。**
+    > 第一次「还原」用的是**保留时间戳的复制**（`Copy-Item` / `cp -p` 语义），还原后的源文件 mtime
+    > 仍**早于**变异时编译出的 `.class`，Maven 增量编译因此认为「源没变、无需重编」——于是**后面每一次
+    > 运行跑的都是那个变异过的 class**。表现极具误导性：正例稳定报「`updateProgress` = 0 次」，
+    > 而策略明明阻塞了 5 秒；同一方法用反射单独调却是好的（3 次/3.5 秒）；`scheduleWithFixedDelay`
+    > 的独立冒烟也正常（3 次/3.5 秒）。三个「看起来都正常」的证据同时指向「生产接线坏了」，
+    > **而真凶是构建缓存**。
+    >
+    > 定位手法（可复用）：`javap -c -p` 反汇编 `target/classes` 里的类，直接看 `executeRun` 的字节码里
+    > **有没有 `scheduleProgressFlush` 调用**——源码「看起来对」不算数，**要问编译器实际吃进去的是哪一份**。
+    > 另一个独立信号：反射取 `progressExecutor` 这个 `ThreadPoolExecutor` 的 `getTaskCount()`，
+    > 真没派发过任务是 **0**（正常应为 >0）。
+    >
+    > 结论：**变异验证必须确认「变异真的生效」与「还原真的生效」**，否则红/绿两个方向都可能是假的。
+    > 用时间戳不保留的写法还原（或直接删掉对应 `.class`）才能让增量编译重新编译。
+    > 这与第三十六轮 `leakedTag`、第三十七轮大小写 bug 是同一类病：**计数器坏了比没有计数器更糟**。
+
+18. **本地可跑环境已搭好（第三十八轮），供人工验证**（环境实测见下一条）：
+    Podman 容器 `watb-test-mysql` + 应用 `http://127.0.0.1:8081`，登录 `admin` / `Admin@123`。
+    两个环境坑：
+    - **Podman 只把 3306 绑在 IPv6 回环 `[::1]`**，`127.0.0.1:3306` 被拒（`netstat` 显示
+      `TCP [::1]:3306`）。`.env` 里的 `ENV.MYSQL_URL` 因此要写 **`localhost`** 而不是 `127.0.0.1`
+      （`.env` 未被 git 跟踪、且在 `.gitignore` 里，改动只影响本机）。
+    - **`mvn package` 在离线模式下必失败**：`frontend-maven-plugin:2.0.2` 未进本地仓库
+      （它只绑在 `prepare-package` 阶段）。跑 `spring-boot:run` 不经过该阶段，可用；
+      `webui` 的产物已在 `target/classes/static` 里，不必重新构建前端。
+
+19. **本地环境的实测结论**（第三十八轮）：`GET /` 200、静态资源（JS 118.8 KB / CSS 57.5 KB）200、
+    `/api/health` 200、登录 200；`/api/tasks`、`/api/tasks/execution-modes`、`/api/dashboard`、
+    `/api/articles`、`/api/agents`、`/api/llm-profiles`、`/api/settings/llm`、`/api/settings/render`
+    **全部 200**。建任务 → 触发运行，`TASK_RUN` 行里 **`MODE='SINGLE'` 在插入时就已落库**
+    （这正是「看不出这轮走的是哪条链路」那个原始缺陷的修复点）。
+    该次运行 52 ms 即 `FAILED`，原因是**没配 LLM API Key**（`/api/settings/llm` 显示
+    `hasApiKey:false`），属环境缺失、不是缺陷；**也因此没能观察到「运行中」的周期刷写**——
+    默认间隔 15 秒，而失败发生得太快。要端到端看到 I10 的运行中刷写，需要一个能真跑
+    15 秒以上的 LLM Key（或把 `PROGRESS_FLUSH_SECONDS` 调小再触发一次慢运行）。
+    接线本身已由第 17 条的变异验证钉住。
+
+20. **模型档案已按评测表建齐，并端到端跑通（2026-09-18）**——第 19 条那个「环境缺 Key、跑不到 15 秒」
+    的限制**已经解除**：
+
+    - 通过 `https://nexus.bx9y.com.cn` 建了 **12 条档案**（S/A/B 三档，按《模型综合评测表》取交集）。
+      默认档案 = `deepseek-flash`（综合分 72.4 最高），兜底 = `hy4-preview`（Tier S + 限时免费），
+      **图片模型 = `sensenova-u1.5-lite` 挂在默认档案上**（`imageCarrier` 沿链找第一个声明
+      `imageModelName` 的档案，挂默认即可覆盖所有未单独声明的智能体）。
+    - 密钥经 API 写入，落库为 `API_KEY_ENCRYPTED`（AES-GCM），**源码里没有硬编码密钥**。
+    - **实机验收**：触发一次 SINGLE 定时任务 → `status=SUCCESS`、**38 次工具调用**、
+      生成 **1 篇文章 + 3 张配图**（全部落在 `data/uploads/`，正文 `<img>` 指向本地 `/uploads/`，
+      **0 个占位图、0 个外链图**）、耗时 205.8 秒、`switchedProfile=false`。
+      这一次运行同时**实机印证了 I10 的周期刷写**：`toolCallCount` 在运行中持续落库
+      （0→3→12→20→29→34→35→38），`heartbeatAt` 每 15 秒更新一次——第 19 条当时想观察而没能
+      观察到的现象，这里补上了。
+    - 可用性与 09-15 那轮**大面积反转**（`glm-5.3`、`kimi-k3`、`dots3-note-prev` 由 503 变可用），
+      原因与教训写在 `docs/dev/model-availability-probe.md` 第七节：**可用性结论必须带
+      「哪把 key / 哪个渠道组」这个前提**。
+
+21. **修复一个真实缺陷：兜底档案被设成了主力档案自己**（2026-09-18 实机复现并修复）：
+
+    - **症状**：`LlmProfileSeeder.markFallbackIfUnset()` 原实现是「把**默认档案**标为兜底」。
+      当时默认档案恰好是 `hy4-preview`（免费），这个近似成立。但默认档案是可以被用户改成主力的
+      ——本轮就把默认档案设成了 `deepseek-flash`。于是**主用与兜底指向同一条档案**，
+      `failoverChain` 按 id 去重后，档案链**少掉一跳**：主用一挂，链上直接跳到其它档案，
+      兜底那段形同虚设。
+    - **为什么不报错**：这不是异常，只是一次静默降级——不告警、不失败，只是少了一次救场机会。
+      与第 17 条那个「计数器坏了」是同一类病：**声明与真实不同向，而系统照样绿。**
+    - **修复**：改为按 `seeds()` 里的**声明**取（`Seed.fallback()` 为真的那条 → `hy4-preview`），
+      只有当它不存在（用户删了）才退回「标记默认档案」，保证链尾永远有东西可用。
+    - **证据**：先在实机上复现（删掉全部档案与绑定 → 重启 → 种子重建后
+      `deepseek-flash` 的 `IS_FALLBACK=1`、`hy4-preview` 为 0），修复后同样流程得到
+      `hy4-preview=1` / `deepseek-flash=0`。新增两条测试钉住：
+      `exactlyOneDeclaredFallbackProfileAndItIsNotAPrimaryBinding`（单测，含「兜底不得同时是
+      智能体主用档案」）、`fallsBackToMarkingTheDefaultWhenDeclaredFallbackIsMissing`（覆盖
+      `orElse` 分支）。
+    - **同时暴露的用例缺陷**：`LlmProfileFallbackColumnPersistenceTests` 原先隐含假设
+      「库里只有我造的那条兜底」，但种子现在会**真的**建出 `hy4-preview` 并标为兜底，
+      于是 `findFallback()` 先命中种子那条。已改为 `@BeforeEach` 快照并清空兜底标志、
+      `@AfterEach` 还原——**这类红不是产品缺陷，而是用例对全局状态有隐含依赖**，值得单独记一笔。
+    - 回归：全量 **470 tests / 0 failures / 0 errors / BUILD SUCCESS**（原基线 467，本轮净增 3 条）。
+
+22. **修复一个真实缺陷：失败归类把「没配渲染令牌」说成「交付内容不合格」**（2026-09-18 实机踩到并修复）：
+
+    - **症状**：`TaskExecutionService.failureMessage()` 的分类器里，最后一条兜底是
+      「只要是 `BusinessException` → 【业务校验未通过】交付内容不满足落库要求（如标题/摘要超长、
+      素材归属等）」。而「排版技能需要 MarkFlow 渲染服务，请到系统设置 → 排版渲染服务启用并配置令牌」
+      **也是一个 `BusinessException`**，于是被兜底抢先命中，报成内容不合格。
+    - **为什么这是真缺陷**：那一次运行 **0 次工具调用**——内容压根没开始生成，与「标题超长」
+      「素材归属」毫无关系。用户照着这句提示去改提示词、改素材，永远修不好；真因是设置页里
+      渲染服务没启用。**错误的分类比没有分类更误导。**
+    - **修复**：在兜底之前加一条 `【渲染服务未就绪】`，明确指向「系统设置 → 排版渲染服务」
+      并给出第二条出路（换成指令式排版技能）。
+    - **匹配条件刻意收窄**：只认 `配置令牌` / `渲染令牌`，**不**用 `MarkFlow` / `渲染服务` 这种宽匹配。
+      因为 `MarkFlowRenderService` 还会抛「渲染失败：语法非法」「获取语法指令失败」这类**真的运行期故障**
+      ——那是要去查上游或产物的，与「没配令牌」处置方向完全不同；宽匹配等于用一个新误判换掉旧误判。
+      新增的 `genuineRenderFailureIsNotMisfiledAsMissingConfiguration` 专门钉这一点。
+    - **证据**：`unconfiguredRenderServiceIsNotBlamedOnTheDeliverable` 同时断言
+      「有正确分类」+「不再出现『交付内容不满足落库要求』」；变异验证（**删掉该分支**）→ 该用例变红，
+      还原后复绿。实机复核：同一任务重跑，`message` 已由「【业务校验未通过】…」变为
+      「【渲染服务未就绪】…」。
+    - 回归：全量 **485 tests / 0 failures / 0 errors / BUILD SUCCESS**。
+
+23. **⚠️ 当前唯一阻塞本地端到端验收的因素：MarkFlow 渲染令牌**（非缺陷，环境缺失）：
+
+    - `~/.zcode/secrets/markflow-render-token` **不存在**（该目录也不存在）、`MARKFLOW_RENDER_TOKEN`
+      环境变量未设、设置页 `hasToken:false`。直连 `POST https://www.bx9y.com.cn/__markflow_render`
+      实测 **HTTP 401 `{"ok":false,"error":"X-Render-Token 无效"}`**——服务本身活着（站点首页 200），
+      只是没有有效令牌。
+    - **影响范围**：任何绑定 `MarkFlow 精排版式`（SKILL id=4，`engine=MARKFLOW`）的任务都会在
+      **开工前**中止（0 次工具调用）。用户自建的 3 个任务（id=1/2/3）**全部绑定了 id=4**，所以都会这样失败。
+    - **不是本轮引入的**：这正是 §八 遗留清单里那条一直挂着的「blocked: render token missing」。
+    - **可绕过的验收路径**：把任务的排版技能换成**指令式**版式（SKILL id=1/2/3，`engine=PROMPT`）。
+      已建「验收示例-指令式排版」（任务 id=4，绑 SKILL 1）用于证明「除渲染令牌外，整条链路是通的」。
+    - 要真正解锁渲染式排版，需向渲染服务方索取令牌，然后二选一：设置页填入，或设环境变量
+      `MARKFLOW_RENDER_TOKEN`（环境变量优先，适合 Docker）。

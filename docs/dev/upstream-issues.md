@@ -683,6 +683,65 @@ R4 上表的两行**逐项复现**（单图时闭合写法本来就该退化成�
 - **期望行为**：解析失败时做一次安全修复（转义字符串值内的裸双引号 / 容忍尾随内容），
   或把原始参数回传给模型让它自我修正，而不是直接计入工具失败。
 - **当前绕过**：本项目只能把工具失败数如实记进 `stages_summary.toolFailures` 并继续（run#73 记了 5 次）。
+- **补充（2026-09-16，run#129 复核）**：A4 的形态不止「字符串内嵌裸双引号」一种。run#129 审核阶段
+  7 次尝试 7 次失败，参数本身是**合法 JSON**，失败在于**形状与声明不符**——模型把 `List<String>`
+  的 `issues`/`suggestions` 稳定地传成**对象**（甚至把整份结论原封嵌套进 `issues`）。
+  本条因此应扩读为「`ToolParam` 对形状不符零容错」。本项目侧已加 `ToolParamRepair`
+  在解析前归一化（见 A5 的说明与 `docs/dev/scheduled-task-replay-guard-fix-plan.md`），
+  但那是**调用方绕行**，根本修复仍应在上游：`ToolParam` 至少应把原始参数回传给模型让它自我修正。
+
+### A5（P1）`handleToolCallsAndContinue` 的 tool 消息 id 读自 `ToolCallEntry`，本回合内无钩子可修
+
+> **2026-09-18 状态更新：上游缺陷依然存在，但本项目已能绕过（不再依赖上游修复）。**
+> 新增 `ReplayWireNormalizer`（okhttp `Interceptor`，挂载于 `AgentFactory.createModel`）在报文发出前
+> 直接改 JSON，补齐 assistant 的 `tool_calls[].id` 与 tool 的 `tool_call_id`。
+> 下面「当前绕过（本项目侧，不完全）」一节里「只有最后一次工具调用可能带 null 发出」的
+> **残留已消除**；但**期望行为**（上游自己兜底）仍未实现，故本条对上游**继续有效**。
+> 另：本节末尾「网关**通常**会推送 id、这是间歇性缺陷」的措辞已被证伪，详见下方更正。
+
+- **现象**：网关漏推 `tool_calls[].id` 分片时，agent4j 把 `ToolCallEntry.callId` 留成 null。
+  该 null 会**同时**污染 assistant 的 `tool_calls[].id` 与随后 tool 消息的 `tool_call_id`。
+  assistant 侧能在工具执行前修到（对象共享），**tool 侧不能**——于是同一轮里两者可能不一致
+  （assistant 有合成 id、tool 是 null）。
+- **证据链（agent4j 2.3.3 字节码，`target/agent4j/oai-full.txt`）**：
+  1. `OpenAIChatModel$1` 的 SSE 解析器只在 `hasTextValue(idNode)` 为真时写 `ToolCallEntry.callId`
+     （偏移 591 → 604）；`hasTextValue` 对 `null` 与「节点缺失」**都**返回 false。
+  2. `handleToolCallsAndContinue` 偏移 76-96 用该 null 调 `Message.appendToolCall(callId, …)`；
+     `Message.appendToolCall` **不做兜底**。
+  3. tool 消息在偏移 254 由 `Message.fromTool().withToolResult(entry.callId, …)` 构造，
+     读的是 `ToolCallEntry.callId`**而不是**传给回调的 `ToolDescriptor`——
+     `getCallId` 在 `OpenAIChatModel` 字节码里**从未出现**（只有 L290/L419 的 `setCallId`）。
+     **补充（2026-09-18）**：偏移 259 的 `getfield ToolCallEntry.callId` 直接取字段，
+     偏移 181 的 `setCallId` 只是一份**无人再读**的副本，所以改 `ToolDescriptor` 无效。
+  4. 构造发生在偏移 231 的 `toolExecutor.execute` **返回之后**，而下一轮请求在偏移 293 的
+     `executeAgentLoop` 里**立刻**发出——两者之间不存在任何回调钩子
+     （`ResultHandler` 只有 `onTool`/`onToolError` 且都在执行前触发）。
+  5. `AgentClientSession.executeCommand` 也只在 `get()` 之后才 `history.addAll(appendedMessages)`
+     （偏移 99-110），所以连「下次会话再补」都来不及救这一轮。
+- **最小复现**：让模型对某次工具调用返回**不带 `id` 字段**的 `tool_calls` 分片。
+  本项目侧的确定性复现是 `ToolCallArgumentsReplayTest#wireNormalizerFillsToolCallIdForLastToolCallOfRound`。
+- **期望行为**：`handleToolCallsAndContinue` 在 `entry.callId` 为空时兜底
+  （用 `descriptor.getCallId()`、或按位置合成一个稳定 id），使 assistant 与 tool 两侧**成对**；
+  或让 `ToolDescriptor` 成为 tool 消息 id 的来源而不是 `ToolCallEntry`。
+- ~~**当前绕过（本项目侧，不完全）**：`ToolCallArgumentGuard` 在进入 `ask` 时补齐两侧，
+  因此**多工具调用轮次与后续轮次**都能收敛；只有「一轮里最后一次工具调用」的 tool 消息
+  可能带着 null 发出。真机证据显示网关**通常**会推送 id，这是**间歇性**缺陷而非每轮必炸
+  （run#129 只有一处 400，且报的是 assistant 侧 `missing field \`id\``）。~~
+  → **2026-09-18 更正（本项目侧现已完全绕过）**：两层守卫合起来把两侧都补齐——
+  `ToolCallArgumentGuard` 在工具执行前修历史与 assistant 侧，`ReplayWireNormalizer`
+  在报文发出前兜住轮内够不着的 tool 侧。**残留已消除**。
+
+> **对上面「间歇性 / 通常推送 id」措辞的更正**：那是**采样偏差**下的误判。
+> 渲染令牌配好之前，任务大多在更早的环节就失败，根本没跑到「多工具调用 + 长历史」的阶段；
+> 令牌修好后任务能跑完长链路，tool 侧 400 立刻连续现形：
+> ```
+> messages[20]: missing field `tool_call_id` at line 233 column 3   （run#7，13 次工具调用）
+> messages[27]: missing field `tool_call_id` at line 331 column 3   （run#9，20 次工具调用）
+> ```
+> 且该 400 是**终局**的：`AgentInvoker` 只在「本次尝试零工具调用」时重试（`AgentInvoker.java:199`），
+> 已跑过工具就不再重试，400 又既非 permanent 也非 transient。
+> **教训**：「现有日志里没观测到」只能推出「尚未观测到」，推不出「不存在」——
+> 尤其当现有样本的失败点系统性地早于待验证环节时。
 
 ---
 

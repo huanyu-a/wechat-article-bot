@@ -176,7 +176,7 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/j
 | --- | --- | --- | --- | --- |
 | 1 | **CRITICAL** | 编辑**任何存量档案**都存不进去 | `node -e` 复现：`Object.assign` 会把 `''` 覆盖成 `null` → `.trim()` 抛 TypeError。**这是本次引入的回归**（改动前 `profilePayload()` 没有这个字段）。我原先的实机验收走的是 raw `curl`，恰好绕过了这条 UI 路径 | `openProfile` 与 `profilePayload` 两处 `|| ''` 归范 |
 | 2 | **MAJOR** | 档案路径硬编码 `enabled=true`，绕过全局「启用 AI 服务」开关 | 对比 `HEAD~1` 的 `imageAvailable()`：它读 `RuntimeConfig.enabled`，而该值在有默认档案时来自**默认档案的可用性**（设置页把 `llm_config` 写透到默认档案）。故档案路径确实能在一个「已停用」的部署上继续调付费生图接口 | `imageRuntime` 先判 `config.enabled()` 再找承载档案 |
-| 3 | **MAJOR** | 前端配图模型解析只走两跳、且不筛可用性，会显示后端不会用的模型与错误来源 | 逐行比对 `failoverChain` + `addIfUsable` 与前端 `chain.push` | 前端改为逐跳同口径（绑定→默认→兜底→其余已启用按 id 升序；`enabled && hasApiKey`；按 id 去重） |
+| 3 | **MAJOR** | 前端配图模型解析只走两跳、且不筛可用性，会显示后端不会用的模型与错误来源 | 逐行比对 `failoverChain` + `addIfUsable` 与前端 `chain.push` | 前端改为逐跳同口径（绑定→默认→兜底→其余已启用按 id 升序；`enabled && hasApiKey`；按 id 去重）。**⚠️ 此修复不完整，仍漏了 `findFirst()` 回落一跳，见 §8.4.1** |
 | 4 | MINOR | `ArticleAiService.imageProfileId` 不看 `enabled`，与 `ScheduledAgentFactory` 同名助手规则相反，且与自己的 javadoc 不符 | 两处源码并排对照 | 统一为「定义缺失或停用 → null」 |
 | 5 | MINOR | 设置页「图片模型」留空文案「留空则禁用 AI 画图和图片编辑」已不成立 | 档案路径不读全局图片模型名 | 文案改为说明「档案声明了就用档案的」 |
 | 6 | MINOR | 三处测试断言过松：替身架空了 `imageCarrier` 那一跳、`isNotEqualTo` 弱断言、只读工具用例无区分力 | 读替身实现：`when(service.imageCarrier(any())).thenReturn(carrier)` 无条件返回 | 替身复刻真实判据；新增 `forcedCarrier`；弱断言改 `isEqualTo`；只读工具改为两次构造逐位对比 |
@@ -192,5 +192,107 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/j
 
 ### 8.3 本轮之后仍存在的已知边界
 
+> **两条均已在 §8.4 收口**（2026-09-17）。本节保留原样以记录当时的真实状态。
+
 - **HTTP 层「null 在场」无自动化用例**（§8.2 第二条）：当前只有实机证据，未加集成测试。
 - **前端档案链逻辑无自动化用例**：`webui` 无测试框架，前端闸门只有 `check:imports` + `vite build`，因此 #3 的修复靠人工比对与构建产物核对（已确认 `|| ''` 与链逻辑都在产物里）。
+
+### 8.4 边界收口（2026-09-17）
+
+§8.3 的两条边界本轮均已收口。**其中第 2 条在收口过程中查出一个残留缺陷**，记在这里以免后人以为 #3 已经彻底修好。
+
+| # | 边界 | 收口方式 |
+| --- | --- | --- |
+| 1 | HTTP 层「null 在场」无自动化用例 | `AgentApiIntegrationTests.nullableProfileFieldsArePresentAsNullOverHttp`（集成测试，走真实 Spring MVC 栈） |
+| 2 | 前端档案链逻辑无自动化用例 | 抽出 `webui/src/utils/profiles.js` + 闸门 `webui/scripts/check-profile-chain-parity.mjs`（接入 `prebuild`） |
+
+#### 8.4.1 残留缺陷：前端漏抄了「无 is_default 时回落第一条」这一跳
+
+§8.1 的 #3 声称前端已「改为逐跳同口径」。**这个说法不完整**：前端抄了「绑定 → 默认 → 兜底 → 其余已启用」的顺序，但第 2 跳只写了 `usable.find(p => p.isDefault)`，**漏掉了后端 `defaultProfile()` 的 `?? findFirst()` 回落**（`LlmProfileService:62-65`）。
+
+后果是真实可见的：当**没有任何档案带 `is_default` 标记**、且**兜底档案声明了 `imageModelName`** 时——
+
+- 后端 `defaultProfile()` 回落到全表第一条 → 用它（或它之后的兜底档案）；
+- 前端第 2 跳什么都不加 → 兜底档案被提前到第 2 位 → 界面显示兜底档案的图片模型。
+
+也就是说「配图模型」卡片会报出一个**后端不会用的模型名**——正是 #3 当初要修的那个毛病，只是换了个触发条件。这个状态在真库里可达：`setDefault` 是应用层保证唯一的，但清掉 `is_default` 标记（或建库后从未设过默认）并不违反任何约束。
+
+**验真方式**：把两套实现并排跑同一批档案（12 个用例，含「无 is_default」「第一条被停用」「绑定档无 key」等边界），旧前端实现与后端在 2 个用例上分歧（链顺序 `[2,1]` vs `[1,2]`、图片来源 `Y` vs `X`）。
+
+**修复**：`imageChain` 的第 2 跳改为 `ordered.find(p => p.isDefault) || ordered[0] || null`。这里有个**易错点**：回落取的必须是**未过滤**的全表第一条，而不是「第一条可用档案」——后端是「先 `findFirst()`、再交给 `addIfUsable` 判断」，若第一条恰好被停用，这一跳就**什么都不加**（不会顺延到第二条可用档案）。照抄成「第一条可用档案」会让兜底档案的位置提前，重新引入同类错误。`E first disabled, no is_default` 这个用例专门钉住它。
+
+**确定性验证（双向红证）**：
+
+- 把前端第 2 跳改回漏掉回落的旧写法 → 闸门失败，报 4 条（2 个用例的链顺序与图片来源各 1 条）；
+- 把后端 `failoverChain` 的「默认」与「兜底」两跳对调 → 闸门的**结构自检**失败，提示前端需同步调整。
+
+两次均随后还原并核对 `git diff` 为空。
+
+#### 8.4.2 闸门设计说明
+
+`check-profile-chain-parity.mjs` 与既有的 `check-shared-imports.mjs` 同风格（纯 node、无测试框架依赖、失败 `exit 1` + `console.error`），做两道检查：
+
+- **结构自检**：解析 `LlmProfileService.java`，断言 `failoverChain` 仍是那 4 跳、且 `defaultProfile()` 仍保留 `findDefault() → findFirst()` 回落。**后端改顺序时前端会被提醒**，避免「前端悄悄过期而闸门仍绿」。
+- **行为自检**：把 12 组档案喂给前端实现，断言链顺序与图片模型来源。
+
+结构自检是必要的：只测行为的话，后端改了顺序而前端没改，只要那 12 个用例恰好没覆盖新顺序，闸门就会放行——而这正是 §8.4.1 那个缺陷能存活至今的原因。
+
+#### 8.4.3 一个测试隔离现象，最终查明是**生产缺陷**（不是测试脆性）
+
+新增 HTTP 契约用例时踩到一个现象：`AgentApiIntegrationTests` 的
+`llmProfileCrudAndSettingsLlmCompatMapping` 隐含依赖「库里只有它自己造的档案」——它的
+`PUT /api/settings/llm` 走 `syncDefaultFromConfig → defaultProfile() → findFirst()`，
+若库中先存在别的档案，写透就会落到那条档案上而不标记 `is_default`，于是它的
+`$.data[?(@.isDefault==true)]` 断言落空。
+
+它平时不暴露，是因为 JUnit 5 的方法执行顺序由**方法名哈希**决定：新增一个方法会改变顺序。
+新用例最初「先建一条档案、不清理」，恰好排到它前面就把它挤红了。
+
+**第一轮（2026-09-17 上午）把它判成了「测试脆性」并只绕开**（新用例改为自建档案 +
+`try/finally` 删除）。**这个判断是错的**——那条 `findFirst()` 落回不是测试才有的路径，
+它是 `defaultProfile()` 的正常语义，因此**生产上完全一样会发生**。绕开测试只是把症状藏起来。
+
+#### 8.4.4 真缺陷：存量设置页会静默改写用户自建的档案
+
+触发前提在生产上可达，且**不需要任何异常操作**：用户先在档案页建了一条自己的档案、
+却从没点过「设为默认」（或建库后从未迁移过），此时 `LLM_PROFILE` 里有行、但没有一行 `is_default=1`。
+此后只要打开**旧的系统设置页**保存一次 LLM 配置：
+
+| 步骤 | 实际发生的事 |
+| --- | --- |
+| `PUT /api/settings/llm` | `LlmConfigService` 写 `llm_config`，再调 `syncDefaultFromConfig` |
+| 选写透目标 | `defaultProfile()` = `findDefault()` **`?? findFirst()`** → 落到**第一条用户档案** |
+| 写入 | 该档案的 `provider`/`baseUrl`/`modelName`/`apiKey` 被**整条覆盖** |
+| 标记 | **不打** `is_default` —— 它仍是普通档案 |
+| 用户可见的后果 | 请求全部成功、设置页回显也对（读路径同样回落 `findFirst`），但用户下次打开档案页会发现自己的档案被动过，且旧 key 已丢 |
+
+**为什么危险**：`apiKey` 被覆盖是不可逆的（只存加密值，没有原文可回滚）；而且因为读路径也用同一个
+回落，**回显与写入看起来完全自洽**，没有任何一处会报错或告警。
+
+**修复**：`syncDefaultFromConfig` 改用 `mapper.findDefault()`（只认真正的默认档案），
+找不到时按 javadoc 说的**创建**：若已存在一条名为「默认配置」的档案就**收养**它并补标记
+（避免建出重名档案、让 `findByName` 变歧义），否则新建一条带 `is_default` 的。
+
+**为什么不「把第一条就地提升为默认」**：`delete` 拒绝删除默认档案，就地提升会把用户自建的档案
+变成**不可删**——等于替用户做了一个他没同意过的决定。新建一条只多一行且随时可删，代价更小。
+
+**这条结论在仓库里已经写过一次**：`LlmProfileSeeder.defaultSource()` 的 javadoc 明确写着
+「不直接用 `defaultProfile()` 的回落语义」，理由是「库里若存在无 key 的空档案，拿它当来源会复制出
+一个同样不可用的档案」。**同一类错误、同一个方法、同一份结论，在 `syncDefaultFromConfig` 里漏用了**。
+根因是 `defaultProfile()` 这个名字听起来像「默认档案」这一**实体**，实际语义却是「运行时挑一条来用」
+这一**动作**——它的回落对**读**是容错，对**写**就是改错对象。
+
+**确定性验证**：
+
+| 层面 | 用例 | 反例证明 |
+| --- | --- | --- |
+| 单测 | `legacyWriteThroughCreatesDefaultInsteadOfHijackingTheFirstProfile`、`legacyWriteThroughUpdatesTheExistingDefault`（对照：正常路径不得变成「每次新建」）、`legacyWriteThroughAdoptsAnExistingSameNamedProfile` | 把 `findDefault()` 改回 `defaultProfile()` → 第 1 例失败：`expected: "用户原来的模型" but was: "settings-model"` |
+| HTTP 端到端 | `legacySettingsWriteThroughDoesNotHijackAUserProfile`（造出「有档案但无 is_default」的真实库状态） | 同上改动 → 该例失败，报 `expected: "用户原来的模型" but was: "settings-model"` |
+
+**为什么必须留 HTTP 那条**：触发前提是**数据库状态**（库里存在非默认档案），单测只能证明逻辑分支，
+证明不了这个状态在真实表里会走到那条分支。而 §8.4.3 那个现象本身也说明：只靠单测 + 一次「单独跑就绿」
+的观察，很容易把生产缺陷误判成测试顺序问题。
+
+**顺带修正**：`llmProfileCrudAndSettingsLlmCompatMapping` 现在不再依赖执行顺序了——它脆的根因就是
+这个缺陷（写透落到别人的档案上）。本轮**没有**给它加 `@TestMethodOrder`：那是给症状打补丁。
+修好写透目标后，它无论在什么顺序下都成立。

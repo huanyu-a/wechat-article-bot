@@ -161,6 +161,27 @@ python tools/render-verify/gen/round10_alternatives.py
 python tools/render-verify/gen/round10_registry_closure.py
 ```
 
+**元素形态透传判据（`gen/passthrough.py`，第三十七轮）**：一个**不联网、不写产物**的共享纯函数，
+被 `round8_combos.py` 的 `stats()` 调用，用来把「非标准元素」按**形态**分成两类：
+
+```bash
+python tools/render-verify/gen/passthrough.py --selftest   # 8 条已知形态，期望全过、EXIT=0
+```
+
+| | 形态 | 含义 |
+| --- | --- | --- |
+| 合法占位 | **自闭合、无内容**：`<slider … />` | 上游有意交给前端水合的占位符 |
+| 真残留 | **成对、包着可见文字**：`<layout-hero>文字</layout-hero>` | 语法没被消费，原样透传 |
+
+**为什么不用「元素名白名单」**（第 10 条原设想）：实测按「非 HTML5/SVG/MathML 即透传」在全量 552 份
+产物上命中 44 份，其中 41 份是 `registry/tag-layout-*`——而这些样例的 `expect` 原文就是
+「产物里必然留着字面语法」。收益 0、噪声 +44。且 `<slider … />`（合法）与 `<layout-hero>…</layout-hero>`
+（残留）**都在 `component_registry.json` 里**，按名字无法区分。详见 `known-issues-handoff.md` §八 第 10 条。
+
+> ⚠️ **它只作线索，不进判定**：判据回答 **Q1「语法被消费了吗」**（事实，形态可判），
+> 不回答 **Q2「这算不算缺陷」**（取决于用例声明的 `must`/`mustHtml`）。
+> 边界：「自闭合 ⇒ 占位」现有语料只有 `slider` 一个正例（n=1）；「包文本 ⇒ 透传」零反例但同理可能误报。
+
 **期望输出**：`component_matrix.py` 打 79 行 `len=… warn=… miss=- svg=… katex=…`，
 末尾 `wrote target/probe/component_matrix.json (+ 79 rows)`；校验：
 
@@ -489,6 +510,12 @@ Maven `frontend-maven-plugin` 在 `prepare-package` 阶段写进 `target/classes
    首个位置差异在第 46 行：`blk-case-flow` ↔ `blk-slider-selfclose`）。原因是这两份汇总按
    `target/probe/components/` 的**目录列举顺序**排列，而 clone 里这些文件是新建的，NTFS 列举顺序与工作仓库不同。
    **判定数字一格未变**；要逐字节可复现的话，给汇总脚本加一次按 id 排序即可（未改，属可选优化）。
+
+   > **第三十六轮订正**：上面「按目录列举顺序排列」这个**成因是错的**（观测本身没错）。
+   > 实测两支脚本都不读 `target/probe/components/` 来定行序；真因是 `gen/component_matrix.py` 的
+   > 产物合并历史（`by_id` 先灌 `existing` 再逐条覆盖 ⇒ 老行在前、新行追加在后）。
+   > 且 `round10_component_paths.json` 本来就不随输入行序变（它遍历手写清单 `component_matrix.json`）。
+   > `summarize-all.mjs` 已加按 id 排序修复。详见 **§六「已知的坑」第 17 条**。
 2. `browser/articles_result.json` 里**第 38 篇的内嵌图从 `0/0` 变成 `2/2`**（clone 连跑两次都是 `2/2`）。
    其余 13 篇逐篇一致。第 38 篇的两张图确实能加载，因此 clone 这次读到的值更准；
    工作仓库那份是更早一轮的读数。**不影响任何判定**（该套件判的是 `editor.ready`）。
@@ -525,6 +552,41 @@ Maven `frontend-maven-plugin` 在 `prepare-package` 阶段写进 `target/classes
 | **D. 兜底脚本**（可与 A/B 并存）：提供一个 `dev-start.sh`，内部先 `npm run build -- --outDir ../target/classes/static` 再 `spring-boot:run` | 新增脚本 | 与 A 等效，但不动 Maven 生命周期 | 多一个入口，别人仍可能直接 `spring-boot:run` | 删脚本 |
 
 **建议**：A + B 一起做（A 治根、B 兜底），C 无论如何都该做。**这几项都属结构改动，等用户拍板后再动。**
+
+#### ④-1 决策落地（2026-09-17）：**A 经证据否决；B / C / D 均已做**
+
+- **B 已实现**：`WebUiArtifactCheck`（`@Component @Order(35)`，`ApplicationRunner`）。
+  启动时检查 `classpath:static/index.html` 是否存在、是否比 `webui/` 源码旧
+  （跳过 `node_modules`/`dist`），命中就 WARN 并打印重建命令；**只告警、不阻塞启动**
+  （与 `LlmProfileMigrationRunner` / `ArticleLongTextColumnRunner` 同一约定）。
+  单测 `WebUiArtifactCheckTest`（7 例）用纯函数 `evaluate(present, builtAt, newestSource)` 覆盖
+  缺失/陈旧/新鲜/无源码/时间戳未知/排除目录六种情形。
+- **A 已否决，理由是证据而非偏好**：`frontend-maven-plugin` **不在本地 Maven 仓库**
+  （`C:\Users\WIN11\.m2\repository\com\github\eirslett` 不存在）。实测
+  `mvn -o com.github.eirslett:frontend-maven-plugin:2.0.2:install-node-and-npm` 报
+  `Cannot access central ... in offline mode`。把 `build-webui` 绑到 `compile`
+  （或给 `spring-boot:run` 绑 `process-classes`）会让**每一次 `mvn -o test` 都在插件解析阶段失败**
+  ——为了修「前端陈旧」而打破项目自己的**离线闸门**，代价大于收益。
+  若将来要重启 A，前提是先把该插件装进本地仓库（或放弃离线闸门）。
+- **C 已做**：见本文件「坑 13」。
+- **D 已做（第三十六轮）**：`scripts/dev-start.sh`。它是 A 被否决后**唯一能真正「自动修」**的路径，
+  且不动 Maven 生命周期，因此不需要重新论证 A。
+  - 行为：先 `npm run build -- --outDir ../target/classes/static --emptyOutDir`（与 `pom.xml` 的
+    `build-webui`、`WebUiArtifactCheck.REBUILD_COMMAND` 三处**逐字一致**），再 `spring-boot:run`。
+  - `--build-only` 只对齐前端产物不启动；`--` 之后的参数原样传给 `spring-boot:run`。
+  - **脚本自己解析仓库根目录**，因此在任何 cwd 下都能跑（实测从 `$env:TEMP` 调用也正常）——
+    这一点是刻意的，因为「必须站在根目录才能跑」正是这类兜底脚本最容易失效的地方。
+  - **构建「成功」但产物没落地**是最容易骗过人的失败，所以脚本在构建后**当场断言**
+    `target/classes/static/index.html` 存在，不存在就 `exit 70`，不把问题留到启动之后。
+  - 依赖缺失给**明确的退出码与中文原因**（无 `webui/` → 69；无 `node`/`npm` → 69），
+    而不是让 npm 抛一句难懂的错。
+  - **Maven 入口的选择顺序是实测结论，别按直觉改**：优先 `.mvn/mvn-local.sh`（仓库自带的离线启动器，
+    复用已解压发行包、**不依赖 `JAVA_HOME`**，实测可用），其次 `./mvnw`（离线时**构建还没开始就失败**，
+    且未设 `JAVA_HOME` 时报 `JAVA_HOME ... is not defined correctly`），最后 PATH 里的 `mvn`。
+  - 验证：`sh -n` 语法通过；`--help` / `--build-only` 退出码 0；`node`、`npm` 缺失两条守卫各返回 69；
+    参数解析（`--build-only -- --server.port=9090`）实测把 `--server.port=9090` 原样留下；
+    产物 mtime 晚于 `webui/src` 最新源文件 ⇒ `WebUiArtifactCheck` 不再告警。
+  - 定位不变：**它是兜底入口，不是强制路径**——直接 `spring-boot:run` 的人仍有 B 的启动告警兜住。
 
 #### ⑤ 保存侧自检对 38 个 `layout-*` 的全量覆盖（不是抽样）
 
@@ -1147,6 +1209,7 @@ node tools/render-verify/round29_gate_audit.mjs --json   # 另落 target/probe/b
 | 类别 | 具体文件 | 在版本控制里？ | 放在哪 |
 | --- | --- | --- | --- |
 | 驱动脚本（Python） | `component_matrix.py`、`round8_combos.py`、`round10_alternatives.py`、`round10_registry_closure.py`、`round10_article_coverage.py`、`round11_crosscheck.py` | **是** | `tools/render-verify/gen/` |
+| 共享纯函数（Python） | `passthrough.py`（元素形态透传判据；**不联网、不写产物**，带 `--selftest`） | **是** | `tools/render-verify/gen/` |
 | 驱动脚本（Node） | `cdp.mjs`、`run-*.mjs`、`verify-live-app.mjs`、`summarize-*.mjs`、`probe*.html/js`、`editor-setup.js`、`legacyExtensions.js`、`probe.css`、`vite.config.mjs` | **是** | `tools/render-verify/browser/` |
 | 终稿对照表脚本 | `round10_component_paths.mjs` | **是** | `tools/render-verify/` |
 | 输入清单 | `component_registry.json`（63 ID 的唯一出处）、`component_matchers.json`（29 匹配器）、`guide_recheck.md`、`engine/mf_app.js` | **是** | `tools/render-verify/spec/` |
@@ -1221,16 +1284,24 @@ node tools/render-verify/round29_gate_audit.mjs --json   # 另落 target/probe/b
 16. **写代码注释时别把反引号放进模板字符串**：`verify-live-app.mjs` 里的 `MEASURE` 是一整段模板字符串，
     注释里出现 `` `name: 'rawSvg'` `` 会直接让 Node 报 `SyntaxError: Unexpected identifier`。
     这类脚本调试成本高（要跑起来才知道），写的时候留意。
-17. **汇总产物不是逐字节可复现的**：`all_summary.json` / `round10_component_paths.json` 按
-    `target/probe/components/` 的**目录列举顺序**排列，clone 里这些文件是新建的，NTFS 列举顺序与
-    原工作仓库不同 → **79 行集合相同、行序不同**。判定数字一格不变；要比对就比 id→判定 的映射，
-    别直接 diff 文件。（第十五轮实测，见 §3.11①）
+17. ~~**汇总产物不是逐字节可复现的**~~ **已修复（第三十六轮）**，且原文的成因**写错了**：
+    - 原文说两支产物都「按 `target/probe/components/` 的**目录列举顺序**排列」。实测：这两支脚本
+      **都不读那个目录**来定行序（`readdirSync` 只出现在 `r25-*` / `r28-*` / `r34-*` 等浏览器驱动器里，
+      且大多已 `.sort()`）。真因是 `gen/component_matrix.py` 的**产物合并历史**——
+      `by_id = {row['id']: row for row in existing}` 再逐条覆盖，dict 插入序 = 老行在前、新行追加在后。
+    - 原文把 `all_summary.json` 与 `round10_component_paths.json` 并列，但**后者本来就不随输入变**：
+      它遍历的是 `component_matrix.json`（手写清单），不是 `all_result.json` 的 `samples`。
+      实测反转 `samples` 后，`all_summary.{md,json}` 的 SHA256 均变、`round10_component_paths.{md,json}` 均不变。
+    - 修复：`summarize-all.mjs` 遍历 `[...raw.samples].sort(by id)`。**只改行序，不改判定**——
+      已验 `counts` 相同（pass 70 / na 9）、79 条 verdict 差异 0 条、`byCategory` 值全等。
+      反转输入后产物 SHA256 由 DIFFERS 变 IDENTICAL；`--selftest` 与 `round29_gate_audit` 的 9a 红队项仍正常。
+      现在可以按字面 diff 这两份产物了。
 18. **干净 clone 照 §3.5 跑会 ENOENT**：`round10_component_paths.mjs` 依赖 §3.7 才产出的
     `round10_article_coverage.json`，而 §3.7 在文档里排在后面。§3.5 已加顺序警告。
 19. **`mvn clean` 之后直接 `spring-boot:run`，应用没有前端**：`src/main/resources/static` 不存在，
     所以 `process-resources` 覆盖不了也补不出 `target/classes/static`；第十五轮在干净 clone 里实测
     `test-compile` 后该目录**根本不存在**。普通重启（不 clean）**不会**退回旧前端——实测 39 个文件
-    逐字节不变。修复方案见 §3.11④（**需用户拍板，本轮未改构建配置**）。
+    逐字节不变。修复方案见 §3.11④（**A 已否决；B/C/D 已做，见 §3.11 ④-1**）。
 20. **探针浏览器收不干净，且「数残留」的写法本身会自证为 1**（第二十九轮）：两件事一起踩的。
     ① **不能拿 `spawn()` 的 pid 收**——Chrome 启动器先起真浏览器、自己再退出，`close()` 时那个 pid
     已经是死进程；唯一稳的标识是本次启动专用的 `--user-data-dir`（`mkdtempSync(…, 'probe-chrome-')`）。

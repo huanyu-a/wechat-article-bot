@@ -47,12 +47,13 @@
 
 兜底档案 = 默认配置（hy4-preview，免费通道），符合「付费 Tier A 主用 + 免费兜底」的口径。
 
-**7 个内置智能体绑定**（`AGENT_DEFINITION.LLM_PROFILE_ID`），与方案 §2.3 映射表逐条一致：
+**7 个内置智能体绑定**（`AGENT_DEFINITION.LLM_PROFILE_ID`），与方案 §2.3 映射表逐条一致
+（**下表是 2026-09-16 当时的实测快照**；2026-09-17 已把 #2 改为 `4 = deepseek-flash`，见 §八.1）：
 
-| ID | CODE | 绑定档案 |
+| ID | CODE | 绑定档案（09-16 快照） |
 |---|---|---|
 | 1 | builtin_editor | 4 = deepseek-flash |
-| 2 | builtin_scheduled_creator | 5 = glm-5.3-flash |
+| 2 | builtin_scheduled_creator | 5 = glm-5.3-flash → **4 = deepseek-flash**（09-17 改） |
 | 3 | builtin_researcher | 4 = deepseek-flash |
 | 4 | builtin_writer | 5 = glm-5.3-flash |
 | 5 | builtin_illustrator | 4 = deepseek-flash |
@@ -335,14 +336,22 @@ Phase 6 的回归护栏 `EntityColumnDeclarationConsistencyTest` 已做**反证*
 
 ## 八、遗留项与未做
 
-1. **SINGLE 链路仍是「能力优先」档**：run#126 全程用 `glm-5.3-flash`，比单样本基线慢 342 秒、
-   比 7 次成功均值慢 691 秒（见 §四、§5.3）。若要 SINGLE 也快，应把 `builtin_scheduled_creator` 改绑
+1. **SINGLE 链路原先绑在「能力优先」档** → **（2026-09-17 已处理）**：run#126 全程用 `glm-5.3-flash`，
+   比单样本基线慢 342 秒、比 7 次成功均值慢 691 秒（见 §四、§5.3）。本文建议改绑
    `deepseek-flash`——**这是唯一被实测证明更快的档**（273 字符/秒 vs glm 的 69~125、hy4 的 77~95）。
-   本轮已积累两条独立支持该改动的证据（§4.1 的速率实测 + §四/SINGLE 基线双双变慢），
-   但它属调参，本轮有意不动（方案 §2.3 选了能力优先）。**建议下一轮把它作为第一优先项。**
+   已做两处改动：
+   - `AgentSeeder.seeds()` 把 `builtin_scheduled_creator` 的默认值改为 `deepseek-flash`（新装生效）；
+   - 新增一次性迁移 `ScheduledCreatorProfileRebindRunner`（`@Order(32)`）改绑**存量**库
+     —— 只改 `AgentSeeder` 的种子对已有部署无效，因为它只在 `llm_profile_id` 为空时写入。
+     迁移**仅在当前绑定恰好等于旧默认值**（glm 的 id）时才动手，用户换过的模型一律不动；
+     幂等（改绑后绑定≠旧默认值，二次启动自动跳过）。
+   - 证据口径更正：run#126 的对照**不作为独立证据**（任务轻重不同 + 基线区间横跨 66~553s），
+     独立证据只有 §4.1 的速率实测。理由写在 `AgentSeeder` 的 `seeds()` javadoc 上。
 2. **`glm-5.3-flash` 的定位需要复核**：实测它在「生成工具参数」场景下并不比免费的 hy4-preview 快
-   （§4.1）。方案把它绑给 writer / reviewer / chief / scheduled_creator 的理由是**能力分**（57.5），
-   这个理由仍然成立；但若后续想要效率，**不能**指望换成 glm 来提速。
+   （§4.1）。方案把它绑给 writer / reviewer / chief 的理由是**能力分**（57.5），
+   这个理由仍然成立（这三者的产出以正文与判断为主）；但若后续想要效率，
+   **不能**指望换成 glm 来提速。原方案也把它绑给了 scheduled_creator，
+   该绑定已按 §八.1 改为 `deepseek-flash`。
 3. **效率提升本轮没有兑现**：原方案的效率假设（换快模型 → 更快）已被实测推翻（§4.1）。
    真正能省时间的方向是「减少每轮的上下文重发」（如调研简报截断，Phase 3 已做）与
    「用 deepseek-flash 跑工具密集阶段」，而不是整体换档。
@@ -351,10 +360,25 @@ Phase 6 的回归护栏 `EntityColumnDeclarationConsistencyTest` 已做**反证*
    所以**今天的 09:00 触发整轮没有发生**（查库确认 09-16 只有 run#122~#126 五条手工运行、无
    `TRIGGER_TYPE=SCHEDULED` 记录）。09:35 恢复三级启动后，日志立刻打出
    `Handling 4 trigger(s) that missed their scheduled fire-time.`，但**没有补跑**，也没有新增运行。
-   根因是预期的：项目只配了 `org.quartz.jobStore.misfireThreshold: 60000`、未写 misfire 指令，
-   于是走 `SMART_POLICY`——对 cron 触发器它等价于 `DO_NOTHING`（错过即跳过，次日按正常计划触发）。
-   **结论**：停机导致的错过是**设计行为、不是缺陷**；「等一个自然日看成功率」这一项仍需在
-   **不停机**的前提下再观察一次。
+   根因是预期的，但**本文初版把根因写错了**（2026-09-17 更正）：
+   初版写「项目只配了 `misfireThreshold`、未写 misfire 指令，于是走 `SMART_POLICY`——对 cron 触发器
+   它等价于 `DO_NOTHING`」。这句话两处都不成立：
+
+   - `QuartzTaskManager.schedule()` **显式**调用了 `withMisfireHandlingInstructionDoNothing()`
+     （自 initial commit `24bead6` 起就在，不是默认值）；
+   - Quartz 的 `SMART_POLICY` 对 `CronTrigger` **并不等价于** `DO_NOTHING`，而是映射为
+     `FIRE_ONCE_NOW`（**立即补跑一次**）——两者行为相反。
+
+   也就是说，观测到的「不补跑」是**这行显式配置**的结果，不是「没配所以走了默认」。
+   若删掉这行，重启后会立刻补跑停机期间错过的任务，行为**反转**。
+   该结论已由 `QuartzMisfirePolicyTests` 用真实 Quartz（RAMJobStore）钉死，**不再依赖等自然日**：
+   ① `schedule()` 落库的 trigger `misfireInstruction == DO_NOTHING`；
+   ② `DO_NOTHING` 下 `updateAfterMisfire` 后 `nextFireTime` 仍在未来（跳过）；
+   ③ 反证：`SMART_POLICY` 下 `nextFireTime` 落在**当前时刻**（补跑）。
+   **结论**：停机导致的错过是**设计行为、不是缺陷**。
+   「等一个自然日看成功率」这一项，**观测价值已由上述确定性测试取代**——它本来要回答的
+   「错过的触发会不会补跑/会不会重复」已经回答完了；剩下的只是「Quartz 在真实时间点能否触发」，
+   那属于 Quartz 自身职责，不再需要占用一个自然日。
 5. **编辑器链路的模型切换**（方案 §1.5，可选）：已按方案默认包含，但**未做实机验证**——
    需要一次真实的编辑器交互才能观察到。
 6. **`temperature`/`maxTokens` 仍是死字段**：agent4j 2.3.3 的 `LLMModel.create` 只收 4 个参数，
