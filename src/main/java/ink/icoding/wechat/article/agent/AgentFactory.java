@@ -324,7 +324,11 @@ public class AgentFactory {
             case "OPENAI_COMPATIBLE" -> ModelType.OpenAI;
             default -> throw new BusinessException("不支持的 LLM 服务类型：" + provider);
         };
-        // 回放守卫：上游网关会拒绝历史里非法 JSON 的 tool_call.arguments（空参数工具调用是常见触发点）
-        return ToolCallArgumentGuard.wrap(LLMModel.create(modelType, baseUrl, modelName, apiKey));
+        // 回放守卫（两层，缺一不可）：
+        // 1) 网线级兜底——直接改请求报文，能修到「一轮里最后一次工具调用」的 tool 消息
+        //    tool_call_id（轮内钩子够不着，详见 ReplayWireNormalizer 的证据链）；
+        // 2) 轮内归一化——在工具执行前修历史里的 arguments / content / tool_calls[].id。
+        LLMModel model = ReplayWireNormalizer.attach(LLMModel.create(modelType, baseUrl, modelName, apiKey));
+        return ToolCallArgumentGuard.wrap(model);
     }
 }
