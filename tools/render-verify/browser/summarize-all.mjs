@@ -118,7 +118,15 @@ const FEATURES = [
 ]
 
 const rows = []
-for (const sample of raw.samples) {
+// ⚠️ **按 id 排序**（第三十六轮加）：`raw.samples` 的顺序是 `component_matrix.json` 的**合并历史**决定的
+// （`gen/component_matrix.py` 把新行并入**已存在的产物文件**：`by_id = {现有行}` 再逐条覆盖，
+// 于是 dict 插入序 = 老行在前、新行追加在后），因此同一份样例集在不同 clone / 不同跑次上
+// 行序可能不同——判定数字不受影响，但「逐字节可复现」做不到。
+//
+// 排序只改**产物里的行序**，不改任何一条判定：`counts` / `byCategory` 是累加，
+// `判`（9a 判据）只看集合与条数，`rows.filter(...)` 的筛选结果与顺序无关。
+// 注意 `--selftest` 里的 `坏[0]` / `坏2[1]` 是在**排好序的** rows 上取下标，故自检本身依旧确定。
+for (const sample of [...raw.samples].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
   const ref = sample.reference
   const after = sample.after
   const row = matrixById.get(sample.id) || {}

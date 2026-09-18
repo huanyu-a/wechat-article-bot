@@ -14,6 +14,10 @@
 #   ⚠️ 各步的退出码从第三十轮起才真正含判据；第二十九轮及以前，「EXIT=0」只表示脚本没抛异常。
 #   已知的长期红灯见 `docs/dev/known-issues-handoff.md` §3.31②（当前是 6/9：
 #   #16/#35 引用的外链图 13/13 返回 404，外部图床失效，不是本项目缺陷）。
+#
+# 第三十七轮补记：收尾层多了一步 **`9i passthrough 判据自检`**（纯函数、不联网、不写产物）。
+# 所以严格说现在是「九步链 + 收尾审计（9a–9i）」，「九步」指的是前 9 步浏览器/产物层，
+# 收尾层的字母编号本来就多于 9 个（9a–9h 早已如此），不另改名以免打乱既有文档引用。
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,6 +65,9 @@ run "9d summarize-alt reg"       node tools/render-verify/browser/summarize-alt.
 run "9e round10_component_paths" node tools/render-verify/round10_component_paths.mjs
 run "9f round11_crosscheck"      python tools/render-verify/gen/round11_crosscheck.py
 run "9g summarize-r16"           node tools/render-verify/browser/summarize-r16.mjs
+# 9i 是**纯函数判据**的自检（不联网、不写产物）：证明「元素形态透传」判据是活的——
+# 合法占位不误报成透传、透传不漏判。它不进判定，所以和上面几步并列而不是并入其中。
+run "9i passthrough 判据自检"    python tools/render-verify/gen/passthrough.py --selftest
 
 say ""
 say "===== 收尾审计（这一步回答「今天的绿灯有多少是真绿」） ====="

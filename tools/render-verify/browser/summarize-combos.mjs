@@ -55,6 +55,13 @@ for (const sample of raw.samples) {
   // 另记一条判据边界：**元素形态的透传**（`<steps>`/`<step>` 被当未知元素留在 DOM 里）在可见文字里
   // 完全看不出来，只有 `tagHistogram` 里多出组件名才暴露——`cmb-callout-steps` 就是这一类，
   // 它因此留在了 `silently-lost`。详见 known-issues-handoff.md §3.12②。
+  //
+  // ⚠️ 再修正（第三十六轮）：上面说的「只有 tagHistogram 才暴露」曾经**不只是判据边界，还是缺陷**——
+  // `round8_combos.py` 的 `leakedTag` 是在剥掉标签后的文本里找字面标签，**恒为 0**，
+  // 所以它连「元素形态透传」这条唯一的文字侧线索也没提供。该处已修（改回在原始 html 上找），
+  // `cmb-callout-steps` 现在如实报 4 处、`cmb-inline-in-container` 报 1 处。
+  // 但**判定口径不变**：`upstreamVerdict` 仍只看 `leakedColon` 与 `missingMust`/`missingHtml`，
+  // `leakedTag` 只作展示（第 230 行），因此这条修正**不翻任何判定**。
   const refText = (ref.text || '').replace(/\s+/g, '')
   const leakedColon = (refText.match(/:::/g) || []).length
   const leaked = leakedColon > 0
@@ -102,6 +109,13 @@ for (const sample of raw.samples) {
       foreignObject: upstream.foreignObject,
       leakedColon: leakedColon, leakedColonRaw: upstream.leakedColonContainer,
       leakedTag: upstream.leakedTag,
+      // 第三十七轮新增：按**形态**（不是按名字）数的元素透传。
+      // `leakedTag` 是 7 个硬编码名字；这里是非标准元素里「成对且包着可见文本」的个数。
+      // 两条判据都**不参与** upstreamVerdict，只作展示线索（详见 gen/passthrough.py 模块文档）。
+      elementPassthrough: upstream.elementPassthrough || 0,
+      elementPassthroughNames: upstream.elementPassthroughNames || [],
+      elementPlaceholder: upstream.elementPlaceholder || 0,
+      elementPlaceholderNames: upstream.elementPlaceholderNames || [],
       missingMust, missingHtml,
       warnings: item.warnings,
     },
@@ -185,11 +199,36 @@ lines.push('')
 lines.push('> ⚠️ **判据修正（2026-09-13 第八轮收尾）**：第一版把「泄漏」判成 `:::[a-z-]+`，'
   + '**漏掉了裸的收尾 `:::`** —— `cmb-timeline-table` 与 `cmb-caseflow-table-title` 的可见文字结尾'
   + '就是一个光秃秃的 `:::`，被误判成 0 处泄漏、落进 `silently-lost`。本表已按「可见文字里出现任何 `:::`」重判。')
-lines.push('> ⚠️ **判据边界（仍未覆盖）**：**元素形态的透传**在可见文字里完全看不出来 —— '
-  + '`<steps>` / `<step>` 被当未知元素留在 DOM 里时，文字一个不少、`:::` 一处没有，'
-  + '只有 `tagHistogram` 里多出 `steps` / `step` 才暴露（`cmb-callout-steps` 属这一类，故仍留在 `silently-lost`）。'
-  + '同批还查出 `cmb-inline-in-container` 里的 `<Badge>新</Badge>` 也是原样透传，'
+lines.push('> ⚠️ **判据边界（第三十六轮收窄，但仍未进判定）**：**元素形态的透传**（`<steps>` / `<step>` 被当未知元素'
+  + '留在 DOM 里）在**可见文字**里完全看不出来 —— 文字一个不少、`:::` 一处没有。')
+lines.push('>')
+lines.push('> - **第三十六轮前**：连计数都是坏的 —— `round8_combos.py` 的 `leakedTag` 在**剥掉标签后的文本**里'
+  + '找字面标签，恒为 0，所以「字面标签 0 处」这句话既骗人又给不出任何线索。该处已修（改回在原始 html 上找）：'
+  + '`cmb-callout-steps` 现在如实报 **4 处**。')
+lines.push('> - **仍未变的部分**：`leakedTag` **不参与判定**（`upstreamVerdict` 只看 `leakedColon` 与 '
+  + '`missingMust`/`missingHtml`），所以 `cmb-callout-steps` 依然留在 `silently-lost`，本表判定一条未翻。')
+lines.push('> - 同批查出 `cmb-inline-in-container` 里的 `<Badge>新</Badge>` 也是原样透传（修正后报 1 处），'
   + '但那是**探针自己写错的形态**（官方徽章是自闭合 `<badge … />`，不是配对标签），不计为上游缺陷。')
+lines.push('>')
+lines.push('> ⚠️ **第三十七轮：第 10 条原设想的「元素名白名单」被实测否决，改用形态判据。**')
+lines.push('>')
+lines.push('> 上面那版说法曾要求一份「已知合法元素白名单」（`svg`/`foreignObject`/`katex` 等）。本轮把它算了一遍，'
+  + '结论是**这条路走不通**：')
+lines.push('>')
+lines.push('> - 按「非 HTML5/SVG/MathML 即透传」在全量 **552 份**产物上跑，命中 **44 份**，其中 **41 份**是 '
+  + '`registry/tag-layout-*` —— 而这些样例的 `expect` 原文就是「上游没有这一族的语法分支，产物里必然留着字面语法'
+  + '（这就是『等上游』的判据）」。即：**收益 0、噪声 +44**，正是当初担心的「误报淹掉真信号」。')
+lines.push('> - 更根本的是，合法元素与真残留在**名字上无法区分**：`<slider images="…" interval="3" … />` 是'
+  + '**合法**的（上游有意留下、交给前端水合，`component_matrix.json` 里 `ok:true`），'
+  + '`<layout-hero>内容</layout-hero>` 是**真残留** —— 两者**都在 `component_registry.json` 里**。')
+lines.push('> - 真正的区别是**形态**：合法占位是**自闭合、无内容**；真残留是**成对、包着可见文字**。'
+  + '所以判据改成「非标准元素包着可见文本 ⇒ 语法未被消费」，**不需要任何元素名清单**。')
+lines.push('> - 已落成可复用纯函数 `gen/passthrough.py`（带 `--selftest`，8 条已知形态全过），'
+  + '产物里新增 `elementPassthrough` / `elementPlaceholder` 两项。本表每个用例都印出形态判据的结论。')
+lines.push('> - **边界（不许当定理用）**：「自闭合 ⇒ 占位」在现有语料里**只有 `slider` 一个正例（n=1）**；'
+  + '「包文本 ⇒ 透传」零反例但同理可能误报。因此它**只作线索、仍不进判定** —— '
+  + 'Q1「语法被消费了吗」是事实、可用形态判；Q2「这算不算缺陷」取决于「这份输入本来就该渲染吗」，'
+  + '只能由用例声明的 `must`/`mustHtml` 回答。')
 lines.push('')
 lines.push(`## 汇总：上游 ok ${upstreamCounts.ok || 0} / nested-unsupported ${upstreamCounts['nested-unsupported'] || 0}`
   + ` / silently-lost ${upstreamCounts['silently-lost'] || 0}；编辑器 pass ${editorCounts.pass || 0} / fail ${editorCounts.fail || 0}`)
@@ -225,9 +264,20 @@ if (ups.length) {
       ...row.upstream.missingMust.map((text) => `缺少文字「${text}」`),
       ...Object.entries(row.upstream.missingHtml).map(([tag, value]) => `缺少结构 \`${tag}\`（要 ${value.want} 个，实测 ${value.got}）`),
     ]
+    // 形态判据（第三十七轮）：把「包着可见文本的非标准元素」与「自闭合占位符」分开报。
+    // 这两项**按形态**判、不依赖任何元素名清单，所以能同时覆盖 <steps>/<layout-*>/<hint>/<badge>；
+    // 而 `leakedTag`（上一行）只认 7 个硬编码名字，两者互为对照。
+    const formNote = row.upstream.elementPassthrough
+      ? `**形态判据**：非标准元素包着可见文本 ${row.upstream.elementPassthrough} 处`
+        + `（\`${row.upstream.elementPassthroughNames.join('`/`')}\`）⇒ 语法未被消费`
+      : (row.upstream.elementPlaceholder
+        ? `**形态判据**：非标准元素均为自闭合占位 ${row.upstream.elementPlaceholder} 处`
+          + `（\`${row.upstream.elementPlaceholderNames.join('`/`')}\`）⇒ 上游有意交给前端水合，不算残留`
+        : '**形态判据**：无非标准元素')
     lines.push(`| \`${row.id}\` | \`${oneLine}\` | 产物 ${row.upstream.chars} 字符；`
       + `字面 \`:::\` 残留 ${row.upstream.leakedColon} 处（旧判据只认 \`:::[a-z-]+\` 时是 ${row.upstream.leakedColonRaw} 处）、`
-      + `正文里的字面标签 ${row.upstream.leakedTag} 处（**看不见元素形态的透传**，见本节末尾的判据边界）；`
+      + `正文里的字面标签 ${row.upstream.leakedTag} 处（**按名字**数，第三十六轮前这个计数恒为 0、现已修正）；`
+      + `${formNote}；`
       + `${missing.length ? missing.join('；') : '内容与结构齐全'} | ${row.upstream.warnings.length ? row.upstream.warnings.join('；') : '**无**'} |`)
   }
   lines.push('')

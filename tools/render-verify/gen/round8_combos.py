@@ -17,6 +17,9 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from paths import OUT, TOKEN_FILE, RENDER_URL  # noqa: E402
+# `gen/` 自己没有 __init__.py（本目录的脚本历来是各自独立执行的），
+# 而脚本所在目录本来就在 sys.path[0]，所以直接按模块名导入同目录的兄弟文件。
+from passthrough import counts as passthrough_counts  # noqa: E402
 
 OUT = os.path.join(OUT, 'combos')
 os.makedirs(OUT, exist_ok=True)
@@ -234,9 +237,30 @@ def stats(html):
         'foreignObject': html.count('<foreignObject'),
         'katex': html.count('class="katex"'),
         'katexDisplay': html.count('katex-display'),
-        # 判定「渲染器根本没认」：可见文字里残留字面容器语法
+        # 判定「渲染器根本没认」：可见文字里残留字面容器语法。
+        # `:::` 要在**剥掉标签后的文本**里找 —— 它本来就是文字，不是标签（见 round11_crosscheck.py:234 同款写法）。
         'leakedColonContainer': len(re.findall(r':::[a-z-]+', text)),
-        'leakedTag': len(re.findall(r'<(?:steps|step|case-flow|timeline|slider|engage-card|badge)\b', text, re.I)),
+        # 判定「元素形态的透传」：产物里残留**字面标签**。
+        #
+        # ⚠ 这里必须在 `html` 上找，**不能在 `text` 上找**（第三十六轮修正）。
+        # 原实现写的是 `text`，而 `text` 是上一行刚用 `re.sub(r'<[^>]+>', '', html)` 剥掉全部标签的结果——
+        # 一个已经没有 `<` 的字符串里当然找不到 `<steps`，所以这个计数**恒为 0**：
+        # 它报的 0 不是「测出来没有残留」，而是「根本算不出来」，属结构性失效（不是漏报个案）。
+        # 实测：`cmb-callout-steps` 的产物里真有 4 处（`<steps>` + 3×`<step>`），修正前报 0、修正后报 4。
+        # 对照写法见 `round11_crosscheck.py:233`（element_hits 在 html 上找、colon_hits 在 text 上找）。
+        'leakedTag': len(re.findall(r'<(?:steps|step|case-flow|timeline|slider|engage-card|badge)\b', html, re.I)),
+        # 第三十七轮：上面这条 `leakedTag` 是**按元素名**数的（7 个硬编码名字），本轮补一条**按形态**数的。
+        #
+        # 为什么不能只靠 `leakedTag`：它把「合法占位符」和「真残留」一视同仁——
+        # `<slider … />` 是上游有意留下、交给前端水合的**合法**元素，`<layout-hero>文字</layout-hero>`
+        # 才是没被消费掉的残留。两者**都在注册表里**、都是非标准元素，按名字区分不了。
+        #
+        # 形态判据（见 `gen/passthrough.py` 的模块文档）：非标准元素**包着可见文本** => 语法没被消费；
+        # **自闭合且无文本** => 占位符。这条判据**不需要任何元素名清单**。
+        #
+        #  它只作**线索**，不参与 `upstreamVerdict`：Q1「语法被消费了吗」是事实问题，可以用形态判；
+        # Q2「这算不算缺陷」取决于「这份输入本来就该渲染吗」，必须由用例声明的 `must`/`mustHtml` 回答。
+        **passthrough_counts(html),
     }
 
 
