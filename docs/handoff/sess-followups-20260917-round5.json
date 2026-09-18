@@ -1,0 +1,223 @@
+{
+  "agent": "main",
+  "timestamp": "2026-09-17T12:40:00",
+  "session": "followups-round5-20260917",
+  "status": "completed",
+  "summary": "清掉三项「未开始」，其中两项各带一个真缺陷。① known-issues-handoff.md §八 第 13 条（汇总产物行序不可复现，P3，从第十五轮挂到现在）——**顺手发现该条的成因描述是错的**并订正：不是「按 target/probe/components/ 的目录列举顺序排列」（那两支脚本都不读该目录定行序），而是 gen/component_matrix.py 的产物合并历史（by_id 先灌 existing 再逐条覆盖 ⇒ 老行在前、新行追加在后）；且 round10_component_paths 本来就不随输入行序变。修复 summarize-all.mjs 按 id 排序，只改行序、判定一格未动。② render-verification.md §3.11 ④ 方案 D（dev-start 兜底脚本）——A 被证据否决后唯一能「自动修」的路径，新增 scripts/dev-start.sh（构建前端到 target/classes/static 再 spring-boot:run，带 --build-only、依赖守卫、产物落地断言、cwd 无关），并在 .gitattributes 给 /scripts/*.sh 钉 eol=lf。③ **§八 第 10 条（元素形态透传判据泛化）本轮收口，且推翻了该条自己的前提**：原文说泛化「需要一份已知合法元素白名单」，实测按该思路在全量 552 份产物上命中 44 份、其中 41 份是故意喂坏的 tag-layout-*（收益 0、噪声 +44），根因是 `<slider …/>`（合法，ok:true）与 `<layout-hero>…</layout-hero>`（残留）**都在注册表里**、按名字无法区分；真正的区别是**形态**（自闭合无内容=合法占位，成对包可见文字=真残留），据此落成可复用纯函数 gen/passthrough.py（--selftest 8/8）并把新字段接进产物与汇总。另修掉一个让上一条无从下手的结构性缺陷：round8_combos.py 的 leakedTag 在剥掉标签后的文本里找字面标签，**恒为 0**（坏计数器比没有计数器更糟——它看起来像证据）。反例证明齐备（红/绿反证 + 纯增量 diff + 闸 9b 判定未翻）；后端全量 465 例全绿、前端两闸全绿。**未 commit。**",
+  "artifacts": [
+    "tools/render-verify/gen/passthrough.py",
+    "tools/render-verify/gen/round8_combos.py",
+    "tools/render-verify/browser/summarize-combos.mjs",
+    "tools/render-verify/browser/summarize-all.mjs",
+    "tools/render-verify/run-suite.sh",
+    "scripts/dev-start.sh",
+    ".gitattributes",
+    "README.md",
+    "README_CN.md",
+    "docs/dev/known-issues-handoff.md",
+    "docs/dev/render-verification.md"
+  ],
+  "quality": {
+    "checks": [
+      {
+        "name": "mvn -o test（全量回归）",
+        "result": "pass",
+        "detail": "Tests run: 465, Failures: 0, Errors: 0, Skipped: 0 — BUILD SUCCESS（与 round4 同基线，本轮未碰 Java 源码）"
+      },
+      {
+        "name": "webui 两闸",
+        "result": "pass",
+        "detail": "✓ 档案链一致性自检（后端 4 跳结构 + 12 行为用例）；✓ 共享工具导入自检（10 个导出符号）"
+      },
+      {
+        "name": "item 13 反例证明（红）",
+        "result": "pass",
+        "detail": "借 paths.mjs 现成的 RENDER_VERIFY_PROBE_DIR 把产物复制到临时目录，把 all_result.json 的 samples **整体反转**（集合不变、顺序不同）后重跑：修复前 all_summary.json / all_summary.md 的 SHA256 均 DIFFERS（行序确实跟着输入走），而 round10_component_paths.{md,json} 均 IDENTICAL"
+      },
+      {
+        "name": "item 13 反例证明（绿）",
+        "result": "pass",
+        "detail": "加排序后同样反转输入：all_summary.{md,json} 的 SHA256 IDENTICAL；行序确认为 id 升序（首行 attr-callout-title）。真实产物已重新生成（首 3 行 attr-callout-title, attr-compare-marker-cn, attr-table-title；id-sorted=true；counts {\"pass\":70,\"na\":9}）"
+      },
+      {
+        "name": "排序未削弱判别力",
+        "result": "pass",
+        "detail": "① --selftest 5 条用例全过（第 1/2 条现为 attr-callout-title / attr-compare-marker-cn，是排序的预期副作用）；② 按 round29 的做法把第 1 例编辑器侧文字改坏 → 仍判红（fail md-heading、退出码 1）；③ 判定未变：counts 逐字节相同、79 条逐条 verdict 差异 0 条、byCategory 值全等（只有 key 顺序随之确定化）"
+      },
+      {
+        "name": "下游消费者不敏感",
+        "result": "pass",
+        "detail": "all_summary.json 的两个消费者都是按 id 建 Map 再查（round10_component_paths.mjs:48 summaryById；gen/round15_coverage_editor_verdict.py:32 summary），且 round15 自己 sorted(hits.items(), key=...) 输出，行序变化不影响它们"
+      },
+      {
+        "name": "leakedTag 红/绿反证",
+        "result": "pass",
+        "detail": "用 ast 从 tools/render-verify/gen/round8_combos.py 摘出**真实的** stats() 单独编译执行（避免 import 触发不可达的渲染服务 8081），再用 NodeTransformer 把那处实参 html 换成 text 造红：换回 text ⇒ 17 例全部 0；改回 html ⇒ cmb-callout-steps 4 处、cmb-inline-in-container 1 处。红/绿差异恰为这 2 例"
+      },
+      {
+        "name": "产物重算的 diff 最小性",
+        "result": "pass",
+        "detail": "recompute_combos_backend.py 用同一个 stats() 重算已落盘 combos/<id>.html 的 backend：只有 backend 一个字段变化、只有那 2 例变化、17 例顺序未动；ok/warnings 沿用落盘值（来自渲染服务响应，8081 不可达未重取）"
+      },
+      {
+        "name": "闸 9b 判定未翻",
+        "result": "pass",
+        "detail": "重跑 summarize-combos.mjs：[闸] 9b summarize-combos（17 组合）· 失败项 0；上游汇总仍 {'nested-unsupported':8,'silently-lost':1,'ok':8}、编辑器 17 pass ⇒ 修正只让展示的数字变真实，未翻任何判定"
+      },
+      {
+        "name": "白名单边界实测",
+        "result": "pass",
+        "detail": "552 份 render-service 产物的元素词汇表：非标准词汇只出现在判定为 na 的故意喂坏样例里，pass 样例里一个都没有（slider/hint/layout-hero）⇒ 合法自造元素与真残留无法只靠「是不是 HTML」区分。**注意**：本轮当时由此推出「泛化必须用元素名白名单」，该结论已在第三十七轮被实测否决（见下条），正确出路是形态判据"
+      },
+      {
+        "name": "第 10 条：名字白名单口径被实测否决",
+        "result": "pass",
+        "detail": "target/scratch/leakedtag_scope_all.py：按「非 HTML5/SVG/MathML 即透传」在 552 份产物上命中 44 份，其中 41 份是 registry/tag-layout-*（expect 原文即「产物里必然留着字面语法」）⇒ 收益 0、噪声 +44。根因：<slider …/>（合法，ok:true）与 <layout-hero>…</layout-hero>（残留）都在 component_registry.json 里，按名字无法区分"
+      },
+      {
+        "name": "第 10 条：形态判据归纳",
+        "result": "pass",
+        "detail": "target/scratch/predicate_by_form.py：合法占位=自闭合无内容、真残留=成对包可见文字。该判据不需要元素名清单，把 slider 正确判为占位、把 steps/layout-*/hint/badge 判为透传；38 份故意喂坏样例 + 2 个真残留全部命中、零反例"
+      },
+      {
+        "name": "第 10 条：passthrough.py 自检（判据是活的）",
+        "result": "pass",
+        "detail": "python tools/render-verify/gen/passthrough.py --selftest ⇒ 8/8 通过、EXIT=0。含真实形态用例（slider 自闭合 / layout-hero 配对 / steps 嵌套 4 处 / 大小写混合 </Badge> / 空内容配对 / 纯标准元素不误报 / 空串退化输入）"
+      },
+      {
+        "name": "第 10 条：接线验证（既有判据一字未动）",
+        "result": "pass",
+        "detail": "target/scratch/verify_passthrough_wiring.py：用 ast 从源文件摘出真实 stats() 执行，17 例逐条对比，变化字段恰为新增的 4 个、非新增字段为空 ⇒ 只新增字段、没改坏既有判据"
+      },
+      {
+        "name": "第 10 条：产物重算是纯增量",
+        "result": "pass",
+        "detail": "target/scratch/diff_combos_r37.py：backend 子键新增恰为那 4 个、删除 0、除新增外其余子键不一致项 0、17 例 id 顺序未动、顶层结构相同 ⇒ 纯增量。重跑闸 9b：17 组合 / 失败项 0，上游汇总仍 nested-unsupported 8 / silently-lost 1 / ok 8 ⇒ 判定一条未翻"
+      },
+      {
+        "name": "第 10 条：判据自检已串进常设套件",
+        "result": "pass",
+        "detail": "run-suite.sh 收尾层新增 `9i passthrough 判据自检`（纯函数、不联网、不写产物），sh -n 通过、按套件同款调用方式实测 EXIT=0。这样判据的自检不会只存在于一次性脚本里——「入库的闸才是闸」"
+      },
+      {
+        "name": "方案 D 脚本验证",
+        "result": "pass",
+        "detail": "sh -n 语法通过；--help / --build-only 退出码 0；从 $env:TEMP 调用也正常（脚本自解析仓库根，cwd 无关）；node 缺失、npm 缺失两条守卫各返回 69 且给出中文原因；参数解析实测 --build-only -- --server.port=9090 把 --server.port=9090 原样留下；--build-only 后 target/classes/static/index.html mtime 晚于 webui/src 最新源文件 ⇒ WebUiArtifactCheck 不再告警"
+      },
+      {
+        "name": "方案 D 的 Maven 入口选择（实测）",
+        "result": "pass",
+        "detail": "优先 .mvn/mvn-local.sh（仓库自带离线启动器，实测输出 Apache Maven 3.9.16 / Java 17，**不依赖 JAVA_HOME**）；./mvnw 实测在未设 JAVA_HOME 时报「JAVA_HOME ... is not defined correctly」，且离线时会先尝试下载发行包；故脚本把 mvn-local.sh 放在首位。已用隔离 index 验证 scripts/dev-start.sh 入库为 i/lf w/lf"
+      },
+      {
+        "name": "行尾保护（.gitattributes）",
+        "result": "pass",
+        "detail": "本仓库 core.autocrlf=true，新 .sh 若不钉行尾会被检出成 CRLF。已加 /scripts/*.sh text eol=lf（与既有的 /mvnw text eol=lf 同一约定）。用 GIT_INDEX_FILE 指向临时 index 验证：dev-start.sh 为 i/lf w/lf；且 git status 显示 scripts/publish-image.sh **无**意外改动（未引入 renormalize 噪声）"
+      },
+      {
+        "name": "读语义当写目标 · 全量审计",
+        "result": "pass",
+        "detail": "target/scratch/audit_read_as_write.py 扫 src/main 全部 Java：Q1 命中 64 个「回落到另一行」的方法（含 defaultProfile，已确认它进了清单）；Q2「回落结果被当写目标」= **0 处**。逐个人工复核过 Q1 里最像的候选：ScheduleTaskService.apply() 是改值器（判断并返回自己的参数，不是去挑一行）、LlmConfigService.required() 是单行表「先 current() 取、取不到再 insert」的正确写法。"
+      },
+      {
+        "name": "审计判据的红/绿反证（证明 0 是「真干净」而非「判据死了」）",
+        "result": "pass",
+        "detail": "target/scratch/prove_audit_is_alive.py 从**真实源码**取出方法体（defaultProfile() / LlmConfigService.required() / ScheduleTaskService.apply()），用审计脚本**直接 import 的真实判据**（has_fallback + write_target_re，未复制实现）判定：7/7 与期望一致，EXIT=0。红例 2 个（第三十六轮缺陷的调用形状、只调 setter 不 update）判可疑；绿例 5 个（required() 真实体、apply() 真实体、变量只当实参、只读不写、空输入）判不可疑。**这一步是必须的**：审计的最终输出是 0，而 0 既可能是「干净」也可能是「判据打不着东西」，两者输出一模一样。"
+      },
+      {
+        "name": "渲染令牌可用性（第 5 条阻塞的最终确认）",
+        "result": "blocked",
+        "detail": "远端渲染服务可达且按 token 鉴权（GET/POST 均 401，假 token 亦 401）。令牌在本机**确实不存在**：MARKFLOW_RENDER_TOKEN 未设；~/.zcode 整个目录不存在（故 ~/.zcode/secrets/markflow-render-token 不存在）；C:\\Users\\WIN11 与 D:\\project 全盘搜 *markflow*token* 无任何文件。markflow-typeset 技能（本次新出现在技能目录中）也把凭据位置指向同一路径，无内嵌值。结论：令牌属**外部输入**，只能向渲染服务方索取，本机不可自行补出 ⇒ 第 5 条仍是等外部条件，但阻塞原因已订正为「缺令牌」而非「服务不通」。"
+      },
+      {
+        "name": "保存侧语法自检的定位（第 14 条事实核对）",
+        "result": "pass",
+        "detail": "第 14 条称「自检只覆盖智能体 save_article_draft，编辑器 REST 保存路径没有这项检查」——核对属实：markflowSyntaxHints 只在 ScheduledArticleTools.java:232 定义、在 :651 调用；ArticleController 的 @PostMapping(56) 与 @PutMapping(/{id})(62) 都直接走 service.create/update，无语法自检。该条是**产品决策**（提示 vs 拒绝，且与 D19「硬拒会让整轮白干」的教训冲突），事实无误，保持 P2 不动。"
+      }
+    ],
+    "gate_passed": true
+  },
+  "defects": [
+    {
+      "severity": "MINOR",
+      "issue": "known-issues-handoff.md §八 第 13 条与 render-verification.md §3.11①/第 17 条把「汇总产物行序不可复现」的成因写成「按 target/probe/components/ 的目录列举顺序排列」。**这个成因是错的**：实测这两支脚本都不读该目录来定行序（readdirSync 只出现在 r25-* / r28-* / r34-* 等浏览器驱动器里，且大多已 .sort()）。真因是 tools/render-verify/gen/component_matrix.py:232-235 的产物合并历史——by_id = {row['id']: row for row in existing} 再逐条覆盖，dict 插入序 = 老行在前、新行追加在后。",
+      "verified": true,
+      "fix": "fixed",
+      "evidence": "实测：artifact 顺序 != SAMPLES 源码顺序（首个分歧在第 45 位：artifact=blk-case-flow / source=blk-slider-selfclose），也 != id 升序 ⇒ 顺序既非目录列举、也非源码书写序，只能来自合并历史"
+    },
+    {
+      "severity": "MINOR",
+      "issue": "同一批文档把 all_summary.json 与 round10_component_paths.json 并列说成同一成因，但**后者本来就不随输入行序变**：它遍历的是 component_matrix.json（matrixRows，手写清单，round10_component_paths.mjs:142），不是 all_result.json 的 samples。",
+      "verified": true,
+      "fix": "fixed",
+      "evidence": "反转 samples 的实验里 round10_component_paths.{md,json} 的 SHA256 两次均 IDENTICAL，而 all_summary.{md,json} 均 DIFFERS——同一份输入、同一时刻，一支变一支不变"
+    },
+    {
+      "severity": "MAJOR",
+      "issue": "tools/render-verify/gen/round8_combos.py:239 的 leakedTag **恒为 0**：stats() 先用 re.sub(r'<[^>]+>', '', html) 把所有标签剥掉得到 text，随后却在 **text** 上用 r'<(?:steps|step|case-flow|timeline|slider|engage-card|badge)\\b' 找字面标签——剥完的字符串里已不可能有 '<'，所以这个计数在**结构上**恒为 0（不是漏报个案）。它报的 0 不是「测出来没有残留」而是「根本算不出来」，还被 summarize-combos.mjs 印成「正文里的字面标签 0 处」写进产物——**一个坏掉的计数器比没有计数器更糟，因为它看起来像证据**。判定未受影响（leakedTag 不进 upstreamVerdict）。",
+      "verified": true,
+      "fix": "fixed",
+      "evidence": "红/绿反证 target/scratch/verify_leakedtag_fix.py：用 ast 从**源文件**摘出真实的 stats() 单独编译执行（避免 import 触发不可达的渲染服务），再用 NodeTransformer 把那一处实参 html 换成 text 造红。结果：换回 text ⇒ 17 例**全部 0**；改回 html ⇒ cmb-callout-steps **4 处**、cmb-inline-in-container **1 处**。影响面 target/scratch/leakedtag_impact.py；产物重算 target/scratch/recompute_combos_backend.py 的 diff 证明**只有 backend 一个字段变、只有那 2 例变、17 例顺序未动、ok/warnings 沿用落盘值**（渲染服务 8081 不可达，未重新获取）。重跑闸 9b：**17 组合 / 失败项 0**，上游汇总仍 nested-unsupported 8 / silently-lost 1 / ok 8 ⇒ 判定一条未翻。",
+      "note": "**最刺眼的一点**：known-issues-handoff.md:1934-1937 **早就写下了同一条教训**——「泄漏检测扫原始产物 HTML——先剥标签会把『标签被当未知元素原样透传』这种情况洗掉（那是第七轮踩过的坑）」。即第七轮踩过、写进文档，第八轮的 round8_combos.py 还是踩了同一脚。对照写法就在同仓库隔壁：gen/round11_crosscheck.py:233 的 element_hits 在 html 上找、colon_hits 在 text 上找——两条判据的搜索对象本就不同。"
+    },
+    {
+      "severity": "MINOR",
+      "issue": "known-issues-handoff.md §八 第 12 条（P1「需用户拍板」）与 render-verification.md §3.11 ④-1 标题、§六 坑 19 的表述已过期：B（WebUiArtifactCheck）与 C（README 写明）早已落地、D 本轮也做了，A 则已因 frontend-maven-plugin 不在本地仓库被**证据性否决**。原文却仍写「根治方案四选一…等拍板」，会让人以为还有一项 P1 在等人点头。",
+      "verified": true,
+      "fix": "fixed",
+      "evidence": "第 12 条已加「落地进展（第三十六轮）」引用块逐条列出 B/C/D 落地位置与 A 的否决理由；④-1 标题改为「A 经证据否决；B / C / D 均已做」；坑 19 的「需用户拍板」改为指向 ④-1。原始观测与四方案对照表保留不重写（历史汇报不重写）。"
+    },
+    {
+      "severity": "MINOR",
+      "issue": "known-issues-handoff.md §八 第 10 条与 render-verification.md 的结论「泛化元素形态透传判据需要一份**已知合法元素白名单**」**经实测是错的**。按该设想（「非 HTML5/SVG/MathML 即透传」）在全量 552 份产物上命中 44 份，其中 41 份是 registry/tag-layout-* —— 这些样例的 expect 原文就是「上游没有这一族的语法分支，产物里必然留着字面语法（这就是『等上游』的判据）」。即收益 0、噪声 +44，正是原文担心的「误报淹掉真信号」。根因：合法与残留**无法按名字区分**——`<slider images=… interval=… />`（合法，component_matrix.json 里 ok:true）与 `<layout-hero>内容</layout-hero>`（真残留）**都在 component_registry.json 里**。",
+      "verified": true,
+      "fix": "fixed（第三十七轮）——改用**形态判据**：非标准元素**包着可见文本** ⇒ 语法未被消费；**自闭合且无文本** ⇒ 上游有意留下的水合占位符。不需要任何元素名清单。落成可复用纯函数 tools/render-verify/gen/passthrough.py（带 --selftest，8 条已知形态全过），round8_combos.py 的 stats() 新增 elementPassthrough / elementPlaceholder 两项，summarize-combos.mjs 每个用例都印出形态判据结论；文档按订正历史约定加删除线 + 新块（不重写历史）。",
+      "evidence": "口径对照 target/scratch/leakedtag_scope_all.py（552 份产物：名字白名单 44 命中 vs 形态判据把 slider 正确判为占位）；判据归纳 target/scratch/predicate_by_form.py；接线验证 target/scratch/verify_passthrough_wiring.py（用 ast 从源文件摘出真实 stats() 执行，证明新增字段生效且**既有判据一字未动**）；产物重算的纯增量证明 target/scratch/diff_combos_r37.py（backend 子键只新增那 4 个、其余含全部子键逐一相等、17 例顺序未动）；重跑闸 9b：17 组合 / 失败项 0，上游汇总仍 nested-unsupported 8 / silently-lost 1 / ok 8 ⇒ **判定一条未翻**。",
+      "note": "**开发本模块时又踩了一个同类坑**：找闭标签第一版写大小写敏感的 html.find('</badge>')，而产物里是 </Badge> ⇒ 找不到 ⇒ 把「成对包文本」误判成「自闭合占位」。已改 re.I 并把这条写进模块文档与 selftest。**又一次「看起来算出来了、其实算错了」**——与第三十六轮的 leakedTag 恒为 0 是同一类失效：计数器/判据的**失败模式是沉默的**。边界（已写进文档，不许当定理）：自闭合⇒占位现有语料只有 slider 一个正例（n=1），若上游将来把未消费元素自闭合输出会漏报；包文本⇒透传零反例，但若上游有意输出「包着文本的水合容器」会误报。因此本判据**只作线索、仍不进判定**：Q1「语法被消费了吗」是事实可用形态判，Q2「这算不算缺陷」取决于用例声明的 must/mustHtml。"
+    },
+    {
+      "severity": "MAJOR",
+      "issue": "新写的「读语义方法被当写目标」审计脚本 target/scratch/audit_read_as_write.py，其 Q1 判据（认不认得出回落语义）**第一版就漏掉了它本来要抓的那个方法**。第一版要求三目分支写成方法调用（... : word()），而 LlmProfileService.defaultProfile() 的真实写法是 LlmProfile profile = mapper.findDefault(); return profile == null ? mapper.findFirst() : profile; —— 分支是**局部变量**，于是 Q1 把 defaultProfile() 直接排除，整个审计退化成「永远报 0 处可疑」。**判据打不着目标，却输出一个看起来像结论的 0**，与第三十六轮 leakedTag 恒为 0 是同一类失效。",
+      "verified": true,
+      "fix": "fixed（第三十七轮）—— 用「红/绿反证」把它逼出来：构造真缺陷调用形状去喂**真实方法体**，判据必须判红。反证第一次跑就红了（判据不符），才暴露 Q1 漏掉 defaultProfile()。最终 Q1 = 空值判断 + 三目 + 方法体里 >=2 个不同调用 + **被判断为 null 的变量本身来自某个调用**（第 4 条用来排除 apply(task,request) 这类改值器）。改判据过程中还依次踩掉三个假阳性：写目标判据过宽（把「变量当实参」算成写目标）、固定 25 行窗口跨过方法边界（imageRuntime 看到下一个方法 required() 的 setter）、以及**差一错误**（lines[j] 应为 lines[j-1]，整体多读一行）。"
+    },
+    {
+      "severity": "MINOR",
+      "issue": "交接记录里第 5 条（组合用例「剩下的」）的阻塞原因**把两个不同的东西混为一谈**：写成「本机渲染服务（127.0.0.1:8081）拒绝连接」。实际上 127.0.0.1:8081 是**本应用**（只有 run-article.mjs / verify-live-app.mjs 这类要真应用的套件才需要），而渲染服务是**远端的** RENDER_URL = https://www.bx9y.com.cn/__markflow_render（tools/render-verify/paths.py）。",
+      "verified": true,
+      "fix": "fixed（第三十七轮）—— 实测远端渲染服务**活着且可达**：DNS 与 TCP 443 均通，GET/POST 都返回 401，且**带假 token 也是 401** ⇒ 它在按 token 正常鉴权，不是服务挂了。所以唯一真阻塞就是令牌（MARKFLOW_RENDER_TOKEN 未设、~/.zcode/secrets/markflow-render-token 不存在、生产库那份是 AES 加密且库不可达）。已订正 .zcode/handoff 与 known-issues-handoff.md 第 5 条，明确「接手方不必再查本机服务为什么起不来，拿到令牌即可直接跑 gen/round8_combos.py」。教训：**一个把 A 说成 B 的阻塞记录，会让下一个人去修一个根本没坏的东西。**"
+    }
+  ],
+  "next": [
+    "§八 第 12 条**已不再阻塞**（第三十六轮更新）：B/C/D 均已落地，A 已被证据否决，该条只剩「A 的前提是把 frontend-maven-plugin 装进本地仓库」这一条分支。原文的「需用户拍板」表述已加引用块订正。P1 级只剩第 8 条（D42 真实轮次对照，需重启+生产数据，属产品决策）",
+    "第 14 条（保存侧语法自检只覆盖智能体 save_article_draft，编辑器 REST 保存路径没有）是 P2 产品决策，未动",
+    "**方案 D 已做**（scripts/dev-start.sh）。它已加进 README.md / README_CN.md 的开发启动一节。若日后要重启方案 A（把 build-webui 的 phase 前移到 compile），前提是先把 frontend-maven-plugin 装进本地仓库——否则会打破项目自己的离线闸门",
+    "第 9 条（31 个组件升 A 级证据）是内容侧工作量，需真实调度轮次产出成稿。**第 10 条已在第三十七轮收口**：原设想的「元素名白名单」经实测否决（552 份产物命中 44 份、其中 41 份是故意喂坏的 tag-layout-*，收益 0 噪声 +44），改用**形态判据**并落成 tools/render-verify/gen/passthrough.py（带 --selftest）；剩余不确定性是两条边界（自闭合⇒占位只有 slider 一个正例 n=1；包文本⇒透传零反例但同理可能误报），**无法靠现有语料消除**，需等上游出现新形态样本，归入第 3 条「继续采样」",
+    "第 5 条「剩下的」（三层嵌套 / :::table 嵌 :::timeline / 超长内容+嵌套 的组合用例）**仍未做，但阻塞原因已订正（第三十七轮实测）**。此前记的是「本机渲染服务（127.0.0.1:8081）拒绝连接，且 ~/.zcode/secrets/markflow-render-token 不存在 ⇒ 无法产生新的上游产物」——**这句话把两个不同的东西混为一谈了**：`127.0.0.1:8081` 是**本应用**（`run-article.mjs` / `verify-live-app.mjs` 要真应用时才需要），而渲染服务是**远端的** `RENDER_URL = https://www.bx9y.com.cn/__markflow_render`（tools/render-verify/paths.py）。实测：远端服务**活着且可达**（DNS+TCP443 通，GET/POST 都返回 **401**，带一个假 token 也是 401 ⇒ 它是在按 token 鉴权，不是挂了）。**所以唯一的真阻塞是那个令牌**：`MARKFLOW_RENDER_TOKEN` 环境变量未设，`~/.zcode/secrets/markflow-render-token` 不存在，生产库（存的是 AES 加密令牌）不可达。令牌按文档（render-verification.md 第 36/1230 行）**只能向渲染服务方索取**，属外部输入、不可自行补出，因此本条**仍是等外部条件**，而不是等本机环境修复——订正的意义在于：接手方不必再去查「本机服务为什么起不来」，只需拿到令牌即可直接跑 gen/round8_combos.py 补用例",
+    "编辑器链路的模型切换仍未做实机验证（需一次真实编辑器交互）",
+    "**同类模式复核已完成（第三十七轮）**：新写了 target/scratch/audit_read_as_write.py 做全量扫描（Q1 找「回落到另一行」的方法 = 64 个，Q2 找「回落结果被当写目标」= **0 处**），并用 target/scratch/prove_audit_is_alive.py 做红/绿反证（7/7，从真实源码取方法体、判据直接 import）证明这个 0 是「真干净」而不是「判据死了」。人工复核过最像的两个候选：ScheduleTaskService.apply() 是改值器、LlmConfigService.required() 是单行表正确写法。**这一类缺陷在仓库里没有第二处。** 注意两个脚本都在 gitignore 的 target/scratch/ 下，是分析工具不是交付物。",
+    "本轮代码改动**未 commit**：git status 有 22 改 + 未跟踪若干。推送远端需用户明确授权（remote 是 huanyu，不是 origin）"
+  ],
+  "read_files": [
+    "tools/render-verify/browser/summarize-all.mjs",
+    "tools/render-verify/browser/run-all-browser.mjs",
+    "tools/render-verify/round10_component_paths.mjs",
+    "tools/render-verify/gen/component_matrix.py",
+    "tools/render-verify/gen/round15_coverage_editor_verdict.py",
+    "tools/render-verify/paths.mjs",
+    "tools/render-verify/round29_gate_audit.mjs",
+    "docs/dev/render-verification.md",
+    "docs/dev/known-issues-handoff.md"
+  ],
+  "notes": [
+    "本文件是旁路记录：.zcode/handoff/latest.json 为并行会话共用的单文件，按纪律未覆盖。",
+    "**「声明与真实必须同向」第六次验证**：第 13 条自己写着「按目录列举顺序排列」并给出了具体机制（NTFS 列举顺序与工作仓库不同），读起来完全可信、且已被抄进两份文档——但它是错的。**一个具体到「NTFS」的解释比笼统的说法更容易被当成已核实**。这次的核对办法很便宜：把 artifact 顺序与 SAMPLES 源码顺序、id 升序各比一次，两个都不是 ⇒ 两种说法都排除。",
+    "**踩坑：sandbox 对 target/probe/browser 这一个目录拒写**（新建文件、覆盖、删除全 DENY，node 报 EPERM: operation not permitted；ACL 显示 Authenticated Users 有 Modify、无 Deny ACE、非 reparse point）。因此：① 第一次做的「反转 samples 再比对」实验**是无效的**——写入被拒 ⇒ 反转没生效 ⇒ 两次跑的是同一份输入，比对自然 IDENTICAL，差点据此得出「行序本来就稳定」的错误结论（**关键教训：写操作失败时，『没变化』不能当作『稳定』的证据**，必须先确认写入真的成功了）；② 改用 paths.mjs 里现成的 RENDER_VERIFY_PROBE_DIR 指向 target/scratch 下的副本，读写都正常，实验才成立。跑真产物重新生成需要一次性 danger-full-access。",
+    "**踩坑：round29_gate_audit.mjs 的 9a/9b/9e 红队项在本机报「没跑起来（EPERM）」**，不是本轮改动引入的回归：它用 mkdtempSync(join(tmpdir(), 'r30-gate-')) 把产物复制到 **os.tmpdir()**（工作区之外）再喂坏输入，同样撞上沙箱边界。判断依据：该表里 9c/9d/9f 等**没碰过的**项也一并 EPERM。本轮的排序改动**没有**削弱判别力——用 round29 的同一手法手工喂坏第 1 例，9a 仍判红（fail md-heading、exit 1）。",
+    "**踩坑（第二次踩）：跑 summarize-all.mjs 时报 exit=1 一度被当成「闸真红」**，实为 EPERM 写产物失败（脚本在 writeFileSync(all_summary.md) 处抛异常）。区分办法：看输出里有没有 `[闸] 9a ... 失败项 N` 那一行——有那行才是判定结果，只有堆栈就是脚本自己崩了。",
+    "环境：mvn -o test 全量需 MySQL；本轮 podman run -d --name watb-test-mysql 起临时库，跑完已 stop+rm，3306 已释放。Podman 只把端口绑到 IPv6 回环 [::1]:3306，测试 URL 必须用 localhost。",
+    "**新脚本的定位要说清**：scripts/dev-start.sh 是**兜底入口，不是强制路径**——直接 spring-boot:run 的人仍有 WebUiArtifactCheck 的启动告警兜住。它没有被接进任何构建生命周期（那正是方案 A 被否决的原因）。",
+    "**`.mvn/mvn-local.sh` 优先于 `./mvnw` 是实测结论**，别按直觉改成 mvnw：mvnw 未设 JAVA_HOME 时直接报错，且离线时会先尝试下载发行包；mvn-local.sh 复用已解压发行包、自带 JAVA_BIN 兜底，在本机实测可直接跑出 Maven 3.9.16。",
+    "**本轮起沙箱策略变为 danger-full-access**（用户中途改了审批策略，审批提示已禁用）。此前需要一次性升级的几步（node 写 target/probe/browser、跑 Git 的 sh/bash、vite build）现在直接可跑。**注意**：不要再设 sandbox_permissions，会因「不严格更宽」被拒。"
+  ]
+}

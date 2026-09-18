@@ -1,0 +1,107 @@
+{
+  "agent": "main",
+  "timestamp": "2026-09-18T18:35:00",
+  "session": "b61a2e40-874d-4099-8936-631f5083f3c0",
+  "status": "completed",
+  "summary": "定时任务两处缺陷（重试闸门按副作用判定 / 写作阶段独立硬超时）修复完成并实跑验证；文章 8 第 04 节「没渲染成功」定性为编辑器把带样式的 span 按内联格式拆成多个，本轮只出结论未改前端。",
+  "artifacts": [
+    "src/main/java/ink/icoding/wechat/article/schedule/AgentInvoker.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/ToolCallGovernor.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/StageTimeoutPolicy.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/PipelineExecutor.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/CoordinatorExecutor.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/TaskExecutionService.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/StaleRunPolicy.java",
+    "src/main/resources/application.yaml",
+    "src/test/java/ink/icoding/wechat/article/schedule/AgentInvokerTest.java",
+    "src/test/java/ink/icoding/wechat/article/schedule/PipelineExecutorTest.java",
+    "src/test/java/ink/icoding/wechat/article/schedule/StageTimeoutPolicyTest.java",
+    "src/test/java/ink/icoding/wechat/article/schedule/CoordinatorExecutorTimeoutTest.java",
+    "src/test/java/ink/icoding/wechat/article/schedule/TaskFailureMessageTest.java",
+    "tools/render-verify/browser/r39-article8-sec04.mjs",
+    "docs/dev/known-issues-handoff.md"
+  ],
+  "quality": {
+    "checks": [
+      {
+        "name": "mvn -o test (全量闸门)",
+        "result": "pass",
+        "detail": "Tests run: 500, Failures: 0, Errors: 0, Skipped: 0 · BUILD SUCCESS（日志 target/scratch/fullgate.log）。注意 target/surefire-reports 里另有 3 个 *ProbeTest.xml 是 09-17 的手工探针残留（源码已删、不在闸门内），其中 ExecutePathProbeTest 的 failures=1 与本轮无关。"
+      },
+      {
+        "name": "红→绿反证（缺陷 A）",
+        "result": "pass",
+        "detail": "把 retryable 改回 attempt.toolCalls() == 0 → AgentInvokerTest 恰好 2 例变红（retriesTransientErrorAfterOnlyReadOnlyTools、switchesProfileAfterOnlyReadOnlyTools）；javap 确认两处闸门调 Attempt.paidSideEffect() 且分支反转。"
+      },
+      {
+        "name": "红→绿反证（缺陷 B）",
+        "result": "pass",
+        "detail": "把 StageTimeoutPolicy.forStage 改回恒返回 stageSeconds → AgentInvokerTest/PipelineExecutorTest/CoordinatorExecutorTimeoutTest 共 8 例变红；javap 确认 forStage 调 isWriting 后返回 writingSeconds。"
+      },
+      {
+        "name": "实跑定时任务（task#2 PIPELINE，run#20）",
+        "result": "partial",
+        "detail": "两处接线均在真实运行中被观察到生效（WRITING seconds=900.0、profilesUsed 3 个档案、switchedProfile=true），但该轮仍以第三种形态失败（见 defects）。"
+      }
+    ]
+  },
+  "defects": [
+    {
+      "severity": "MAJOR",
+      "issue": "重试/换档案闸门把「只读工具」当成副作用：retryable = attempt.toolCalls() == 0。run#14/run#18 的写作阶段停滞前只调过一次 read_article_draft，12 个故障切换候选一个都没用上，整轮 FAILED、saved=false。",
+      "status": "fixed",
+      "fix": "AgentInvoker.Attempt 增 paidSideEffect 字段（4 处构造点），两处闸门改 !attempt.paidSideEffect()；判据由 ToolCallGovernor.SIDE_EFFECT_FREE_TOOLS 给出（含 read_article_draft；未知工具名一律按有副作用）。"
+    },
+    {
+      "severity": "MAJOR",
+      "issue": "写作阶段用全局 300s 硬超时。run#14/run#18 的写作阶段恰好停在 300.0s 且「最后活动距今 0 秒」（会话仍在正常出字），是误杀而非止损；run#19 的委托写作同样停在 300.0s。",
+      "status": "fixed",
+      "fix": "StageTimeoutPolicy.forStage（写作 900s / 其余 300s，DELEGATE_ 前缀归一）接进 PipelineExecutor 与 CoordinatorExecutor；application.yaml 新增 writing-timeout-seconds。"
+    },
+    {
+      "severity": "MINOR",
+      "issue": "缺陷 A 引入的措辞失真：换档案日志与失败终态说明仍写「阶段停滞且（未）调用工具」，而判据已改成「有没有副作用」。run#20 的调研阶段在 24 次只读检索后仍切换了档案，旧措辞把「调了 24 次工具」报成「未调用工具」。",
+      "status": "fixed",
+      "fix": "AgentInvoker 的 log.warn/reportProgressOnly 与 TaskExecutionService.failureHint 改说「未调用有副作用的工具 / 只读检索不在此列」；TaskFailureMessageTest 补两条断言钉住（含「有副作用」「只读」）。"
+    },
+    {
+      "severity": "MAJOR",
+      "issue": "文章 8 第 04 节在编辑器里渲染成两栏：落库 HTML 的列表行是「圆点 + 一个 flex:1 span（内含 <strong>时间</strong> + 正文）」，编辑器往返后同一个源 span 被拆成两个 flex:1 1 0% 的兄弟 span，于是「时间」与正文各占半行。全篇 flex:1 span 2 → 4（两行列表各拆一个）。",
+      "status": "open",
+      "fix": "本轮未改前端（按方案 §一，不预支改动）。根因在 webui/src/editorExtensions.js 的 PreservedMarkStyle：样式挂在 mark 上，同一源 span 内 bold/非 bold 混排即落成两个标记不同的文本节点，序列化时各带一份 flex。与 D35「相邻同款 span 被合并」是同一条链路的反方向。证据（探针已修正判据后重跑）：tools/render-verify/browser/r39-article8-sec04.mjs 输出 第04节.每行flex栏数=[2,2]、圆点可见=2、strong 字号字重=60px/700 与 30px/900；落库侧同一脚本口径为每行 1 个 flex:1。截图 target/probe/browser/shots/r39-article8-sec04.png。"
+    },
+    {
+      "severity": "MINOR",
+      "issue": "本轮首版探针（tools/render-verify/browser/r39-article8-sec04.mjs）的判据是错的，会报假阴性：① 用 data-block=\"ptitle\" 判「p-title 在不在」——那是渲染服务的标记，编辑器不认识、getHTML() 出口本就不带，于是报「0 个 p-title」；② 用无空格的 font-size:60px 字面量扫样式——CSSOM 会规范成 font-size: 60px，同样扫不到。首版输出因此把「版式完好」误报成「整块丢失」。",
+      "status": "fixed",
+      "fix": "探针改判据：p-title 改认版式本身（CHAPTER 文字 + strong 的 computed 字号），列表行新增「每行 flex 栏数」这一项（正是 D48 的判据）。重跑后第 04 节读出 有CHAPTER=true、60px/700、30px/900、圆点 6×6 可见、每行 flex 栏数=[2,2]。"
+    },
+    {
+      "severity": "INFO",
+      "issue": "run#20 的失败形态是第三种，与前两次不同：写作阶段调了 read_article_draft、create_sub_agent、read_article_draft 之后，会话在 104 秒无有效事件（低于 180s 无进展阈值，故未提前触发），一直跑到 900s 硬超时才中止；saved=false。create_sub_agent 是 agent4j 内置工具、本项目关不掉（见 known-issues-handoff.md 3.2 第 2 条），它会把整棵子会话树计入外层墙钟。",
+      "status": "open",
+      "fix": "非本轮引入，属上游限制 + 写作阶段时长量级问题。已知规避方向见 docs/dev/known-issues-handoff.md §3.2（给写作阶段留子会话余量 / 把总时长超时改成无活动超时）。"
+    }
+  ],
+  "next": [
+    "文章 8 第 04 节的 span 拆分（D48）需要一个独立的前端修复轮：判据已备（落库 HTML 1 个 flex:1 span/行 → 编辑器 2 个），修法与 D35 的 sourceSpanId 同源但方向相反——要让「同一源 span 的多个文本节点」在序列化时重新合并回一个外层 span，而不是各带一份样式。改前先按 §4.2 用 tools/render-verify 的两栏对照法采一轮。",
+    "run#20 暴露的写作阶段形态（104s 真停滞 < 180s 阈值 → 跑满 900s）说明「无进展检测阈值」与「写作阶段正常的长空档」仍有重叠区。若要继续压，方向是把硬超时改成「无活动超时 + 绝对上限兜底」（§3.2 第 1 条已列），但那是语义变更，需先按 4.2 多采几轮。",
+    "本轮未 commit、未 push（用户未授权）。改动全在工作区，git status 可见。"
+  ],
+  "read_files": [
+    "src/main/java/ink/icoding/wechat/article/schedule/AgentInvoker.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/ToolCallGovernor.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/StageTimeout.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/StageTimeoutPolicy.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/PipelineExecutor.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/TaskExecutionService.java",
+    "src/test/java/ink/icoding/wechat/article/schedule/TaskFailureMessageTest.java",
+    "webui/src/editorExtensions.js",
+    "docs/dev/known-issues-handoff.md"
+  ],
+  "notes": [
+    "本文件是旁路记录，未触碰 .zcode/handoff/latest.json（那是并行会话共用的单文件，纪律见 docs/handoff/sess-followups-20260917-round5.json:213）。",
+    "验证 run#20 用的是开发库 wechat-article 的 TASK_RUN 表（EXECUTION_LOG 与 STAGES_SUMMARY 为准，不看模型自我总结）。",
+    "run#21/#23/#24 在同一窗口内 SUCCESS/SUCCESS_WITH_WARNINGS，其中 run#24（task#1 SINGLE）的失败终态说明里出现了「期间切换过模型档案」——那是缺陷 A 生效后的正常切换，不是失败。"
+  ]
+}

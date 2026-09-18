@@ -1,0 +1,82 @@
+{
+  "agent": "main",
+  "timestamp": "2026-09-17T11:55:00",
+  "session": "followups-round4-20260917",
+  "status": "completed",
+  "summary": "把上一轮（round3）自己判成「测试脆性」并绕开的那个现象**追成了真生产缺陷**：LlmProfileService.syncDefaultFromConfig 用 defaultProfile()（= findDefault() ?? findFirst()）当**写**目标，而那个回落是**读**语义。当 LLM_PROFILE 有行但一行都不是 is_default 时（用户在新档案页建了档案、从没点过「设为默认」，生产上完全可达），存量 PUT /api/settings/llm 会覆盖**第一条用户档案**的 provider/baseUrl/modelName/apiKey 且不打默认标记——请求成功、设置页回显也对，但用户的档案（含加密 key，不可逆）已被静默改写。已修复：改用 mapper.findDefault()，找不到就**新建**（同名档案则收养并补标记）。单测 3 例 + HTTP 端到端 1 例，各做反例证明。全量闸门 **465 例全绿 / 0 错**（上一轮 461）。**未 commit。**",
+  "artifacts": [
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfileService.java",
+    "src/test/java/ink/icoding/wechat/article/agent/LlmProfileServiceTest.java",
+    "src/test/java/ink/icoding/wechat/article/AgentApiIntegrationTests.java",
+    "docs/dev/image-model-per-profile.md",
+    "docs/dev/skills-agent-plan.md"
+  ],
+  "quality": {
+    "checks": [
+      {
+        "name": "mvn -o test（全量）",
+        "result": "pass",
+        "detail": "Tests run: 465, Failures: 0, Errors: 0, Skipped: 0 — BUILD SUCCESS（上一轮 461；净 +4 = LlmProfileServiceTest +3、AgentApiIntegrationTests +1）"
+      },
+      {
+        "name": "写透目标单测反证",
+        "result": "pass",
+        "detail": "把 mapper.findDefault() 改回 defaultProfile() → legacyWriteThroughCreatesDefaultInsteadOfHijackingTheFirstProfile 失败：expected: \"用户原来的模型\" but was: \"settings-model\"（用户档案被覆盖）。改回即绿"
+      },
+      {
+        "name": "写透目标 HTTP 端到端反证",
+        "result": "pass",
+        "detail": "同上改动 → legacySettingsWriteThroughDoesNotHijackAUserProfile 失败，报同样的 expected/but was。该用例造出真实库状态（清空 LLM_PROFILE 后插一条 IS_DEFAULT=0 的行），走真实 MockMvc + 真实 MySQL。改回即绿"
+      },
+      {
+        "name": "webui 闸门",
+        "result": "pass",
+        "detail": "✓ 档案链一致性自检通过（后端 4 跳结构 + 12 个行为用例）；✓ 共享工具导入自检通过（10 个导出符号）。本轮未改前端源码，闸门仅作回归确认"
+      }
+    ],
+    "gate_passed": true
+  },
+  "defects": [
+    {
+      "severity": "MAJOR",
+      "issue": "存量 PUT /api/settings/llm 会静默改写用户自建的模型档案。syncDefaultFromConfig 选写透目标时用 defaultProfile()（= findDefault() ?? findFirst()），那个「回落第一条」是**读**语义（运行时总得挑一条用），拿来**写**就改错对象。触发前提在生产上可达且不需要异常操作：LLM_PROFILE 有行、但一行都不是 is_default=1——用户在新档案页建了档案却从没点「设为默认」即可（create() 显式 setIsDefault(false)，LlmProfileSeeder 也只设 is_fallback，全仓库只有 setDefault/migration/syncDefault 三处会置 true）。后果：第一条用户档案的 provider/baseUrl/modelName/apiKey 被整条覆盖，且**不打** is_default 标记；apiKey 只存加密值，**不可逆**；而读路径同样回落 findFirst，所以设置页回显与写入自洽，全程不报错、不告警。",
+      "verified": true,
+      "fix": "fixed",
+      "evidence": "syncDefaultFromConfig 改用 mapper.findDefault()（只认真正的默认档案）；找不到时按 javadoc 说的创建：若已有名为「默认配置」的档案就收养并补 is_default（避免重名让 findByName 变歧义），否则新建一条带 is_default 的。单测 + HTTP 端到端各做反例证明（见 quality）。同类结论在 LlmProfileSeeder.defaultSource() 的 javadoc 里早就写过（「不直接用 defaultProfile() 的回落语义」），本方法曾漏用"
+    },
+    {
+      "severity": "MINOR",
+      "issue": "round3 把这同一个现象判成了「测试脆性」并只绕开（新用例改为自建档案 + try/finally 删除，并写进交接文档说「本轮不改它」）。这个判断是错的：那条 findFirst 落回不是测试才有的路径，而是 defaultProfile() 的正常语义，生产上一样发生。绕开测试只是把症状藏起来，并且让 llmProfileCrudAndSettingsLlmCompatMapping 看起来只是「依赖执行顺序」。",
+      "verified": true,
+      "fix": "fixed",
+      "evidence": "本轮查明真因后，该用例的脆性根因（写透落到别人的档案上）已被消除，**没有**给它加 @TestMethodOrder（那是给症状打补丁）。文档 §8.4.3 保留第一轮的错判原文并标明「这个判断是错的」，§8.4.4 记真缺陷"
+    }
+  ],
+  "next": [
+    "docs/dev/known-issues-handoff.md §八 仍有多条未动，逐项状态见 round3 交接；其中 P1 级的是第 12 条（前端静态产物不随启动构建，方案 A 因 frontend-maven-plugin 不在本地仓库而**不可用**，已落地 B 启动自检 WebUiArtifactCheck）、第 8 条（D42 真实轮次对照，需重启+产生产数据，属产品决策）",
+    "第 13 条「汇总脚本按 id 排序」是纯确定性小活：写产物的是 tools/render-verify/browser/summarize-all.mjs（rows 顺序来自 all_result.json 的 raw.samples）与 tools/render-verify/round10_component_paths.mjs。判定数字不受影响，只是跨机器行序不同、做不到逐字节可复现",
+    "第 9/10 条（31 个组件升 A 级证据、元素形态透传判据泛化）是内容侧工作量，需真实调度轮次产出成稿",
+    "方案 D（dev-start 兜底脚本）未做",
+    "编辑器链路的模型切换仍未做实机验证（需一次真实编辑器交互）",
+    "temperature/maxTokens 仍是死字段（agent4j 2.3.3 的 LLMModel.create 只收 4 个参数，需上游改）",
+    "**建议顺手复核同类模式**：全仓库 `defaultProfile()` 的调用点已逐一审计（AgentFactory:302、LlmConfigService:80/162 全是**读**，正确），但「读语义的方法被拿来当写目标」这类错误值得在别处也扫一遍——本轮只扫了 defaultProfile/findFirst 这一族",
+    "本轮代码改动**未 commit**：git status 有 12 改 + 10 未跟踪。推送远端需用户明确授权（remote 是 huanyu，不是 origin）"
+  ],
+  "read_files": [
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfileService.java",
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfileMapper.java",
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfileSeeder.java",
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfileMigrationRunner.java",
+    "src/main/java/ink/icoding/wechat/article/settings/LlmConfigService.java",
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfile.java",
+    "docs/dev/known-issues-handoff.md"
+  ],
+  "notes": [
+    "本文件是旁路记录：.zcode/handoff/latest.json 为并行会话共用的单文件，按纪律未覆盖。",
+    "**本轮最大的教训：「单独跑就绿」不是缺陷不存在的证据。** round3 看到 llmProfileCrudAndSettingsLlmCompatMapping 单独跑绿、整类跑红，就归因为 JUnit 方法哈希顺序导致的测试脆性。真实情况是那个「红」在正确报告一个生产缺陷，只是恰好由顺序变化触发。正确做法是问「这个顺序依赖本身是不是在暴露被测代码的状态依赖」——若是，缺陷在代码里，不在测试里。",
+    "**「声明与真实必须同向」第五次验证**：round3 的交接文档写着「该用例本身是脆的……那是既有问题，本轮不改它」——这份**自己写的**声明就是错的。前四次是：种子改了≠存量改了；文档说没配 misfire≠代码没配；待办说字段冲突没修≠真的没修；§8.1 #3 说前端已逐跳同口径≠漏了一整跳。",
+    "**命名误导是本缺陷的根因**：defaultProfile() 听起来像「默认档案」这一**实体**，实际语义是「运行时挑一条来用」这一**动作**。它的回落对**读**是容错（运行时总得有东西可用），对**写**就是改错对象。同一个类的 LlmProfileSeeder.defaultSource() 已经因为同一理由避开过它，syncDefaultFromConfig 漏用了这条结论——说明「结论写在注释里」并不能阻止它被漏用，只有测试能。",
+    "踩坑（已记过、本轮又踩一次）：**Copy-Item / Move-Item 会保留原 mtime**，导致「反证 → 还原」之后 Maven 的增量编译认为 class 比 source 新而**跳过重编译**。本轮全量闸门因此假红 3 例（报的正是我改的那 3 个用例），javap 反编译 target/classes 才看到跑的还是被 neuter 过的旧 class。**还原后用 (Get-Item <src>).LastWriteTime = Get-Date 触碰源文件**再跑，即恢复。判断方法：比较 source 与 target/classes 下对应 .class 的 LastWriteTime。",
+    "环境：`mvn -o test` 全量需要 MySQL。本轮 podman run -d --name watb-test-mysql 起临时库，跑完已 stop+rm，3306 已释放。**Podman 只把端口绑到 IPv6 回环 [::1]:3306**，127.0.0.1 连不上，测试 URL 必须用 localhost（经 -Dspring.datasource.url 覆盖）。"
+  ]
+}

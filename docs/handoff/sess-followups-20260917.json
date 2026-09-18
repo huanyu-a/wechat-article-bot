@@ -1,0 +1,98 @@
+{
+  "agent": "main",
+  "timestamp": "2026-09-17T10:20:00",
+  "session": "followups-round-20260917",
+  "status": "completed",
+  "summary": "收尾「定时任务可靠性」一轮的遗漏/未开始项（目标：遗漏或者未开始的，可以继续搞了）。逐项核对 fix-plan §四 的 4 条待办，发现**其中 1 条是过期条目**（5 处同名字段冲突早在 94d9a94 就修好并被 EntityColumnDeclarationConsistencyTest 钉住），另 3 条落地：①builtin_scheduled_creator 改绑 deepseek-flash（种子 + 存量一次性迁移）；②前端静态产物陈旧 —— 选方案 B（启动自检 WebUiArtifactCheck），**方案 A 经证据否决**；③09:00 自然日观测 —— 用真实 Quartz 的确定性测试取代（QuartzMisfirePolicyTests），并顺带更正了文档里 misfire 根因的笔误。闸门 .mvn/mvn-local.sh -o test → **460 例全绿**（上一轮 439）。三处新代码各做了红→绿反证。",
+  "artifacts": [
+    "src/main/java/ink/icoding/wechat/article/agent/ScheduledCreatorProfileRebindRunner.java",
+    "src/test/java/ink/icoding/wechat/article/agent/ScheduledCreatorProfileRebindRunnerTest.java",
+    "src/main/java/ink/icoding/wechat/article/configuration/WebUiArtifactCheck.java",
+    "src/test/java/ink/icoding/wechat/article/configuration/WebUiArtifactCheckTest.java",
+    "src/test/java/ink/icoding/wechat/article/schedule/QuartzMisfirePolicyTests.java",
+    "src/main/java/ink/icoding/wechat/article/agent/AgentSeeder.java",
+    "src/test/java/ink/icoding/wechat/article/agent/AgentSeederTest.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/QuartzTaskManager.java",
+    "docs/dev/scheduled-task-replay-guard-fix-plan.md",
+    "docs/dev/scheduled-task-reliability-round.md",
+    "docs/dev/model-availability-probe.md",
+    "docs/dev/render-verification.md"
+  ],
+  "quality": {
+    "checks": [
+      {
+        "name": "mvn -o test",
+        "result": "pass",
+        "detail": "Tests run: 460, Failures: 0, Errors: 0（上一轮 439；+7 WebUiArtifactCheckTest、+11 ScheduledCreatorProfileRebindRunnerTest、+3 QuartzMisfirePolicyTests）"
+      },
+      {
+        "name": "改绑迁移红证",
+        "result": "pass",
+        "detail": "把 shouldRebind 改成恒返回 true → 3 例失败，含 userChosenBindingIsNeverOverwritten 报 expected: 99L（用户选的模型被覆盖）。改回即绿"
+      },
+      {
+        "name": "前端自检红证",
+        "result": "pass",
+        "detail": "在 evaluate() 顶部插 if (true) return OK → 2 例失败（expected MISSING / expected STALE）。改回即绿"
+      },
+      {
+        "name": "misfire 策略红证",
+        "result": "pass",
+        "detail": "删掉 QuartzTaskManager 的 withMisfireHandlingInstructionDoNothing() → scheduledTriggerPinsDoNothingMisfireInstruction 失败（expected: 2 but was: 0，即退回 SMART_POLICY）。改回即绿"
+      }
+    ],
+    "gate_passed": true
+  },
+  "defects": [
+    {
+      "severity": "MINOR",
+      "issue": "scheduled-task-reliability-round.md §八.4 的 misfire 根因写错，两处都不成立：①称「项目未写 misfire 指令」，实际 QuartzTaskManager.schedule() 自 initial commit 24bead6 起就显式调用了 withMisfireHandlingInstructionDoNothing()；②称「SMART_POLICY 对 cron 等价于 DO_NOTHING」，实际 Quartz 把 cron 的 SMART_POLICY 映射为 FIRE_ONCE_NOW（立即补跑一次），与 DO_NOTHING 行为**相反**。观测到的「不补跑」是那行显式配置的结果；删掉它行为会反转。",
+      "verified": true,
+      "fix": "fixed",
+      "evidence": "QuartzMisfirePolicyTests 用真实 Quartz（RAMJobStore、不依赖 DB）钉死三件事：落库 trigger 的 misfireInstruction==DO_NOTHING；DO_NOTHING 下 updateAfterMisfire 后 nextFireTime 仍在未来；反证 SMART_POLICY 下 nextFireTime 落在当前时刻。文档 §八.4 已更正，QuartzTaskManager 补了「不能删」的注释"
+    },
+    {
+      "severity": "MINOR",
+      "issue": "fix-plan §四 的待办清单含**过期条目**：称「5 处同名实体字段冲突」待修，但该问题早在 commit 94d9a94 修复（Asset.java / ArticleRevision.java 向真实列对齐），且已有 EntityColumnDeclarationConsistencyTest 钉住。原条目还把 sourceUrl 描述为「被静默收窄为 varchar(1000)」，实际是实体声明从错误的 2000 **向真实列 1000 对齐**，不是收窄。",
+      "verified": true,
+      "fix": "fixed",
+      "evidence": "复跑 EntityColumnDeclarationConsistencyTest → Tests run: 2, Failures: 0；fix-plan §四 已改写为逐项结论"
+    },
+    {
+      "severity": "MINOR",
+      "issue": "AgentSeeder 的种子只改 profileSeedName 对**存量部署无效**——upsert 仅在 llm_profile_id 为空时写入（设计如此：不覆盖用户选择）。若只改种子就宣称「已改绑」，实际线上仍跑 glm-5.3-flash，属声明与真实不一致。",
+      "verified": true,
+      "fix": "fixed",
+      "evidence": "新增 ScheduledCreatorProfileRebindRunner（@Order(32)）专门改绑存量行；只在「当前绑定==旧种子默认值」时动手，用户改过的一律不动；幂等（改绑后不再等于旧默认值）。11 例单测 + 红证"
+    }
+  ],
+  "next": [
+    "方案 A（把 build-webui 提前到 compile 阶段）仍未做，且**不要在未装插件的前提下重提**：frontend-maven-plugin 不在本地仓库（.m2\\repository\\com\\github\\eirslett 不存在），实测离线解析报 Cannot access central ... in offline mode。要重启 A 得先把插件装进本地仓库，否则会打破离线闸门",
+    "方案 D（dev-start 兜底脚本）未做：A 被否决后它是唯一能真正「自动修」的路径，但会新增一个可被绕过的入口，优先级低于其它项",
+    "编辑器链路的模型切换仍未做实机验证（需一次真实编辑器交互）",
+    "temperature/maxTokens 仍是死字段（agent4j 2.3.3 的 LLMModel.create 只收 4 个参数，需上游改）",
+    "onThink 之外 agent4j 若新增流式通道，需一并接上判活（现只接了 onThink；onUsage/onContextCompression 是汇总上报、不适合当活动信号）",
+    "本轮代码改动**未 commit**：git status 有 12 个已改 + 8 个未跟踪文件（含上一轮遗留的 ToolCallArgumentGuard/AgentInvoker/ToolParamRepair 等）。推送远端需用户明确授权（remote 是 huanyu，不是 origin）"
+  ],
+  "read_files": [
+    "src/main/java/ink/icoding/wechat/article/agent/AgentSeeder.java",
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfileSeeder.java",
+    "src/main/java/ink/icoding/wechat/article/agent/LlmProfileMigrationRunner.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/QuartzTaskManager.java",
+    "src/main/java/ink/icoding/wechat/article/schedule/ScheduleTaskJob.java",
+    "docs/dev/scheduled-task-reliability-round.md",
+    "docs/dev/render-verification.md",
+    "docs/dev/model-availability-probe.md"
+  ],
+  "notes": [
+    "本文件是旁路记录：.zcode/handoff/latest.json 为并行会话共用的单文件，按纪律未覆盖。",
+    "**交接文档本身会过期**：fix-plan §四 的 4 条待办里，1 条（5 处字段冲突）在写下的当天就已被别的 commit 修好。本轮的价值有一半是「逐项核对真实状态」而不是「照着清单动手」——下手前先跑一遍对应测试，比读文档可靠。",
+    "「声明与真实必须同向」在本轮被验证了三次：①种子改了≠存量改了（upsert 只在 null 时写）；②文档说没配 misfire≠代码没配；③待办说字段冲突没修≠真的没修。三处都是「文档/声明」与「真实列/代码」不一致。",
+    "方案 A 否决的依据是本地仓库缺失而非偏好，记录在 render-verification.md §3.10 ④-1。**这条容易被后人当成「保守」而重提**，故写进 next 第一条。",
+    "测试环境：本机 127.0.0.1:3306 原本无监听，13 个 DB 集成测试类会以 Communications link failure 报错（环境问题非缺陷）。本轮用 `podman run -d --name watb-test-mysql -e MYSQL_ROOT_PASSWORD=… -p 3306:3306 mysql:8.0` 起临时库，跑完**已 stop+rm**。注意：**Podman 只把端口绑到 IPv6 回环 [::1]:3306**，127.0.0.1 连不上，测试 URL 必须用 `localhost`（本轮经 -Dspring.datasource.url 覆盖）。",
+    "环境：Podman **后端可用**（version/ps/run 均正常），但 `podman machine list` 会因 podman-machine-default.lock 拒绝访问而失败——不要用 podman machine 子命令。Docker 不可用（npipe 拒绝访问）。Get-NetIPAddress 在本沙箱拒绝访问。",
+    "`.env` 指向 127.0.0.1:3306，而 application.yaml 的默认值是 100.73.43.10（fallback）。100.73.43.10:3306 TCP 可连但 MySQL 握手超时（ERROR 2003 (110)），本轮**无法**直接改真实生产库，故改绑只能靠启动时的迁移 Runner 在下次启动生效。",
+    "本机当前应用未运行、MySQL 未运行（今天 09-17 的 09:00 自然触发同样未发生）。如需实机复验改绑，需按 Docker Desktop → momo-mysql-dev → spring-boot:run 三级恢复，再查 AGENT_DEFINITION.LLM_PROFILE_ID。",
+    "踩坑：Quartz 有**自己的** org.quartz.Calendar 接口，测试里直接 import java.util.Calendar 会编译失败（incompatible types / cannot find symbol）；updateAfterMisfire(null) 即可（该参数只用于跳过被排除的日期）。"
+  ]
+}
