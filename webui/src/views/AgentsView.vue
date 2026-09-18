@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { parseSkillIds } from '../utils/skills'
+import { imageCarrier as imageCarrierOf } from '../utils/profiles'
 import SkillPicker from '../components/SkillPicker.vue'
 import {
   BadgeCheck, Bot, BrainCircuit, CircleAlert, Clock3, Copy, FileText, Image, LoaderCircle,
@@ -61,31 +62,13 @@ const profileNameOf = id => {
 }
 /**
  * 与后端 LlmProfileService.failoverChain 同口径的候选链：
- * 绑定档案 → 默认档案 → 兜底档案 → 其余已启用档案（按 id 升序），
+ * 绑定档案 → 默认档案（无 is_default 时回落第一条）→ 兜底档案 → 其余已启用档案（按 id 升序），
  * 每环都要「已启用 + 有 key」（后端 addIfUsable 的判据），按 id 去重。
  *
- * <p>为什么要逐跳照抄而不是取「绑定 + 默认」两跳：这张卡片存在的唯一目的就是
- * 如实告诉用户「配图会用哪个模型」。少抄一跳（兜底/其余已启用）或漏掉可用性过滤，
- * 都会让界面报出一个后端根本不会用的模型名——那比不显示更糟。
+ * 逻辑放在 utils/profiles.js：它必须逐跳与后端一致，单独成文件才能被
+ * scripts/check-profile-chain-parity.mjs 拿去和后端源码对照（含结构自检）。
  */
-const imageCarrier = id => {
-  const usable = profiles.value
-    .filter(p => p.enabled && p.hasApiKey)
-    .slice()
-    .sort((a, b) => Number(a.id) - Number(b.id))
-  const chain = []
-  const seen = new Set()
-  const push = profile => {
-    if (!profile || profile.id == null || seen.has(String(profile.id))) return
-    seen.add(String(profile.id))
-    chain.push(profile)
-  }
-  if (id) push(usable.find(p => String(p.id) === String(id)))
-  push(usable.find(p => p.isDefault))
-  push(usable.find(p => p.isFallback))
-  usable.forEach(push)
-  return chain.find(p => (p.imageModelName || '').trim())
-}
+const imageCarrier = id => imageCarrierOf(profiles.value, id)
 /**
  * 配图实际生效的图片模型：档案链上第一个声明了 imageModelName 的档案，都没有则用全局设置。
  *

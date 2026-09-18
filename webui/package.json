@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "check:imports": "node scripts/check-shared-imports.mjs",
-    "prebuild": "node scripts/check-shared-imports.mjs",
+    "check:chain": "node scripts/check-profile-chain-parity.mjs",
+    "check": "npm run check:imports && npm run check:chain",
+    "prebuild": "npm run check",
     "build": "vite build",
     "preview": "vite preview"
   },
