@@ -128,8 +128,21 @@ public class AgentSeeder implements ApplicationRunner {
      * @param profileSeedName 默认绑定的模型档案名（{@link LlmProfileSeeder} 的幂等键）；
      *                        档案不存在时该智能体回落默认档案。分配依据见
      *                        {@code docs/dev/model-availability-probe.md}：
-     *                        工具密集、以速度为主的阶段绑 deepseek-flash（445 tok/s），
+     *                        工具密集、以速度为主的阶段绑 deepseek-flash，
      *                        成稿与判断为主的阶段绑 glm-5.3-flash（本 key 下能力分最高）。
+     *
+     *                        <p><b>定时创作智能体为什么归「速度优先」而不是「能力优先」</b>：
+     *                        它的负载不是写正文，而是**生成工具参数**（{@code save_article_draft}
+     *                        的 {@code content} 就是整篇文章），属于工具密集。按实际负载实测
+     *                        （{@code docs/dev/scheduled-task-reliability-round.md} §4.1）：
+     *                        deepseek-flash 273 字符/秒，glm-5.3-flash 仅 69~125，与基线
+     *                        hy4-preview 的 77~95 区间重叠——**只有 deepseek-flash 是真正快的档**。
+     *                        评测表的 tok/s 是纯正文场景，不能外推到工具调用场景，故这里按
+     *                        实际负载而不是能力分（glm 57.5 更高）来选。
+     *
+     *                        <p>注：SINGLE 链路 run#126 用 glm-5.3-flash 耗时 895.4s、高于 7 次
+     *                        成功基线均值 204s，方向与上述速率实测一致，但该对照受「任务轻重不同」
+     *                        干扰、且基线区间横跨 66~553s，**不作为独立证据**（见该文 §四）。
      */
     record Seed(String builtinKey, String code, String name, String stage, String persona,
                 List<String> toolGroups, List<String> skillKeys, String profileSeedName) {
@@ -143,7 +156,7 @@ public class AgentSeeder implements ApplicationRunner {
                 new Seed("builtin_scheduled_creator", "builtin_scheduled_creator", "墨舟定时创作智能体",
                         "SCHEDULED_SINGLE", SCHEDULED_PERSONA,
                         List.of(ToolRegistry.DRAFT_READ, ToolRegistry.DRAFT_WRITE, ToolRegistry.MEDIA),
-                        List.of("default_layout"), "glm-5.3-flash"),
+                        List.of("default_layout"), "deepseek-flash"),
                 new Seed("builtin_researcher", "builtin_researcher", "调研员", "RESEARCH", RESEARCH_PERSONA,
                         List.of(ToolRegistry.RESEARCH, ToolRegistry.MEDIA),
                         List.of("fact_check_default"), "deepseek-flash"),

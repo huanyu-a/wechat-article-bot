@@ -17,14 +17,14 @@ import java.util.List;
  * （{@link LlmProfileService#failoverChain}）都要求档案**存在且可用**，但开箱只有一条「默认配置」，
  * 于是 7 个内置智能体全挤在同一个模型上，档案链也只有一环——主用一挂就整轮失败。
  *
- * <p>为什么 baseUrl/apiKey 从默认档案**复制**而不是让用户填：三个标准档案走的是同一个网关
+ * <p>为什么 baseUrl/apiKey 从默认档案**复制**而不是让用户填：这些档案走的是同一个网关
  * （nexus.bx9y.com.cn）、同一个 key，**只有模型名不同**。让用户为每个模型再填一遍 key
  * 既冗余又容易填错；复制默认档案后用户随时可在设置页单独改。
  *
  * <p>为什么只补不覆盖：用户可能已经手工调过某个档案的 key 或关掉了它，
  * 种子只负责「让它存在」，不做任何覆盖（与 {@code AgentSeeder} 的 persona 策略一致）。
- * 默认档案在本 key 下是 hy4-preview（免费、慢），它同时是最好的兜底候选，因此未设置兜底时
- * 自动把它标为兜底——这是**唯一**一处种子替用户做的决定，且只做一次（已有兜底就不动）。
+ * 默认档案由用户配置，种子只在**完全没有兜底**时把默认档案标为兜底——这是种子替用户做的
+ * 唯一一个决定，且只做一次（已有兜底就不动）。
  */
 @Component
 @Order(25)
@@ -36,19 +36,53 @@ public class LlmProfileSeeder implements ApplicationRunner {
     }
 
     /**
-     * 标准档案清单（模型可用性已由 Phase 0 实测确认，见 {@code docs/dev/model-availability-probe.md}）。
+     * 标准档案清单，按《模型综合评测表》（2026-09-18）的档位取舍，
+     * 并逐条经 2026-09-18 实测复核（{@code docs/dev/model-availability-probe.md}）。
      *
-     * <p>两个主用档案分别覆盖「工具密集、速度优先」与「成稿/判断、能力优先」两类负载；
-     * 兜底取默认档案（hy4-preview）——它免费、能力 57，是最后的安全网。
+     * <p>为什么是这一组：评测表按「综合分 / 质量 / 成本 / 速度」给了档位，但**能建档案的前提是
+     * 这个模型在当前网关上真的能出字**。两者取交集后：
+     * <ul>
+     *   <li>S 档（能力优先）：hy4-preview、kimi-k3、qwen3.8-max、glm-5.3</li>
+     *   <li>A 档（主力）：deepseek-flash（综合分最高且最快）、glm-5.3-flash（性价比最高）、
+     *       dots3-note-prev、qwen3.8-27b</li>
+     *   <li>B 档（备选）：step-3.7-flash、agnes-2.5-flash、qwen3.8-flash、nemotron-3-ultra-free</li>
+     * </ul>
      *
-     * <p>有意不建 {@code glm-5.3}：实测返回 503（无可用渠道），建了也只会占档案链一格、
-     * 白耗一次切换。同理排除 {@code dots3-note-prev}（多轮记忆失败）、
-     * {@code sensenova-6.8-flash-lite}（不稳定）、{@code step-router-v1}（输出异常少）。
+     * <p>有意**不建**以下模型，理由分两类：
+     * <ol>
+     *   <li>实测不可用：{@code deepseek-v4-pro-0813}（网关返回「模型未找到」）、
+     *       {@code kimi-k2.8-preview}（temperature 只允许 1，其它值 400）。</li>
+     *   <li>评测表判为弱档、入链只会拖长失败路径：{@code sensenova-6.8-flash-lite}（30.2）、
+     *       {@code step-router-v1}、{@code agnes-3.0-flash}、{@code fast-model}、
+     *       {@code deep-model}、{@code balanced-model}、{@code cn:auto}、
+     *       {@code Atria-Dawn-Preview}。另有 {@code glm-4.7}/{@code union-alpha}/
+     *       {@code laguna-s-2.1-free} 网关已不提供。</li>
+     * </ol>
+     *
+     * <p>{@code nemotron-3.5-lightning-free} 虽在 B 档，但实测单次响应 **111 秒**——
+     * 放进故障切换链意味着「主用挂了要再等两分钟」，故不建。
+     *
+     * <p>注意这些模型名是 nexus 网关的命名；换网关后可能整组失效。种子只负责让档案**存在**，
+     * 失效档案的表现是「被调用时报模型未找到」，与用户手工建错档案的表现一致，不会静默出错。
      */
     static List<Seed> seeds() {
         return List.of(
+                // A 档主力：AgentSeeder 按**名称**绑定，这两个名字不能改（改了两处会对不上）
                 new Seed("deepseek-flash", "deepseek-flash", false),
-                new Seed("glm-5.3-flash", "glm-5.3-flash", false));
+                new Seed("glm-5.3-flash", "glm-5.3-flash", false),
+                // S 档（能力优先）。hy4-preview 兼兜底：限时免费 + Tier S，是最后一道安全网的最优候选
+                new Seed("hy4-preview", "hy4-preview", true),
+                new Seed("kimi-k3", "kimi-k3", false),
+                new Seed("qwen3.8-max", "qwen3.8-max", false),
+                new Seed("glm-5.3", "glm-5.3", false),
+                // A 档其余
+                new Seed("dots3-note-prev", "dots3-note-prev", false),
+                new Seed("qwen3.8-27b", "qwen3.8-27b", false),
+                // B 档
+                new Seed("step-3.7-flash", "step-3.7-flash", false),
+                new Seed("agnes-2.5-flash", "agnes-2.5-flash", false),
+                new Seed("qwen3.8-flash", "qwen3.8-flash", false),
+                new Seed("nemotron-3-ultra-free", "nemotron-3-ultra-free", false));
     }
 
     private final LlmProfileMapper mapper;
@@ -124,17 +158,34 @@ public class LlmProfileSeeder implements ApplicationRunner {
     }
 
     /**
-     * 未设置兜底档案时，把默认档案标为兜底。
+     * 未设置兜底档案时，把**种子声明的兜底档案**（{@code hy4-preview}）标为兜底。
      *
-     * <p>为什么用默认档案而不是新建一条：默认档案在本部署下是 hy4-preview（免费、能力 57），
-     * 天然就是「最稳最便宜」的兜底候选；新建一条同样的档案只会让档案列表多一条重复项。
-     * 只在**完全没有兜底**时动手，用户手工指定过就尊重用户的选择。
+     * <p>为什么要改（2026-09-18 实机复现）：原实现是「把默认档案标为兜底」。当时默认档案恰好是
+     * {@code hy4-preview}（免费），这个近似成立。但默认档案是可以被用户改成主力的——本轮就把默认
+     * 档案设成了 {@code deepseek-flash}。此时「把默认档案标为兜底」会把**主用**档案同时标成兜底，
+     * 故障切换链的「默认」与「兜底」两段指向同一条档案，被 {@code failoverChain} 按 id 去重后
+     * 白白少掉一跳——主用一挂，链上直接跳到其它档案，兜底那段形同虚设。
+     *
+     * <p>现在按**声明**取：优先 {@link Seed#fallback()} 为真的那条档案；只有当它不存在
+     * （用户删了、或种子没建起来）才退回「标记默认档案」，保证链尾永远有东西可用。
+     *
+     * <p>只在**完全没有兜底**时动手，用户手工指定过就尊重用户的选择。
      */
     private void markFallbackIfUnset(LlmProfile source) {
         if (mapper.findFallback() != null) return;
-        source.setIsFallback(true);
-        source.setUpdatedAt(LocalDateTime.now());
-        mapper.updateById(source);
-        log.info("已把默认模型档案「{}」标记为兜底档案（档案链的最后一段）", source.getName());
+
+        LlmProfile declared = seeds().stream()
+                .filter(Seed::fallback)
+                .map(seed -> mapper.findByName(seed.name()))
+                .filter(java.util.Objects::nonNull)
+                .findFirst()
+                .orElse(null);
+
+        LlmProfile target = declared != null ? declared : source;
+        target.setIsFallback(true);
+        target.setUpdatedAt(LocalDateTime.now());
+        mapper.updateById(target);
+        log.info("已把{}档案「{}」标记为兜底档案（档案链的最后一段）",
+                declared != null ? "声明的兜底" : "默认", target.getName());
     }
 }

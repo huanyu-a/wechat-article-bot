@@ -1,20 +1,29 @@
 package ink.icoding.wechat.article.agent;
 
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 模型档案故障切换链单测（Phase 1）：顺序、去重、跳过不可用者。
+ * 模型档案单测：故障切换链（Phase 1）的顺序/去重/跳过不可用者，
+ * 以及存量 {@code /api/settings/llm} 写透的目标选择（{@link LlmProfileService#syncDefaultFromConfig}）。
  *
  * <p>为什么这条链的顺序值得单测：它是「主用模型挂了之后谁来接手」的全部逻辑。
  * 顺序错了不会报错，只会让整轮运行去用一个更差/更慢的档案，或者在还有可用档案时直接失败——
  * 属于典型的「静默劣化」，只有断言才能钉住。
+ *
+ * <p>为什么写透目标也值得单测：它一旦取错档案，就会**静默改写用户自建的档案**
+ * （provider/baseUrl/modelName/apiKey 全被覆盖），且不留任何 is_default 标记——
+ * 两者都不会让请求失败，只会让用户下次打开设置页时发现资产被动过。
  */
 class LlmProfileServiceTest {
 
@@ -209,6 +218,83 @@ class LlmProfileServiceTest {
         LlmProfileMapper mapper = mapper(List.of(def), def, null);
 
         assertThat(service(mapper).imageCarrier(null).getId()).isEqualTo(2L);
+    }
+
+    /**
+     * 存量 {@code PUT /api/settings/llm} 必须写进**真正的默认档案**，不能去改一条用户自建的普通档案。
+     *
+     * <p>这是本轮查出的缺陷：{@code syncDefaultFromConfig} 用的是 {@code defaultProfile()}，
+     * 而它是 {@code findDefault() ?? findFirst()}。于是「表里有档案、但一条都不是默认」时，
+     * 它会落到**第一条用户档案**上，把 provider/baseUrl/modelName/apiKey 全部覆盖掉，
+     * 且**不给它打 is_default 标记**——用户下次打开档案页会发现自己的档案被动过，
+     * 而设置页显示的值又确实来自那条档案（因为读路径同样回落 findFirst），
+     * 于是「看起来对、实际改错了对象」。
+     *
+     * <p>javadoc 写的是「不存在则创建」，所以正确行为是：找不到默认档案时**新建**一条默认档案，
+     * 既有档案一律不动。
+     */
+    @Test
+    void legacyWriteThroughCreatesDefaultInsteadOfHijackingTheFirstProfile() {
+        LlmProfile userProfile = profile(1L, "用户的档案", true, false);
+        userProfile.setModelName("用户原来的模型");
+        userProfile.setBaseUrl("https://user.example.com");
+        LlmProfileMapper mapper = mapper(List.of(userProfile), null, null);
+
+        service(mapper).syncDefaultFromConfig("OPENAI_COMPATIBLE", "https://from.settings.test",
+                "settings-model", "encrypted-settings-key", new BigDecimal("0.30"), 1024, true);
+
+        assertThat(userProfile.getModelName())
+                .as("用户自建的普通档案不得被存量设置页写透覆盖").isEqualTo("用户原来的模型");
+        assertThat(userProfile.getBaseUrl())
+                .as("用户自建的普通档案不得被存量设置页写透覆盖").isEqualTo("https://user.example.com");
+
+        ArgumentCaptor<LlmProfile> inserted = ArgumentCaptor.forClass(LlmProfile.class);
+        verify(mapper).insert(inserted.capture());
+        assertThat(inserted.getValue().getIsDefault())
+                .as("新建的那条必须带 is_default，否则读路径（defaultProfile）仍会回落 findFirst").isTrue();
+        assertThat(inserted.getValue().getModelName()).isEqualTo("settings-model");
+        assertThat(inserted.getValue().getBaseUrl()).isEqualTo("https://from.settings.test");
+    }
+
+    /**
+     * 已有默认档案时，存量设置页照旧写透到它，且**不新建**第二条。
+     *
+     * <p>这条是上一条的对照：修复不能把正常路径也改成「每次都新建」。
+     */
+    @Test
+    void legacyWriteThroughUpdatesTheExistingDefault() {
+        LlmProfile def = profile(2L, "默认配置", true, false);
+        def.setIsDefault(true);
+        LlmProfile other = profile(5L, "另一个档", true, false);
+        LlmProfileMapper mapper = mapper(List.of(def, other), def, null);
+
+        service(mapper).syncDefaultFromConfig("OPENAI_COMPATIBLE", "https://from.settings.test",
+                "settings-model", "encrypted-settings-key", new BigDecimal("0.30"), 1024, true);
+
+        assertThat(def.getModelName()).isEqualTo("settings-model");
+        assertThat(other.getModelName()).as("非默认档案不得被改动").isNotEqualTo("settings-model");
+        verify(mapper, never()).insert(any(LlmProfile.class));
+    }
+
+    /**
+     * 已存在一条**名为「默认配置」但没有 is_default 标记**的档案时，收养它并补标记，而不是新建重名档案。
+     *
+     * <p>为什么不能直接新建：{@code findByName} 是种子解析绑定（{@code AgentSeeder.resolveProfileId}）
+     * 与名称唯一性校验的入口，重名会让它们产生歧义。
+     */
+    @Test
+    void legacyWriteThroughAdoptsAnExistingSameNamedProfile() {
+        LlmProfile stranded = profile(7L, "默认配置", true, false);
+        stranded.setIsDefault(false);
+        LlmProfileMapper mapper = mapper(List.of(stranded), null, null);
+        when(mapper.findByName("默认配置")).thenReturn(stranded);
+
+        service(mapper).syncDefaultFromConfig("OPENAI_COMPATIBLE", "https://from.settings.test",
+                "settings-model", "encrypted-settings-key", new BigDecimal("0.30"), 1024, true);
+
+        assertThat(stranded.getIsDefault()).as("被收养的档案必须补上默认标记").isTrue();
+        assertThat(stranded.getModelName()).isEqualTo("settings-model");
+        verify(mapper, never()).insert(any(LlmProfile.class));
     }
 
     private static LlmProfile profile(Long id, String name, boolean enabled, boolean fallback) {

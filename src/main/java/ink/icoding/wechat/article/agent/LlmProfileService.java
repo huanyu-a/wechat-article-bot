@@ -285,18 +285,44 @@ public class LlmProfileService {
      * 存量兼容：把 llm_config 的 LLM 字段写透到默认档案（不存在则创建）。
      * 存量 GET/PUT /api/settings/llm 保留，读写映射到默认档案 → 现有设置页不破坏（方案 4.3）。
      * 图片模型三件套继续留在 llm_config，不参与同步。
+     *
+     * <p><b>为什么这里用 {@code mapper.findDefault()} 而不是 {@link #defaultProfile()}：</b>
+     * 后者是 {@code findDefault() ?? findFirst()}，那个「回落第一条」是**读**语义（运行时
+     * 总得挑一条来用），拿来**写**就会改错对象——「表里有档案但一条都不是默认」时
+     * （用户先在档案页自建了档案、却从没设过默认），它会把**第一条用户档案**的
+     * provider/baseUrl/modelName/apiKey 全部覆盖，且**不给它打 is_default 标记**。
+     * 后果是静默的：请求成功、设置页回显也对（读路径同样回落 findFirst），
+     * 但用户下次打开档案页会发现自己的档案被动过。
+     *
+     * <p>找不到默认档案时的正确动作是 javadoc 说的「创建」：
+     * ①若已存在一条**名为 {@value #DEFAULT_PROFILE_NAME}** 的档案（例如迁移来的那条被手工清掉了
+     * 默认标记），就**收养**它并补上标记——否则会建出重名档案，而
+     * {@code findByName}（种子解析绑定用的就是它）会变得有歧义；
+     * ②否则新建一条带 is_default 的档案。
+     *
+     * <p><b>为什么不「把第一条就地提升为默认」</b>（那样能避免多出一条档案）：
+     * {@link #delete} 拒绝删除默认档案，就地提升会把用户自建的档案变成**不可删**，
+     * 等于替用户做了一个他从没同意过的决定。新建一条只多一行、且随时可删，代价更小。
+     *
+     * <p>同类教训在 {@code LlmProfileSeeder.defaultSource()} 里已经写过一次
+     * （「不直接用 defaultProfile() 的回落语义」）——本方法当时漏用了这条结论。
      */
     @Transactional
     public void syncDefaultFromConfig(String provider, String baseUrl, String modelName, String apiKeyEncrypted,
                                       BigDecimal temperature, Integer maxTokens, Boolean enabled) {
-        LlmProfile profile = defaultProfile();
+        LlmProfile profile = mapper.findDefault();
         boolean created = false;
         if (profile == null) {
-            profile = new LlmProfile();
-            profile.setName(DEFAULT_PROFILE_NAME);
-            profile.setIsDefault(true);
-            profile.setCreatedAt(LocalDateTime.now());
-            created = true;
+            profile = mapper.findByName(DEFAULT_PROFILE_NAME);
+            if (profile != null) {
+                profile.setIsDefault(true);
+            } else {
+                profile = new LlmProfile();
+                profile.setName(DEFAULT_PROFILE_NAME);
+                profile.setIsDefault(true);
+                profile.setCreatedAt(LocalDateTime.now());
+                created = true;
+            }
         }
         profile.setProvider(provider);
         profile.setBaseUrl(baseUrl);

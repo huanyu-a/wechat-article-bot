@@ -4,6 +4,7 @@ import ink.icoding.wechat.article.agent.LlmProfile;
 import ink.icoding.wechat.article.agent.LlmProfileMapper;
 import ink.icoding.wechat.article.agent.LlmProfileSeeder;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -32,7 +33,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 存量库那一步的证据是 2026-09-16 的实机查库：新列已存在、兜底档案恰好 1 条）。
  *
  * <p>本用例同时钉住 {@link LlmProfileSeeder} 里**唯一**一处「种子替用户做决定」的行为：
- * 未设置兜底时把默认档案标为兜底，且只做一次。
+ * 未设置兜底时把**声明的兜底档案**（{@code hy4-preview}）标为兜底，且只做一次。
+ *
+ * <p>修正记录（2026-09-18）：此处原文写的是「把默认档案标为兜底」。该行为已改——默认档案可被用户
+ * 改成主力（本轮就设成了 {@code deepseek-flash}），此时「把默认档案标为兜底」会让故障切换链的
+ * 「默认」与「兜底」两段指向同一条档案，被 {@code failoverChain} 按 id 去重后少掉一跳。
+ * 现在改为按 {@code LlmProfileSeeder.seeds()} 的声明取，默认档案不再是兜底。
  */
 @SpringBootTest
 @ContextConfiguration(initializers = MySqlTestDatabaseInitializer.class)
@@ -51,9 +57,34 @@ class LlmProfileFallbackColumnPersistenceTests {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    /**
+     * 兜底标志的快照。
+     *
+     * <p>为什么必须快照并清空：{@code LlmProfileSeeder} 是本 Spring 上下文里的真实组件，
+     * 它会在测试库**真的建出 {@code hy4-preview} 并把它标为兜底**。于是「库里只有我造的那条兜底」
+     * 这个前提不再成立——{@code findFallback()} 按 id 升序取第一条，会先命中种子那条，
+     * 断言「必须命中我插的这条」就红了。
+     *
+     * <p>这类红**不是**产品缺陷，而是用例对全局状态有隐含依赖。清空后再断言，判据才只针对本用例。
+     */
+    private List<Object[]> fallbackSnapshot;
+
+    @BeforeEach
+    void clearFallbackFlags() {
+        fallbackSnapshot = jdbcTemplate.query(
+                "SELECT ID FROM LLM_PROFILE WHERE IS_FALLBACK = 1",
+                (rs, rowNum) -> new Object[]{rs.getLong("ID")});
+        jdbcTemplate.update("UPDATE LLM_PROFILE SET IS_FALLBACK = 0 WHERE IS_FALLBACK = 1");
+    }
+
     @AfterEach
     void removeTestRows() {
         jdbcTemplate.update("DELETE FROM LLM_PROFILE WHERE NAME LIKE ?", TEST_PREFIX + "%");
+        // 先删本用例的行，再把种子原有的兜底标志还原（快照只含非本用例的行）
+        jdbcTemplate.update("UPDATE LLM_PROFILE SET IS_FALLBACK = 0 WHERE IS_FALLBACK = 1");
+        for (Object[] row : fallbackSnapshot) {
+            jdbcTemplate.update("UPDATE LLM_PROFILE SET IS_FALLBACK = 1 WHERE ID = ?", row[0]);
+        }
     }
 
     /**
@@ -117,30 +148,42 @@ class LlmProfileFallbackColumnPersistenceTests {
     }
 
     /**
-     * 种子行为：库里还没有兜底时，把默认档案标为兜底；已有兜底则不动；重复执行幂等。
+     * 种子行为：库里还没有兜底时，把**声明的兜底档案**（{@code hy4-preview}）标为兜底；
+     * 已有兜底则不动；重复执行幂等。
      *
      * <p>「只做一次」很重要——用户手工指定过兜底档案后，种子不能每次启动都改回去。
+     *
+     * <p>为什么断言的是 {@code hy4-preview} 而**不是**默认档案（2026-09-18 修正）：原实现把默认
+     * 档案标为兜底，当时默认档案恰好就是 hy4-preview，两者碰巧一致。但默认档案可被用户改成主力
+     * （本轮设成了 deepseek-flash），此时「默认=兜底」会让故障切换链的两段指向同一条档案，
+     * 被 {@code failoverChain} 按 id 去重后少掉一跳。现在按种子声明取，与默认档案解耦。
      */
     @Test
-    void seederMarksDefaultAsFallbackOnlyOnceAndNeverOverridesTheUser() {
+    void seederMarksDeclaredFallbackOnlyOnceAndNeverOverridesTheUser() {
         LlmProfile defaultProfile = insert(TEST_PREFIX + "-default", false);
         defaultProfile.setIsDefault(true);
         profileMapper.updateById(defaultProfile);
 
         seeder.run(null);
 
-        LlmProfile afterFirstRun = profileMapper.findById(defaultProfile.getId());
-        assertThat(afterFirstRun.getIsFallback())
-                .as("未设置兜底时，种子应把默认档案标为兜底")
+        LlmProfile declaredFallback = profileMapper.findByName("hy4-preview");
+        assertThat(declaredFallback)
+                .as("种子清单里声明的兜底档案 hy4-preview 应已存在（本上下文跑过种子）")
+                .isNotNull();
+        assertThat(profileMapper.findById(declaredFallback.getId()).getIsFallback())
+                .as("未设置兜底时，种子应把**声明的**兜底档案标为兜底")
                 .isTrue();
+        assertThat(profileMapper.findById(defaultProfile.getId()).getIsFallback())
+                .as("默认档案不得同时被标成兜底：那会让档案链因去重少一跳")
+                .isFalse();
 
         // 用户改选另一条作为兜底
         LlmProfile userChoice = insert(TEST_PREFIX + "-user-choice", true);
-        jdbcTemplate.update("UPDATE LLM_PROFILE SET IS_FALLBACK = 0 WHERE ID = ?", afterFirstRun.getId());
+        jdbcTemplate.update("UPDATE LLM_PROFILE SET IS_FALLBACK = 0 WHERE ID = ?", declaredFallback.getId());
 
         seeder.run(null);
 
-        assertThat(profileMapper.findById(afterFirstRun.getId()).getIsFallback())
+        assertThat(profileMapper.findById(declaredFallback.getId()).getIsFallback())
                 .as("已有兜底时，种子不得覆盖用户的选择")
                 .isFalse();
         assertThat(profileMapper.findById(userChoice.getId()).getIsFallback())
