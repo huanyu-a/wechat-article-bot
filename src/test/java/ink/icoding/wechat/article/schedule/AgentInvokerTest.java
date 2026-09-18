@@ -438,6 +438,119 @@ class AgentInvokerTest {
         assertThat(AgentInvoker.parseBackoff("500,1500")).containsExactly(500L, 1500L);
     }
 
+    /**
+     * 回归：{@code request_id} 的十六进制体与数字错误码**子串碰撞**，不得把限流误判成模型级错误。
+     *
+     * <p>两条样本取自**同一次真实运行**（{@code target/run-20260916.log}），错误体逐字相同、
+     * 只有 {@code request_id} 不同，正好构成对照：
+     * <ul>
+     *   <li>L603（09:45:48.733）：{@code chatcmpl-205af2300c034118b5a1f4015ac57f9f}——
+     *       十六进制体里的 {@code ...1f4015ac...} 含子串 {@code "401"}，修复前被判成
+     *       「模型档案不可用」并触发了一次**无谓的换档案**；</li>
+     *   <li>L322（09:42:53.231）：{@code chatcmpl-1a425c40e6c547ecad0fb5271c8ca7be} 不含关键字，
+     *       正确地走了瞬时重试路径。</li>
+     * </ul>
+     * 两者都是 {@code code:"rate_limit_rpm_exceeded"}——**账号级**限流，换档案无效，
+     * 必须走同模型退避重试。
+     */
+    @Test
+    void requestIdHexDoesNotCollideWithNumericErrorCodes() {
+        String collided = "java.lang.RuntimeException: SSE connection failed: HTTP 429: {\"error\":{\"message\":"
+                + "\"rate limit reached for RPM (request_id: chatcmpl-205af2300c034118b5a1f4015ac57f9f)\","
+                + "\"type\":\"rate_limit_exceeded_error\",\"param\":\"\",\"code\":\"rate_limit_rpm_exceeded\"}}";
+        String control = "java.lang.RuntimeException: SSE connection failed: HTTP 429: {\"error\":{\"message\":"
+                + "\"rate limit reached for RPM (request_id: chatcmpl-1a425c40e6c547ecad0fb5271c8ca7be)\","
+                + "\"type\":\"rate_limit_exceeded_error\",\"param\":\"\",\"code\":\"rate_limit_rpm_exceeded\"}}";
+
+        assertThat(AgentInvoker.isModelLevelFailure(new IllegalStateException(collided)))
+                .as("十六进制体里的 401 是碰撞，不是鉴权失败——不得判成模型级错误")
+                .isFalse();
+        assertThat(AgentInvoker.isRateLimited(new IllegalStateException(collided)))
+                .as("真实语义是 429 限流")
+                .isTrue();
+        assertThat(AgentInvoker.isTransient(new IllegalStateException(collided)))
+                .as("限流走同模型退避重试")
+                .isTrue();
+        // 对照组：同一份错误体、无碰撞的 request_id，两条判据必须一致
+        assertThat(AgentInvoker.isModelLevelFailure(new IllegalStateException(control))).isFalse();
+        assertThat(AgentInvoker.isRateLimited(new IllegalStateException(control))).isTrue();
+    }
+
+    /** 剥离不透明 id 不得伤到**真实**的错误码——真正的鉴权/路由失败仍须换档案。 */
+    @Test
+    void genuineAuthAndRoutingFailuresStillSwitchProfiles() {
+        for (String genuine : List.of(
+                "SSE connection failed: HTTP 401: {\"error\":{\"message\":\"invalid api key\"}}",
+                "SSE connection failed: HTTP 404: {\"error\":{\"message\":\"no such model\"}}",
+                "SSE connection failed: HTTP 503: {\"code\":\"model_not_found\"}",
+                "SSE connection failed: HTTP 403: {\"error\":{\"message\":\"permission denied\"}}",
+                "SSE connection failed: HTTP 402: {\"error\":{\"message\":\"insufficient balance\"}}")) {
+            assertThat(AgentInvoker.isModelLevelFailure(new IllegalStateException(genuine)))
+                    .as("真实错误码必须仍然触发换档案：%s", genuine)
+                    .isTrue();
+        }
+    }
+
+    /**
+     * 回归：缺 id 的工具调用不得**塌缩成同一个键**，否则预算护栏与在飞集合一起失效。
+     *
+     * <p>实测 run#129：调研阶段 {@code browse_webpage} 调用 9 次却只记 9 行、完成 12 行，
+     * {@code search_web} 调用 9 次、完成 15 行（CALL=39 / DONE=43 / FAIL=9，对不上）。
+     * 根因是 agent4j 只在网关推送了 {@code id} 分片时才写 {@code ToolCallEntry.callId}，
+     * 缺 id 时它是 null，而键函数把 null 归一成 {@code ""}——**同一工具的所有调用共用一个键**。
+     *
+     * <p>这里让 3 次同名调用全部**不带 id**：修复前只有第一次被计数（计数为 1），修复后必须是 3。
+     */
+    @Test
+    void countsEverySameNameCallEvenWhenGatewayOmitsTheId() throws Exception {
+        Fixture fixture = new Fixture(30);
+        when(fixture.session.command(anyString())).thenReturn(new AgentSessionResult(self -> {
+            AgentResultHandler handler = self.getHandler();
+            // 三次同名、**同参数**、且都不带 callId（callId=null 复刻网关漏推 id 分片）
+            for (int index = 0; index < 3; index++) {
+                handler.onTool(tool("search_web", null), ToolStatus.CALLING);
+            }
+            self.complete("完成");
+        }));
+
+        AgentRunner.Outcome outcome = fixture.invoker.run(fixture.agent, "指令", null);
+
+        assertThat(outcome.toolCalls())
+                .as("缺 id 的 3 次同名调用必须各记一次，而不是塌缩成 1 次")
+                .isEqualTo(3);
+    }
+
+    /**
+     * 缺 id 时「在飞集合」必须成对：每次 CALLING 都要能被对应 COMPLETED 摘掉。
+     *
+     * <p>这是比计数更严重的一层——{@code inFlightTools} 是**无进展检测的关键输入**，
+     * 用来保护「主编等待子智能体」不被误杀。键碰撞会让先结束的调用摘掉仍在运行的同名调用的键，
+     * 于是无进展检测以为没有工具在跑，把正常等待委托的主编当成卡死。
+     *
+     * <p>样本必须**复用同一个 descriptor 实例**才能验到成对性：agent4j 对每次调用新建一个
+     * {@code ToolDescriptor}（{@code handleToolCallsAndContinue} 偏移 169-194），该实例贯穿
+     * 这次调用的 PREPARING/CALLING/COMPLETED。若这里每次都用新实例，等于在测另一件事。
+     */
+    @Test
+    void pairsInFlightKeysForCallsWithoutId() throws Exception {
+        Fixture fixture = new Fixture(30);
+        when(fixture.session.command(anyString())).thenReturn(new AgentSessionResult(self -> {
+            AgentResultHandler handler = self.getHandler();
+            // 三次同名调用各自一个 descriptor 实例，且都不带 callId（复刻网关漏推 id 分片）
+            List<ToolDescriptor> descriptors = new java.util.ArrayList<>();
+            for (int index = 0; index < 3; index++) descriptors.add(tool("browse_webpage", null));
+            for (ToolDescriptor descriptor : descriptors) handler.onTool(descriptor, ToolStatus.CALLING);
+            for (ToolDescriptor descriptor : descriptors) handler.onTool(descriptor, ToolStatus.COMPLETED);
+            self.complete("完成");
+        }));
+
+        AgentRunner.Outcome outcome = fixture.invoker.run(fixture.agent, "指令", null);
+
+        assertThat(outcome.reply()).isEqualTo("完成");
+        assertThat(outcome.toolCalls()).isEqualTo(3);
+        assertThat(outcome.toolFailures()).as("三次都成功完成，不该记失败").isZero();
+    }
+
     /** 分类器：永久类必须先于瞬时类被识别（503 model_not_found 不得被当成 5xx 重试）。 */
     @Test
     void classifiesPermanentBeforeTransient() {
@@ -546,6 +659,73 @@ class AgentInvokerTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("model_not_found");
         verify(candidates.agent(1), times(0)).createSession();
+    }
+
+    /**
+     * **只读工具不阻断重试**：调用过 {@code read_article_draft} 之后遇瞬时错误仍须重试。
+     *
+     * <p>依据（2026-09-18，run#14 / run#18 两次真实 FAILED）：写作阶段的会话在停滞前
+     * **只调用过一次 {@code read_article_draft}**（执行日志末两行就是它的调用与完成），
+     * 却因「已调用过工具」被判不可重试——12 个候选档案一个都没用上，整轮 FAILED、文章没有落库。
+     * 只读检索没有不可撤销的后果，重跑它是安全的；判据见 {@link ToolCallGovernor#hasPaidSideEffect}。
+     */
+    @Test
+    void retriesTransientErrorAfterOnlyReadOnlyTools() throws Exception {
+        Fixture fixture = new Fixture(30);
+        when(fixture.session.command(anyString())).thenReturn(
+                readOnlyToolThenFails("read_article_draft",
+                        "HTTP 429 concurrent limit exceeded: running=7 max=6"),
+                completes("已生成"));
+
+        AgentRunner.Outcome outcome = fixture.invoker.run(fixture.agent, "指令", null);
+
+        assertThat(outcome.reply())
+                .as("只读工具不该把重试闸门关上——本次尝试没有产生任何不可撤销的后果")
+                .isEqualTo("已生成");
+        verify(fixture.agent, times(2)).createSession();
+    }
+
+    /**
+     * **只读工具不阻断换档案**：这条直接复刻 run#18 的形状（12 个候选一个都没用上）。
+     *
+     * <p>主用档案在只调用过一次 {@code read_article_draft} 后报模型级错误，必须能切到兜底档案
+     * 并把整轮跑完。修复前 {@code retryable = toolCalls == 0} 会把这次切换整个挡掉。
+     */
+    @Test
+    void switchesProfileAfterOnlyReadOnlyTools() throws Exception {
+        Candidates candidates = new Candidates()
+                .add("主用/a", readOnlyToolThenFails("read_article_draft",
+                        "SSE connection failed: HTTP 503: {\"code\":\"model_not_found\"}"))
+                .add("兜底/b", completes("已生成"));
+
+        AgentRunner.Outcome outcome = new AgentInvoker(30).runWithCandidates(candidates.list(), "指令", null,
+                null, 40, 0, null);
+
+        assertThat(outcome.reply()).isEqualTo("已生成");
+        assertThat(outcome.switchedProfile())
+                .as("只读工具后仍须换档案——这正是 run#18 里 12 个候选全被浪费的那一步")
+                .isTrue();
+        verify(candidates.agent(1), times(1)).createSession();
+    }
+
+    /**
+     * 未知工具名一律按**有副作用**处理（保守方向）：宁可少一次重试，也不能重复计费或重复落库。
+     *
+     * <p>这条钉住 {@link ToolCallGovernor#hasPaidSideEffect} 对 null / 未知名字的返回语义——
+     * 工具清单是随技能与阶段变化的，判据不能假设「没见过的名字就是只读的」。
+     */
+    @Test
+    void unknownToolNameCountsAsSideEffect() throws Exception {
+        for (String unknown : List.of("some_future_tool", "unknown")) {
+            Fixture fixture = new Fixture(30);
+            when(fixture.session.command(anyString())).thenReturn(
+                    readOnlyToolThenFails(unknown, "HTTP 429 concurrent limit exceeded: running=7 max=6"));
+
+            assertThatThrownBy(() -> fixture.invoker.run(fixture.agent, "指令", null))
+                    .as("未知工具名必须按有副作用处理，不得重试：%s", unknown)
+                    .isInstanceOf(IllegalStateException.class);
+            verify(fixture.agent, times(1)).createSession();
+        }
     }
 
     /**
@@ -777,6 +957,20 @@ class AgentInvokerTest {
     private static AgentSessionResult callsToolThenFails(String toolName, String message) {
         return new AgentSessionResult(self -> {
             self.getHandler().onTool(tool(toolName, "call-1"), ToolStatus.CALLING);
+            self.completeExceptionally(new IllegalStateException(message));
+        });
+    }
+
+    /**
+     * 只调用了一个工具（成功完成）之后会话才失败——是否可重试取决于**这个工具有没有副作用**。
+     *
+     * <p>与 {@link #callsToolThenFails} 的区别在于这里补了 COMPLETED：真实故障（run#14/#18）里
+     * {@code read_article_draft} 是**成功完成**的，执行日志末两行就是它的调用与完成。
+     */
+    private static AgentSessionResult readOnlyToolThenFails(String toolName, String message) {
+        return new AgentSessionResult(self -> {
+            self.getHandler().onTool(tool(toolName, "call-1"), ToolStatus.CALLING);
+            self.getHandler().onTool(tool(toolName, "call-1"), ToolStatus.COMPLETED);
             self.completeExceptionally(new IllegalStateException(message));
         });
     }

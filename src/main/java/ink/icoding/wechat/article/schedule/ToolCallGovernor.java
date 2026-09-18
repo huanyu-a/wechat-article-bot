@@ -35,6 +35,33 @@ public final class ToolCallGovernor {
             "search_web", "browse_webpage", "search_web_images", "list_image_assets");
 
     /**
+     * **无付费副作用**的工具：调用过它们之后，重建会话 / 换模型档案重跑仍然是安全的。
+     *
+     * <p>为什么必须与 {@link #READ_ONLY_TOOLS} 分开：两者问的是不同的问题。
+     * 那个集合问「结果能不能缓存」，因此 {@code read_article_draft} 被**有意排除**——它的返回值随草稿变化。
+     * 本集合问「重跑一次会不会产生不可撤销的后果」，读草稿显然不会，所以它在这里。
+     * 反过来，{@code save_research_notes}（追加语义）与 {@code save_article_draft} 都不在本集合里。
+     *
+     * <p>依据（2026-09-18，run#14 / run#18 / run#13 三次 FAILED）：写作阶段的会话在停滞前
+     * **只调用过一次 {@code read_article_draft}**（执行日志的最后两行就是它的调用与完成），
+     * 却因为「已调用过工具」被判定为不可重试——11 个故障切换候选一个都没用上，整轮直接 FAILED。
+     * 把「调用过工具」当成「可能已产生副作用」是把两件事混为一谈：只读检索没有不可撤销的后果。
+     */
+    public static final Set<String> SIDE_EFFECT_FREE_TOOLS = Set.of(
+            "search_web", "browse_webpage", "search_web_images", "list_image_assets", "read_article_draft");
+
+    /**
+     * 该工具是否**可能已产生不可撤销的副作用**（生图计费 / 素材导入 / 草稿落库 / 委托子会话 / 追加简报）。
+     *
+     * <p>未知工具名一律按「有副作用」处理：宁可少一次重试，也不能重复计费或重复落库。
+     * 判据只在**调用发起时**（{@code ToolStatus.CALLING}）取，因为失败/中断的那次调用同样可能
+     * 已经把图画出来、把草稿落了库。
+     */
+    public static boolean hasPaidSideEffect(String toolName) {
+        return toolName == null || !SIDE_EFFECT_FREE_TOOLS.contains(toolName);
+    }
+
+    /**
      * 同参数重复次数的提示阈值：达到即注入收手指令（结果本身仍然返回）。
      *
      * <p>2 的依据：第一次是正常检索，第二次可能是换了个措辞但参数完全相同（模型没意识到），

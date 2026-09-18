@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -31,9 +32,10 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>有界重试（2026-09-11 网关并发事故）：上游网关对并发配额有硬上限，打满时要么返回
  * {@code HTTP 429 concurrent limit exceeded}，要么整段不响应直到超时。两类都属于**外部瞬时原因**，
- * 因此这里做有界重试——但只在**本次尝试零工具调用**时重试：一旦已经调用过工具，
- * 就可能已经产生付费副作用（生图 / 委托子会话 / 草稿落库），重跑会重复计费与重复写入，
- * 此时宁可让运行失败，也不重试。
+ * 因此这里做有界重试——但只在本次尝试**没有产生不可撤销的副作用**时重试：一旦调用了生图 / 导入素材 /
+ * 改图 / 草稿落库 / 委托子会话这类工具，重跑就会重复计费与重复写入，此时宁可让运行失败。
+ * **只读工具不算副作用**（判据 {@link ToolCallGovernor#hasPaidSideEffect}）：检索与读草稿
+ * 没有不可撤销的后果，重跑它们是安全的。
  *
  * <p>重试必须**重建会话**：失败的那次会话在 agent4j 里无法取消（无 cancel/close），
  * 复用它只会再次读到同一个已死的 Future；{@code agent.createSession()} 会新建 EventSource 与请求。
@@ -194,8 +196,12 @@ public class AgentInvoker extends AgentRunner {
                     progress);
             if (attempt.outcome() != null) return attempt.outcome();
             IllegalStateException failure = attempt.failure();
-            // 重试前置条件：本次尝试零工具调用（无副作用）。代码里显式写出来，避免将来「顺手」放开。
-            boolean retryable = attempt.toolCalls() == 0;
+            // 重试前置条件：本次尝试**未产生不可撤销的副作用**。判据是「有没有调过有副作用的工具」，
+            // **不是**「调用过任何工具」——只读检索（search_web / browse_webpage / read_article_draft …）
+            // 重跑一次是安全的。把两者混为一谈的代价实测很重：run#14 / run#18 的写作阶段停滞前
+            // 只调用过一次 read_article_draft，却因「已调用过工具」被判不可重试，12 个候选档案
+            // 一个都没用上，整轮 FAILED、文章没有落库。
+            boolean retryable = !attempt.paidSideEffect();
             if (retryable && isTransient(failure) && transientRetries < maxTransientRetries) {
                 long backoff = backoffFor(transientRetries);
                 transientRetries++;
@@ -221,8 +227,10 @@ public class AgentInvoker extends AgentRunner {
      * 「重发同一个请求结果一定相同」，因此一次都不重试——**这个判断对同一个模型是对的，
      * 但换一个模型就可能治好**。实测上游下线 agnes-3.0-flash 后，唯一的恢复手段是手工改库。
      *
-     * <p>切换的**前置条件与瞬时重试完全一致**（零工具调用）：一旦调用过工具，就可能已经产生
-     * 付费副作用（生图 / 委托子会话 / 草稿落库），换模型重跑会重复计费与重复写入。
+     * <p>切换的**前置条件与瞬时重试完全一致**（本次尝试无付费副作用）：一旦调用了生图 / 落库 /
+     * 委托这类工具，换模型重跑就可能重复计费与重复写入。只读检索不算副作用，因此「只读工具 + 停滞」
+     * 现在会正常切换档案——run#14 / run#18 的写作阶段停滞前只调过一次 {@code read_article_draft}，
+     * 此前却因此 12 个候选一个都没用上，整轮 FAILED。
      *
      * <p>停滞也切换：零工具调用的停滞说明这个模型在本次请求上卡死了，换模型比原地重试更对症，
      * 也省下「再白等一整个会话超时」的时间（SINGLE 900s / COORDINATOR 1800s）。
@@ -256,7 +264,7 @@ public class AgentInvoker extends AgentRunner {
                         outcome.toolFailures(), List.copyOf(usedProfiles));
             }
             IllegalStateException failure = attempt.failure();
-            boolean retryable = attempt.toolCalls() == 0;
+            boolean retryable = !attempt.paidSideEffect();
             boolean hasNext = switchIndex + 1 < candidates.size();
 
             // ① 模型级错误 → 换下一个档案（换模型才可能治好的那几类）
@@ -280,9 +288,12 @@ public class AgentInvoker extends AgentRunner {
                     Candidate next = candidates.get(switchIndex);
                     usedProfiles.add(next.label());
                     reportProfileUsed(progress, next.label());
-                    log.warn("{}阶段停滞且无工具调用，换模型档案重试：{} → {}",
+                    // 措辞必须说「无副作用工具」而不是「无工具调用」：判据是 paidSideEffect，
+                    // 只读检索不算。实测 run#20 的调研阶段在 24 次只读检索后仍会走到这里，
+                    // 旧措辞会把「调了 24 次工具」报成「未调用工具」，排查的人据此找不到卡点。
+                    log.warn("{}阶段停滞且未调用有副作用的工具，换模型档案重试：{} → {}",
                             prefix(logPrefix), current.label(), next.label());
-                    reportProgressOnly(progress, prefix(logPrefix) + "阶段停滞且未调用工具，换模型档案重试："
+                    reportProgressOnly(progress, prefix(logPrefix) + "阶段停滞且未调用有副作用的工具，换模型档案重试："
                             + current.label() + " → " + next.label());
                     continue;
                 }
@@ -360,6 +371,41 @@ public class AgentInvoker extends AgentRunner {
         AtomicReference<String> loopAbort = new AtomicReference<>();
         Set<String> countedCalls = ConcurrentHashMap.newKeySet();
         /**
+         * 本次尝试是否调用过**可能有付费副作用**的工具（生图 / 导入素材 / 改图 / 落库 / 委托 / 追加简报）。
+         *
+         * <p>这是重试与换档案的唯一安全边界。此前用的是「调用过任何工具」（{@code toolCalls > 0}），
+         * 把只读检索也算成副作用，代价是**一次无谓的失败**：实测 run#14 / run#18 的写作阶段停滞前
+         * 只调用过一次 {@code read_article_draft}（执行日志末两行就是它的调用与完成），
+         * 却因此被判定不可重试，12 个候选档案一个都没用上，整轮 FAILED、文章没有落库。
+         *
+         * <p>只读工具没有不可撤销的后果，重跑它是安全的；判据见
+         * {@link ToolCallGovernor#hasPaidSideEffect}。未知工具名一律按有副作用处理（保守方向）。
+         */
+        AtomicBoolean paidSideEffect = new AtomicBoolean();
+        /**
+         * 缺 id 的工具调用的**实例身份**表：{@link ToolDescriptor} → 本次调用的唯一键。
+         *
+         * <p>为什么需要：agent4j 的 {@code OpenAIChatModel$1} 只在网关推送了 {@code id} 分片时才写
+         * {@code ToolCallEntry.callId}，缺 id 时它是 null，而 {@code safeCallId} 把 null 归一成 {@code ""}
+         * ——于是**同一工具的所有调用塌缩成同一个键**。实测 run#129：调研阶段 {@code browse_webpage}
+         * 调用 9 次却只记了 9 行、完成 12 行；{@code search_web} 调用 9 次、完成 15 行
+         * （CALL=39 / DONE=43 / FAIL=9，对不上）。
+         *
+         * <p>后果有两层：① 执行日志与 {@code TOOL_CALL_COUNT} 少计，预算护栏在缺 id 时形同虚设
+         * （只有每个工具名的第一次调用被计入）；② {@code inFlightTools} 键碰撞会让**先结束的那个调用
+         * 把仍在运行的同名调用的键摘掉**，无进展检测误以为没有工具在跑——而它正是用来保护
+         * 「主编等待子智能体」不被误杀的。
+         *
+         * <p>用实例身份而不是 {@code System.identityHashCode}：后者可能碰撞，而
+         * {@link ToolDescriptor} 未覆写 {@code equals/hashCode}（字节码确认），且 agent4j 对
+         * **每次工具调用都新建一个 descriptor**（{@code handleToolCallsAndContinue} 偏移 169-194），
+         * 同一个 descriptor 实例贯穿该次调用的 PREPARING/CALLING/COMPLETED 或 onToolError
+         * （{@code ToolExecutor.defaultExecute} 三处都传同一个 {@code descriptor}）。
+         */
+        Map<ToolDescriptor, String> anonymousCallKeys =
+                java.util.Collections.synchronizedMap(new java.util.IdentityHashMap<>());
+        AtomicInteger anonymousCallSeq = new AtomicInteger();
+        /**
          * 正在执行中的工具（call id）。**这是无进展检测的关键输入**：
          * 协调者主编委托子智能体时，子会话在工具内部同步运行，主编侧长时间收不到任何事件——
          * 若只按事件计时，180 秒阈值会把正常等待委托的主编误杀
@@ -415,7 +461,7 @@ public class AgentInvoker extends AgentRunner {
                     public void onTool(ToolDescriptor tool, ToolStatus status) {
                         if (tool == null || status == ToolStatus.PREPARING) return;
                         String name = tool.getName() == null ? "unknown" : tool.getName();
-                        String key = name + "\n" + safeCallId(tool);
+                        String key = callKey(tool, anonymousCallKeys, anonymousCallSeq);
                         if (status == ToolStatus.CALLING) {
                             inFlightTools.add(key);
                         } else if (status == ToolStatus.COMPLETED) {
@@ -424,6 +470,9 @@ public class AgentInvoker extends AgentRunner {
                         }
                         if (status == ToolStatus.CALLING && countedCalls.add(key)) {
                             int count = toolCalls.incrementAndGet();
+                            // 副作用判定必须在**调用发起时**取：中断/失败的那次调用同样可能
+                            // 已经把图画出来、把草稿落了库，只看成功回调会漏判。
+                            if (ToolCallGovernor.hasPaidSideEffect(name)) paidSideEffect.set(true);
                             // 实时上报：会话随后若因超限/断流/超时抛异常，调用方仍拿得到已完成的部分计数
                             if (progress != null) progress.toolCallCounted(1);
                             // 治理器的预算计数与运行器保持同步：工具结果里的「剩余 N 次」提示取自它
@@ -474,7 +523,8 @@ public class AgentInvoker extends AgentRunner {
                         String name = tool == null ? "unknown" : tool.getName();
                         // 工具已结束（无论成败）：从「在飞集合」里摘掉，否则无进展检测会一直以为它在跑。
                         // onTool 的 FAILED 分支通常已经摘过，这里兜住「只回调 onToolError」的上游实现。
-                        inFlightTools.remove(name + "\n" + safeCallId(tool));
+                        // 用与 onTool 完全相同的键函数，否则缺 id 时两次算出的键不一致、摘不掉。
+                        inFlightTools.remove(callKey(tool, anonymousCallKeys, anonymousCallSeq));
                         // 失败的收尾调用换回一格额度（见 ToolCallBudget.allowsTerminalPastBudget）：
                         // 成功提交成果不该与「格式校验失败重试」争抢同一个额度。只对收尾工具计数，
                         // 普通检索失败不占宽限。
@@ -509,7 +559,7 @@ public class AgentInvoker extends AgentRunner {
                         + advertisedToolNames(agent));
             }
             // 失败必须**返回**给调用循环（而不是就地抛出），否则 run() 里的有界重试永远不会生效
-            return new Attempt(null, toolCalls.get(),
+            return new Attempt(null, toolCalls.get(), paidSideEffect.get(),
                     fail(exception, logPrefix, lastActivity, lastActivityAt, toolCalls.get(), toolFailures.get()));
         }
         // 兜底护栏：回调里抛出的异常可能被 agent4j 吞掉，这里按「被拒次数」再判一次，
@@ -519,7 +569,8 @@ public class AgentInvoker extends AgentRunner {
         // 与预算不同，这里**不放行收尾工具**——循环中的收尾调用只会重复同一份内容
         // （save_research_notes 是追加语义，重复提交会刷满工作区），直接中止更干净。
         if (loopAbort.get() != null) {
-            return new Attempt(null, toolCalls.get(), new IllegalStateException(loopAbort.get()));
+            return new Attempt(null, toolCalls.get(), paidSideEffect.get(),
+                    new IllegalStateException(loopAbort.get()));
         }
         if (rejectedOverBudget.get() > 0) {
             // 但「被拒过」不等于「这一阶段白干」：预算用尽后模型仍可用收尾工具交出成果（TERMINAL_TOOLS），
@@ -529,14 +580,14 @@ public class AgentInvoker extends AgentRunner {
                 report(progress, executionLog, prefix(logPrefix) + "预算超限被拒 " + rejectedOverBudget.get()
                         + " 次，但收尾工具已提交成果，本次按已交付处理");
             } else {
-                // 同上：交给调用循环决定（此时已调用过工具，必然不可重试）
-                return new Attempt(null, toolCalls.get(),
+                // 同上：交给调用循环决定（此时是否可重试由「有没有副作用」决定，见 paidSideEffect）
+                return new Attempt(null, toolCalls.get(), paidSideEffect.get(),
                         new IllegalStateException(budgetExceededMessage(maxToolCalls, null)));
             }
         }
         String reply = response == null || response.isBlank() ? assistantText.toString().trim() : response.trim();
         return new Attempt(new Outcome(reply, toolCalls.get(), String.join("\n", executionLog), toolFailures.get()),
-                toolCalls.get(), null);
+                toolCalls.get(), paidSideEffect.get(), null);
     }
 
     /**
@@ -696,13 +747,28 @@ public class AgentInvoker extends AgentRunner {
                 "gateway timeout", "openai_error");
     }
 
-    /** 沿 cause 链匹配任一关键字（大小写不敏感）。 */
+    /**
+     * 沿 cause 链匹配任一关键字（大小写不敏感）。
+     *
+     * <p>匹配前先剥掉 {@code request_id} / 十六进制串（见 {@link #stripOpaqueIds}）：
+     * 数字关键字（{@code 401}~{@code 404}、{@code 500}~{@code 504}）与 {@code chatcmpl-} 请求 id 的
+     * 十六进制体存在**子串碰撞**，会把完全无关的错误误分类。实测 run（09:45:48.733）：
+     * {@code HTTP 429 ... request_id: chatcmpl-205af2300c034118b5a1f4015ac57f9f}——
+     * 十六进制体里的 {@code ...1f4015ac...} 含子串 {@code "401"}，于是这次**限流**被
+     * {@link #isModelLevelFailure} 判成「模型档案不可用」并触发了一次无谓的换档案；
+     * 而同一份日志里 {@code chatcmpl-1a425c40e6c547ecad0fb5271c8ca7be} 不含关键字，
+     * 正确地走了瞬时重试路径——两个样本正好构成对照。
+     *
+     * <p>同类问题此前已有记录：{@code docs/dev/scheduled-task-failure-attribution.md} 记 run#117 的
+     * 402 只是「误打误撞」被拦下（错误体的 {@code code:"401008"} 含 {@code "401"}）。
+     * 那次补的是关键字，**病根（对整条消息做子串匹配）没除**，这里一并修掉。
+     */
     private static boolean matchesAny(Throwable failure, String... keywords) {
         Throwable current = failure;
         for (int depth = 0; current != null && depth < 10; depth++) {
             String message = current.getMessage();
             if (message != null) {
-                String lower = message.toLowerCase(java.util.Locale.ROOT);
+                String lower = stripOpaqueIds(message).toLowerCase(java.util.Locale.ROOT);
                 for (String keyword : keywords) {
                     if (lower.contains(keyword)) return true;
                 }
@@ -711,6 +777,43 @@ public class AgentInvoker extends AgentRunner {
         }
         return false;
     }
+
+    /**
+     * 剥掉消息里的不透明标识串：{@code request_id: xxx} / {@code chatcmpl-xxx} / 长十六进制串。
+     *
+     * <p>为什么必须剥：这些串是**随机十六进制**，天然会随机包含 {@code 401}、{@code 500} 这类
+     * 3 位数字关键字。按 30 个十六进制字符估算，单个 3 位数字码的碰撞概率约 0.73%，
+     * {@code 401}~{@code 404} 四个码合计约 2.9%，再加 {@code 500}~{@code 504} 约 6.4%
+     * ——即**每十几次上游报错就有一次会被误分类**，而误分类的代价是白换一次模型档案
+     * （COORDINATOR 实测多花 246 秒、SINGLE 多花 691 秒）。
+     *
+     * <p>只剥「明确是标识符」的部分，不动真正的错误描述与 HTTP 状态码本身，
+     * 因此 {@code HTTP 429}、{@code code:"401008"} 这类**语义**位置仍然能被匹配到。
+     */
+    private static String stripOpaqueIds(String message) {
+        if (message == null || message.isEmpty()) return "";
+        String stripped = REQUEST_ID.matcher(message).replaceAll(" ");
+        stripped = CHAT_COMPLETION_ID.matcher(stripped).replaceAll(" ");
+        return LONG_HEX.matcher(stripped).replaceAll(" ");
+    }
+
+    /** {@code request_id: xxx} / {@code request_id=xxx} / {@code "request_id":"xxx"}。 */
+    private static final java.util.regex.Pattern REQUEST_ID = java.util.regex.Pattern.compile(
+            "(?i)[\"']?request[_-]?id[\"']?\\s*[:=]\\s*[\"']?[A-Za-z0-9_.:-]+[\"']?");
+
+    /** {@code chatcmpl-} / {@code resp_} / {@code req_} / {@code call_} 开头的网关 id。 */
+    private static final java.util.regex.Pattern CHAT_COMPLETION_ID = java.util.regex.Pattern.compile(
+            "(?i)\\b(?:chatcmpl|chatcmp|resp|req|call|trace|span)[-_][A-Za-z0-9]{8,}");
+
+    /**
+     * 长度 &ge;12 的连续十六进制串：这是随机 id 的形态。
+     *
+     * <p>阈值取 12 的理由：{@code 401}~{@code 504} 这类关键字只有 3 位，12 位窗口内出现的概率
+     * 已降到 0.006% 量级；而真正的错误码/错误描述不会以 12 位以上裸十六进制形式出现
+     * （HTTP 状态码是 3 位、错误码形如 {@code 401008} 只有 6 位且通常带引号与字段名）。
+     */
+    private static final java.util.regex.Pattern LONG_HEX = java.util.regex.Pattern.compile(
+            "(?i)\\b[0-9a-f]{12,}\\b");
 
     /** cause 链上是否存在指定类型的异常（会话异常常被 ExecutionException/IllegalStateException 包几层）。 */
     private static boolean hasCause(Throwable failure, Class<? extends Throwable> type) {
@@ -765,7 +868,44 @@ public class AgentInvoker extends AgentRunner {
         return descriptor == null || descriptor.getCallId() == null ? "" : descriptor.getCallId();
     }
 
-    /** 一次尝试的结果：成功带 outcome，失败带异常与本次已发生的工具调用/失败数。 */
-    private record Attempt(Outcome outcome, int toolCalls, IllegalStateException failure) {
+    /**
+     * 一次工具调用的**稳定唯一键**：优先用网关给的 {@code callId}，缺 id 时退回到该次调用的
+     * **实例身份**（见 {@link #attempt} 里 anonymousCallKeys 的说明）。
+     *
+     * <p>关键约束：同一次调用的 CALLING 与 COMPLETED / onToolError 三次回调必须算出**同一个键**
+     * （否则 {@code inFlightTools} 摘不掉、预算重复计数）。{@link ToolDescriptor} 实例贯穿该次调用的
+     * 三个回调（字节码确认），因此按实例分配一次即可。
+     *
+     * @param anonymousKeys 实例 → 键的映射；用 IdentityHashMap 按引用比较，
+     *                      避开 ToolDescriptor 可能继承到的值相等语义
+     */
+    private static String callKey(ToolDescriptor descriptor,
+                                  Map<ToolDescriptor, String> anonymousKeys,
+                                  AtomicInteger anonymousSeq) {
+        String name = descriptor == null || descriptor.getName() == null ? "unknown" : descriptor.getName();
+        String callId = safeCallId(descriptor);
+        if (!callId.isEmpty()) return name + "\n" + callId;
+        if (descriptor == null) return name + "\n";
+        // synchronized：同一个 descriptor 理论上只由一条 SSE 线程回调，但缺 id 时
+        // **不同**调用会并发走到这里，check-then-put 必须原子，否则两次拿到同一个序号。
+        synchronized (anonymousKeys) {
+            String assigned = anonymousKeys.get(descriptor);
+            if (assigned == null) {
+                assigned = name + "\n#anonymous" + anonymousSeq.incrementAndGet();
+                anonymousKeys.put(descriptor, assigned);
+            }
+            return assigned;
+        }
+    }
+
+    /**
+     * 一次尝试的结果：成功带 outcome，失败带异常与本次已发生的工具调用/失败数。
+     *
+     * @param paidSideEffect 本次尝试是否调用过**可能有付费副作用**的工具（判据见
+     *                       {@link ToolCallGovernor#hasPaidSideEffect}）。这是重试与换档案的
+     *                       **唯一**安全边界——只读检索没有不可撤销的后果，重跑它是安全的。
+     */
+    private record Attempt(Outcome outcome, int toolCalls, boolean paidSideEffect,
+                           IllegalStateException failure) {
     }
 }
