@@ -7,14 +7,14 @@ import Image from '@tiptap/extension-image'
 import Link from '@tiptap/extension-link'
 import TextAlign from '@tiptap/extension-text-align'
 import { TableKit } from '@tiptap/extension-table'
-import { BackgroundColor, Color, FontSize, LineHeight, TextStyle } from '@tiptap/extension-text-style'
+import { BackgroundColor, Color, FontSize, LineHeight } from '@tiptap/extension-text-style'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { api, stream, uploadAsset } from '../api'
 import { parseSkillIds } from '../utils/skills'
 import SkillPicker from '../components/SkillPicker.vue'
 import {
-  Figure, FigureCaption, MarkflowBold, MarkflowCodeBlock, ParagraphStyle, paragraphStyleTypes, PreservedClass,
+  Figure, FigureCaption, MarkflowBold, MarkflowCodeBlock, MarkflowInnerSpanStyle, MarkflowTextStyle, ParagraphStyle, paragraphStyleTypes, PreservedClass,
   PreservedEmptySpan, PreservedInlineStyle, PreservedMarkStyle, PreservedRenderId, PreservedTableStyle,
   PreservedTableView, RawMath, RawSvg, StyledDiv, StyledInlineDiv, StyledSection, Subscript, Superscript,
   SyntheticBlockStyle, PastedLeadingWhitespace, preserveLeadingWhitespace,
@@ -59,7 +59,7 @@ const editor=useEditor({
     Image.configure({inline:false,allowBase64:false}),
     Link.configure({openOnClick:false}),
     TableKit.configure({table:{resizable:true,View:PreservedTableView}}),
-    TextStyle,
+    MarkflowTextStyle,
     Color,
     BackgroundColor,
     FontSize,
@@ -68,6 +68,7 @@ const editor=useEditor({
     TextAlign.configure({types:['heading','paragraph','blockquote','styledSection','styledDiv','styledInlineDiv','figure','figureCaption']}),
     PreservedInlineStyle,
     PreservedMarkStyle,
+    MarkflowInnerSpanStyle,
     PreservedClass,
     Subscript,
     Superscript,

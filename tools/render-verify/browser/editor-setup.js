@@ -29,9 +29,13 @@ export function extensionSet(variant) {
     Image.configure({ inline: false, allowBase64: false }),
     Link.configure({ openOnClick: false }),
     TableKit.configure({ table: { resizable: true, ...(m.PreservedTableView ? { View: m.PreservedTableView } : {}) } }),
-    TextStyle, Color, BackgroundColor, FontSize, LineHeight, m.ParagraphStyle,
+    // D48 修复第 1 半：current 用关掉 mergeNestedSpanStyles 的 TextStyle；legacy 用 upstream 原实现。
+    m.MarkflowTextStyle ?? TextStyle,
+    Color, BackgroundColor, FontSize, LineHeight, m.ParagraphStyle,
     TextAlign.configure({ types: ['heading', 'paragraph', 'blockquote', 'styledSection', 'styledDiv', 'styledInlineDiv', 'figure', 'figureCaption'] }),
     m.PreservedInlineStyle, m.PreservedMarkStyle,
+    // D48 修复第 2 半：嵌套样式 span 的可嵌套独立标记（current 独有）。
+    ...optional(m, 'MarkflowInnerSpanStyle'),
     ...optional(m, 'PreservedClass'), ...optional(m, 'Subscript'), ...optional(m, 'Superscript'),
     m.PreservedTableStyle, m.PreservedRenderId,
     ...optional(m, 'SyntheticBlockStyle'),

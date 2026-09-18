@@ -29,26 +29,37 @@ const problems = []
 const fail = message => problems.push(message)
 
 // ── A. 后端源码结构自检 ───────────────────────────────────────────────────────
-const source = readFileSync(servicePath, 'utf8')
-
-// A1. defaultProfile() 必须保留「无 is_default 时回落第一条」这一跳
-if (!/findDefault\(\)[\s\S]{0,200}?mapper\.findFirst\(\)/.test(source)) {
-  fail('后端 defaultProfile() 里找不到「findDefault() 为空则回落 findFirst()」——'
-    + '前端 profiles.js 的第 2 跳（ordered[0]）可能已过期，请重新核对。')
+// Docker 构建的 frontend 阶段只 COPY webui/（hermetic），后端源码不在场；那份产物只是
+// 后续 backend 阶段打进去的静态资源，档案链语义以 backend 阶段编译的后端为准。
+// 结构自检只在完整检出（开发机 / CI）上有意义：文件缺席时跳过 A，B 照跑。
+let source = null
+try {
+  source = readFileSync(servicePath, 'utf8')
+} catch (error) {
+  if (error?.code !== 'ENOENT') throw error
+  console.log('· 后端源码不在场（Docker frontend 阶段），跳过结构自检，仅跑行为用例')
 }
 
-// A2. failoverChain 的 4 跳必须仍是「绑定 → 默认 → 兜底 → 其余已启用」
-const chainBody = source.match(/failoverChain\(LlmProfile bound\)\s*\{([\s\S]*?)\n {4}\}/)
-if (!chainBody) {
-  fail('在后端源码里定位不到 failoverChain(LlmProfile bound) 的方法体，结构自检无法进行。')
-} else {
-  // 只取「第三个实参」的方法名（`defaultProfile()` 与 `profile` 都归一成裸名）
-  const hops = [...chainBody[1].matchAll(/addIfUsable\(chain, seen, ([A-Za-z_$][A-Za-z0-9_$]*)/g)]
-    .map(m => m[1].trim())
-  const expected = ['bound', 'defaultProfile', 'fallbackProfile', 'profile']
-  if (JSON.stringify(hops) !== JSON.stringify(expected)) {
-    fail(`后端 failoverChain 的跳序变了：期望 [${expected.join(', ')}]，实际 [${hops.join(', ')}]。`
-      + '前端 profiles.js 必须同步调整。')
+if (source !== null) {
+  // A1. defaultProfile() 必须保留「无 is_default 时回落第一条」这一跳
+  if (!/findDefault\(\)[\s\S]{0,200}?mapper\.findFirst\(\)/.test(source)) {
+    fail('后端 defaultProfile() 里找不到「findDefault() 为空则回落 findFirst()」——'
+      + '前端 profiles.js 的第 2 跳（ordered[0]）可能已过期，请重新核对。')
+  }
+
+  // A2. failoverChain 的 4 跳必须仍是「绑定 → 默认 → 兜底 → 其余已启用」
+  const chainBody = source.match(/failoverChain\(LlmProfile bound\)\s*\{([\s\S]*?)\n {4}\}/)
+  if (!chainBody) {
+    fail('在后端源码里定位不到 failoverChain(LlmProfile bound) 的方法体，结构自检无法进行。')
+  } else {
+    // 只取「第三个实参」的方法名（`defaultProfile()` 与 `profile` 都归一成裸名）
+    const hops = [...chainBody[1].matchAll(/addIfUsable\(chain, seen, ([A-Za-z_$][A-Za-z0-9_$]*)/g)]
+      .map(m => m[1].trim())
+    const expected = ['bound', 'defaultProfile', 'fallbackProfile', 'profile']
+    if (JSON.stringify(hops) !== JSON.stringify(expected)) {
+      fail(`后端 failoverChain 的跳序变了：期望 [${expected.join(', ')}]，实际 [${hops.join(', ')}]。`
+        + '前端 profiles.js 必须同步调整。')
+    }
   }
 }
 

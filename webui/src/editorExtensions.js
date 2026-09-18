@@ -2,6 +2,7 @@ import { Extension, Mark, Node, mergeAttributes } from '@tiptap/core'
 import TipTapBold from '@tiptap/extension-bold'
 import TipTapCodeBlock from '@tiptap/extension-code-block'
 import { TableView } from '@tiptap/extension-table'
+import { TextStyle as TipTapTextStyle } from '@tiptap/extension-text-style'
 import { Plugin } from '@tiptap/pm/state'
 
 /**
@@ -308,6 +309,92 @@ export const PreservedMarkStyle = Extension.create({
         },
       },
     }]
+  },
+})
+
+/**
+ * D48 修复（第 1 半）：关掉 TipTap v3 TextStyle 自带的「嵌套 span 样式合并」。
+ *
+ * 上游默认 `mergeNestedSpanStyles: true`：parse 时把父 span 的 style **文本拼接**进每个子
+ * span（`父样式;子样式`，见 @tiptap/extension-text-style 的 `mergeNestedSpanStyles`）。
+ * 实测（r48 探针，`tools/render-verify/browser/r48-flex-span-probe.js`）：
+ * `<span style="flex:1">a<span style="color:#e74c3c">b</span>c</span>` 解析后 b 的
+ * textStyle mark = `{preservedStyle:"flex:1", color:"#e74c3c", sourceSpanId:<新号>}`——
+ * 与 a/c 的 `{preservedStyle:"flex:1"}` **属性不等**。
+ *
+ * 而 ProseMirror 的 DOMSerializer（`prosemirror-model` to_dom.js `serializeFragment`）只保持
+ * 「打开栈」里与 node.marks **按序相等的前缀**：属性一变，整个打开栈（含外层 span）关闭重开。
+ * 于是同一源 span 被拆成多个兄弟 span，**每个都带一份 flex:1**——在 `display:flex` 容器里
+ * 就是「圆点 + 一栏正文」变成 N 栏（known-issues-handoff.md D48，真实应用实测 [2,2]/[3]）。
+ *
+ * 关掉合并后，嵌套 span 不再被拼进父样式；它自己的样式由下方的
+ * {@link MarkflowInnerSpanStyle} 以**可嵌套的独立标记**承载，外层身份保持唯一一份。
+ */
+export const MarkflowTextStyle = TipTapTextStyle.configure({ mergeNestedSpanStyles: false })
+
+/**
+ * 元素是否嵌套在某个带 style 的 SPAN 里。中间隔着**无样式**的 span 不影响判定：
+ * 无样式 span 本来就不产生 textStyle 身份（textStyle 的规则要求有 style 属性）。
+ * 渲染产物的结构语义是「嵌套在样式 span 里的 span 是内联格式，不是新的独立盒子」——
+ * flex 项（圆点、徽章胶囊）在产物里是**兄弟** span，不是嵌套。
+ */
+function nestedInStyledSpan(element) {
+  let node = element.parentElement
+  while (node) {
+    if (node.tagName === 'SPAN' && node.hasAttribute('style')) return true
+    node = node.parentElement
+  }
+  return false
+}
+
+/**
+ * D48 修复（第 2 半）：嵌套在带样式 span 里的内层样式 span。
+ *
+ * 职责：把内层 span **自己的** style 原文原样进出，渲染成一个**嵌套**在外层 span 里的
+ * `<span style="…">`。它与 textStyle 是不同类型，可以嵌套——序列化时外层 span 保持打开，
+ * 内层只开一个 span，产物形态与渲染服务一致：
+ * `<span style="flex:1"><strong>时间</strong>：每天 <span style="color:#e74c3c">09:00</span> 晨练</span>`。
+ *
+ * 两条优先级的配合（缺一不可）：
+ *   - **规则** priority 104：高于 textStyle 的默认 50 —— 嵌套 span 先被本规则**认领并消费**
+ *     （prosemirror-model `matchTag` 按规则优先级试、默认 consuming 命中即止），
+ *     textStyle 的 span 规则不再命中它，不再产生新身份；
+ *   - **扩展** priority 保持默认 100（< textStyle 的 101）：schema rank 排在 textStyle 之后，
+ *     序列化时 textStyle 先开、本标记开在其**内层**。
+ *   （PreservedEmptySpan 的规则 105 在本规则之前：空 span 仍归列表圆点节点管；
+ *   RawMath 的 110/120 更高：公式子树整体归原子节点管。）
+ *
+ * sourceSpanId 仍按元素派**新号**：相邻同款内层 span（两个相同颜色的片段）不合并——
+ * 与 D35「相邻同款 span 被合并」同一条守则。该属性只在编辑器内部存在，不进 getHTML()。
+ */
+export const MarkflowInnerSpanStyle = Mark.create({
+  name: 'markflowInnerSpanStyle',
+  addAttributes() {
+    return {
+      innerStyle: {
+        default: null,
+        // 内层样式要**原样**往返，不按 managedMarkStyleProperties 过滤：
+        // 颜色/字号这类声明在外层 span 上由专用扩展接管，但内层 span 除了本标记没有任何
+        // 渲染出口，过滤掉就是纯丢。
+        parseHTML: element => element.getAttribute('style'),
+        renderHTML: attributes => attributes.innerStyle ? { style: attributes.innerStyle } : {},
+      },
+      sourceSpanId: {
+        default: null,
+        parseHTML: nextPreservedSpanId,
+        renderHTML: () => ({}),
+      },
+    }
+  },
+  parseHTML() {
+    return [{
+      tag: 'span[style]',
+      priority: 104,
+      getAttrs: element => (nestedInStyledSpan(element) ? null : false),
+    }]
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ['span', HTMLAttributes, 0]
   },
 })
 

@@ -27,7 +27,11 @@ OUT = os.path.join(ROOT, 'target', 'probe')
 #: 渲染服务的调用令牌：**只从文件读，绝不允许进任何产物或提交**。
 TOKEN_FILE = os.path.expanduser('~/.zcode/secrets/markflow-render-token')
 
-RENDER_URL = 'https://www.bx9y.com.cn/__markflow_render'
+#: 渲染端点。默认是公网服务；设 `MARKFLOW_RENDER_URL` 环境变量可指向**自部署**实例
+#: （2026-09-19 起：huanyu-a/MarkFlow 仓库 tools/render-server/render_server.mjs 可本地起，
+#: 令牌就是部署者自己设的 `MARKFLOW_RENDER_TOKEN` 环境变量——公网令牌不可得时的正规替代）。
+#: 不设环境变量时与历史行为逐字节一致。
+RENDER_URL = os.environ.get('MARKFLOW_RENDER_URL') or 'https://www.bx9y.com.cn/__markflow_render'
 
 
 def ensure_outdir(*parts):

@@ -38,3 +38,6 @@ build/
 
 ### render-verify harness ###
 __pycache__/
+
+### Docker 内跑测试的本地 Maven 仓库（2026-09-19 本机无 JDK，测试走 Docker maven 容器）
+.m2repo/

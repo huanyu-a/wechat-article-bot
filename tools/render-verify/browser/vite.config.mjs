@@ -19,13 +19,14 @@ export default {
   build: {
     outDir: PROBE_DIST,
     emptyOutDir: true,
-    // 三个入口：probe.html = 14 组「改前 / 改后」对照；all.html = 全量 79 样例核查；
-    // r16.html = 用户标注 11 条（带逐条计算样式探针）
+    // 四个入口：probe.html = 14 组「改前 / 改后」对照；all.html = 全量 79 样例核查；
+    // r16.html = 用户标注 11 条（带逐条计算样式探针）；r48-flex-span.html = D48 定点探针
     rollupOptions: {
       input: {
         probe: resolve(here, 'probe.html'),
         all: resolve(here, 'probe_all.html'),
         r16: resolve(here, 'probe_r16.html'),
+        r48: resolve(here, 'r48-flex-span.html'),
       },
     },
   },
