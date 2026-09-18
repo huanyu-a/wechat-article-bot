@@ -41,6 +41,14 @@ app:
     # 1800 意味着每次事故都白等半小时且期间占着并发闸门（上游网关并发配额有限），故收紧到 300：
     # 正常的单阶段会话是分钟级，300s 足够；停滞则由 AgentInvoker 再重建会话重试一次。
     stage-timeout-seconds: ${STAGE_TIMEOUT_SECONDS:300}
+    # 写作阶段的会话硬超时（秒）：PIPELINE 的 WRITING 与 COORDINATOR 的委托写作共用这一档
+    # （见 StageTimeoutPolicy）。300 是照「单个阶段会话是分钟级」定的，对检索/配图/审核成立，
+    # 对写作不成立——写作要一次生成 30k+ 字符的完整成稿，量级与 SINGLE（900s）相当。
+    # 实测 run#14 / run#18：写作阶段都**恰好停在 300s**，且超时触发时「最后活动距今 0 秒」
+    # （会话一直在正常出字，只是成稿没写完）——是误杀而不是止损。
+    # 不直接把全局 stage-timeout-seconds 抬到 900：那个值同时是停滞止损速度与
+    # StaleRunPolicy 的孤儿判定基准，抬它会让检索/配图/审核的卡死白等时间同步变长。
+    writing-timeout-seconds: ${WRITING_TIMEOUT_SECONDS:900}
     # 协调者主编会话硬超时（秒，COORDINATOR 链路）：主编的一次会话**覆盖全部委托**，
     # 每次委托都是一次完整的子会话（还各带一次停滞重试），量级与单阶段会话完全不同。
     # 实测 run#41/42/47/48 的卡点都是「主编侧无事件、子智能体正在运行」——300s 一到就把正常工作中的
@@ -94,9 +102,14 @@ app:
     # （4 基础阶段 + 5 轮返工 × 3）≈ 1.6h」；取 3h 是在两者之上留出余量——调小到低于这个估算值会把
     # 仍在正常执行的运行误判为孤儿（启动时会打 WARN 提醒）；Quartz 集群部署下多实例共用一套库，
     # 更不能设得过小。
+    # ⚠️ 写作档（writing-timeout-seconds=900）抬高了 PIPELINE 的最坏路径：写作阶段在
+    # 「4 基础阶段 + 5 轮返工 × 3」里各出现一次（初次 + 每次返工），故上界变为
+    # 4×300 + 15×900 ≈ 1.85h（原先 19×300 ≈ 1.6h）。3h 仍有余量，**不需要同步调大**；
+    # 但若将来继续抬高写作档或返工轮数，必须重算这一项。
+    # 注意 StaleRunPolicy.worstCaseRunSeconds() 用的仍是 stage-timeout-seconds（不含写作档），
+    # 因此它给出的是**保守下界**——那是「启动告警」的判据，偏保守只会少告警、不会误判孤儿。
     # SINGLE 不参与这个上界：它只有**一次会话**（single-timeout-seconds=900s = 0.25h），
     # 远低于上面两条，故引入 SINGLE 独立超时不需要调整本值。
-    # ⚠️ 与 stage-timeout-seconds / coordinator-timeout-seconds 绑在同一个估算式上：改一个必须同步改另一个。
     # （single-timeout-seconds 不在其中——`StaleRunReaper` 传给 thresholdTooSmall 的是 stage-timeout-seconds，
     # SINGLE 的单次会话不进入 MAX_STAGES_PER_RUN 的阶段循环。）
     stale-run-hours: ${STALE_RUN_HOURS:3}

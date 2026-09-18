@@ -35,14 +35,18 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
     private final AgentDefinitionMapper definitionMapper;
     private final AgentRunner runner;
     private final ToolCallBudget toolCallBudget;
+    private final StageTimeoutPolicy stageTimeoutPolicy;
     private StageAgentBuilder stageAgentBuilder;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public PipelineExecutor(ScheduledAgentFactory agentFactory, AgentDefinitionMapper definitionMapper,
-                            AgentRunner runner, ToolCallBudget toolCallBudget) {
+                            AgentRunner runner, ToolCallBudget toolCallBudget,
+                            StageTimeoutPolicy stageTimeoutPolicy) {
         this.agentFactory = agentFactory;
         this.definitionMapper = definitionMapper;
         this.runner = runner;
         this.toolCallBudget = toolCallBudget == null ? ToolCallBudget.defaults() : toolCallBudget;
+        this.stageTimeoutPolicy = stageTimeoutPolicy == null ? StageTimeoutPolicy.defaults() : stageTimeoutPolicy;
         this.stageAgentBuilder = (code, stage, request, workspace) -> {
             var context = agentFactory.skillContext(request.accountId(), request.skillIds(), List.of());
             // 每个阶段一个独立的检索治理器：阶段之间不共享缓存（不同阶段该看到各自的新检索结果），
@@ -50,6 +54,12 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
             return agentFactory.buildCandidates(code, stage, context, workspace, request.accountId(),
                     request.userId(), null, new ToolMutationDeduplicator(), new ToolCallGovernor());
         };
+    }
+
+    /** 单测构造：分档取默认值（写作 900s / 其余 300s）。 */
+    public PipelineExecutor(ScheduledAgentFactory agentFactory, AgentDefinitionMapper definitionMapper,
+                            AgentRunner runner, ToolCallBudget toolCallBudget) {
+        this(agentFactory, definitionMapper, runner, toolCallBudget, StageTimeoutPolicy.defaults());
     }
 
     /** 单测注入替身装配器。 */
@@ -166,10 +176,14 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
         // 计数与日志都经 progressListener 实时汇入工作区：阶段因停滞/超时失败时，
         // 本次尝试的局部日志会随异常丢弃，只有实时上报的那份留得住（运行历史据此定位卡点）。
         // 走 runWithCandidates（而非 runWithLimit）：模型级错误时由 AgentInvoker 换下一个档案接着跑。
+        // 会话硬超时按阶段取（见 StageTimeoutPolicy）：写作阶段要一次生成 30k+ 字符成稿，量级与
+        // SINGLE（900s）相当，用全局 300s 会在「会话仍在正常出字」时被墙钟砍掉（实测 run#14/#18
+        // 的写作阶段恰好停在 300s、超时时「最后活动距今 0 秒」），是误杀而不是止损。
         long startedAt = System.nanoTime();
         try {
             AgentRunner.Outcome outcome = runner.runWithCandidates(candidates, command, null, logPrefix,
-                    toolCallBudget.subAgentLimitFor(fallbackStage), 0, workspace.progressListener());
+                    toolCallBudget.subAgentLimitFor(fallbackStage), stageTimeoutPolicy.forStage(fallbackStage),
+                    workspace.progressListener());
             // 阶段内的工具失败计入运行级失败数：流水线即使跑完，也不该把「配图失败」记成干净的成功
             workspace.addToolFailures(outcome.toolFailures());
             workspace.addProfilesUsed(outcome.profilesUsed());

@@ -425,4 +425,118 @@ class PipelineExecutorTest {
         assertThat(workspace.degradationCount()).isEqualTo(1);
         assertThat(result.executionLog()).contains("【写作】阶段中止");
     }
+
+    // ==================== 阶段硬超时分档（2026-09-18，run#14 / run#18） ====================
+
+    /**
+     * 记录每个阶段实际收到的**会话硬超时**的桩运行器。
+     *
+     * <p>必须覆写 {@code runWithCandidates}：默认实现会把调用转给 5 参的 {@code runWithLimit}
+     * 再落到 4 参的 {@code run}，超时参数在中途就被丢掉了——那样测的就不是真实链路。
+     */
+    private static class TimeoutRecordingRunner extends AgentRunner {
+        final List<String> stages = new ArrayList<>();
+        final List<Long> timeouts = new ArrayList<>();
+        private final TaskWorkspace workspace;
+
+        TimeoutRecordingRunner(TaskWorkspace workspace) {
+            this.workspace = workspace;
+        }
+
+        @Override
+        public Outcome run(AgentClient agent, String command, List<MemoryMultipartFile> attachments) {
+            return new Outcome("完成", 1, "stub");
+        }
+
+        @Override
+        public Outcome runWithCandidates(List<Candidate> candidates, String command,
+                                         List<MemoryMultipartFile> attachments, String logPrefix,
+                                         int maxToolCalls, long timeoutSeconds, ProgressListener progress) {
+            String stage = candidates.get(0).label();
+            stages.add(stage);
+            timeouts.add(timeoutSeconds);
+            // 让每个阶段都能正常收尾：调研落简报、写作落草稿、审核直接通过
+            if ("RESEARCH".equals(stage)) workspace.appendResearchNotes("核心结论", "第一轮");
+            if ("WRITING".equals(stage)) saveDraft(workspace);
+            if ("REVIEW".equals(stage)) workspace.submitReview(true, List.of(), List.of(), "通过");
+            return new Outcome("完成", 1, logPrefix + "stub");
+        }
+    }
+
+    /**
+     * 写作阶段必须拿到**比其余阶段更长**的硬超时，返工写作同样。
+     *
+     * <p>依据（run#14 / run#18，两次真实 FAILED）：写作阶段都**恰好停在 300s**，且超时触发时
+     * 「最后活动距今 0 秒」——会话一直在正常出字，只是成稿没写完就被墙钟砍掉，是误杀而不是止损。
+     * 修复前这里传的是写死的 0（= 沿用全局 300s），因此本用例在修复前必红。
+     */
+    @Test
+    void writingStageGetsTheLongerTimeoutBudget() throws Exception {
+        TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
+        TimeoutRecordingRunner runner = new TimeoutRecordingRunner(workspace);
+        PipelineExecutor executor = new PipelineExecutor(null, null, runner, ToolCallBudget.defaults(),
+                StageTimeoutPolicy.defaults());
+        executor.setStageAgentBuilder((code, stage, request, ws) ->
+                List.of(new AgentRunner.Candidate(namedAgent(code, stage), stage)));
+
+        executor.execute(request(Map.of(), 2), workspace);
+
+        int writingIndex = runner.stages.indexOf("WRITING");
+        assertThat(writingIndex).as("本轮应当跑到写作阶段").isGreaterThanOrEqualTo(0);
+        assertThat(runner.timeouts.get(writingIndex))
+                .as("写作阶段要一次生成完整成稿，必须拿到写作档而不是 300s")
+                .isEqualTo(StageTimeoutPolicy.DEFAULT_WRITING_SECONDS);
+        for (int index = 0; index < runner.stages.size(); index++) {
+            if ("WRITING".equals(runner.stages.get(index))) continue;
+            assertThat(runner.timeouts.get(index))
+                    .as("非写作阶段（%s）仍走普通档——抬全局档会拖慢停滞止损", runner.stages.get(index))
+                    .isEqualTo(StageTimeoutPolicy.DEFAULT_STAGE_SECONDS);
+        }
+    }
+
+    /**
+     * **返工写作**同样拿到写作档：它走的是同一条 {@code runStage} 路径，只是 fallbackStage 仍为 WRITING。
+     *
+     * <p>这条专门钉住「返工」这一支——首轮写作对了、返工那轮退回 300s 的话，
+     * 缺陷只会在「审核不过、需要返工」的运行里复发，而那种运行本来就少见。
+     */
+    @Test
+    void rewriteStageAlsoGetsTheWritingTimeoutBudget() throws Exception {
+        TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
+        TimeoutRecordingRunner runner = new TimeoutRecordingRunner(workspace) {
+            private int reviewRounds;
+
+            @Override
+            public Outcome runWithCandidates(List<Candidate> candidates, String command,
+                                             List<MemoryMultipartFile> attachments, String logPrefix,
+                                             int maxToolCalls, long timeoutSeconds, ProgressListener progress) {
+                String stage = candidates.get(0).label();
+                stages.add(stage);
+                timeouts.add(timeoutSeconds);
+                if ("RESEARCH".equals(stage)) workspace.appendResearchNotes("核心结论", "第一轮");
+                if ("WRITING".equals(stage)) saveDraft(workspace);
+                if ("REVIEW".equals(stage)) {
+                    // 第一轮判不通过 → 触发返工写作；第二轮通过 → 收尾
+                    reviewRounds++;
+                    workspace.submitReview(reviewRounds > 1, List.of("配图不够"), List.of(), "审核");
+                }
+                return new Outcome("完成", 1, logPrefix + "stub");
+            }
+        };
+        PipelineExecutor executor = new PipelineExecutor(null, null, runner, ToolCallBudget.defaults(),
+                StageTimeoutPolicy.defaults());
+        executor.setStageAgentBuilder((code, stage, request, ws) ->
+                List.of(new AgentRunner.Candidate(namedAgent(code, stage), stage)));
+
+        executor.execute(request(Map.of("illustration", 0L), 2), workspace);
+
+        long writingRuns = runner.stages.stream().filter("WRITING"::equals).count();
+        assertThat(writingRuns).as("应当跑过首轮写作 + 一次返工写作").isEqualTo(2);
+        for (int index = 0; index < runner.stages.size(); index++) {
+            if (!"WRITING".equals(runner.stages.get(index))) continue;
+            assertThat(runner.timeouts.get(index))
+                    .as("第 %d 次写作（含返工）都必须拿到写作档", index)
+                    .isEqualTo(StageTimeoutPolicy.DEFAULT_WRITING_SECONDS);
+        }
+    }
 }

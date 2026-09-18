@@ -35,10 +35,17 @@ public final class StaleRunPolicy {
      * 单次运行的阶段执行次数上界：基础 4 阶段（调研/写作/配图/审核）
      * + 每轮返工最多 3 次（写作 + 配图 + 审核），返工轮次上限 5（ScheduleTaskService 归一为 0..5）。
      * 每阶段时长由 {@code app.schedule.stage-timeout-seconds} 约束，故这是「合法运行最长能有多久」的估算依据。
+     *
+     * <p><b>2026-09-18 起这是「保守下界」</b>：写作阶段改用独立的
+     * {@code app.schedule.writing-timeout-seconds}（900s，见 {@link StageTimeoutPolicy}），
+     * 不再受 {@code stage-timeout-seconds} 约束，因此真实上界高于本式算出的值——
+     * 按「写作档 900、其余 300」重算约为 {@code 4×300 + 15×900 ≈ 1.85h}（原 19×300 ≈ 1.6h）。
+     * 偏保守的后果只是**少告警**（{@link #thresholdTooSmall} 更不容易触发），不会误判孤儿，
+     * 故保留本式不动；若将来继续抬高写作档或返工轮数，必须连本式与 {@code stale-run-hours} 一起重算。
      */
     public static final int MAX_STAGES_PER_RUN = 4 + 5 * 3;
 
-    /** 合法运行的最长时长估算（秒）。 */
+    /** 合法运行的最长时长估算（秒，**保守下界**——不含写作档，见 {@link #MAX_STAGES_PER_RUN}）。 */
     public static long worstCaseRunSeconds(long stageTimeoutSeconds) {
         return Math.max(1L, stageTimeoutSeconds) * MAX_STAGES_PER_RUN;
     }

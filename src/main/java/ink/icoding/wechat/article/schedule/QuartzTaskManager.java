@@ -35,6 +35,10 @@ public class QuartzTaskManager {
             }
             JobDetail detail = JobBuilder.newJob(ScheduleTaskJob.class).withIdentity(jobKey)
                     .usingJobData("taskId", String.valueOf(task.getId())).build();
+            // 停机错过触发时**跳过、不补跑**（次日按正常计划走）。这行是**显式**配置，不能删：
+            // Quartz 的默认 SMART_POLICY 对 cron 触发器映射为 FIRE_ONCE_NOW（立即补跑一次），
+            // 与 DO_NOTHING 行为相反。删掉它，重启后会把停机期间错过的任务立刻补跑一遍。
+            // 反证见 QuartzMisfirePolicyTests（含真实 Quartz 的两种策略对照）。
             CronScheduleBuilder schedule = CronScheduleBuilder.cronSchedule(task.getCronExpression())
                     .inTimeZone(TimeZone.getTimeZone(task.getTimezone()))
                     .withMisfireHandlingInstructionDoNothing();

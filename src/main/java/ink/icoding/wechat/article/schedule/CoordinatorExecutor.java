@@ -32,16 +32,25 @@ public class CoordinatorExecutor extends ScheduledExecutionStrategy {
     private final ScheduledAgentFactory agentFactory;
     private final AgentRunner runner;
     private final ToolCallBudget toolCallBudget;
+    private final StageTimeoutPolicy stageTimeoutPolicy;
     private final long chiefTimeoutSeconds;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public CoordinatorExecutor(ScheduledAgentFactory agentFactory, AgentRunner runner,
-                               ToolCallBudget toolCallBudget,
+                               ToolCallBudget toolCallBudget, StageTimeoutPolicy stageTimeoutPolicy,
                                @Value("${app.schedule.coordinator-timeout-seconds:"
                                        + DEFAULT_CHIEF_TIMEOUT_SECONDS + "}") long chiefTimeoutSeconds) {
         this.agentFactory = agentFactory;
         this.runner = runner;
         this.toolCallBudget = toolCallBudget == null ? ToolCallBudget.defaults() : toolCallBudget;
+        this.stageTimeoutPolicy = stageTimeoutPolicy == null ? StageTimeoutPolicy.defaults() : stageTimeoutPolicy;
         this.chiefTimeoutSeconds = chiefTimeoutSeconds > 0 ? chiefTimeoutSeconds : DEFAULT_CHIEF_TIMEOUT_SECONDS;
+    }
+
+    /** 单测构造：分档取默认值。 */
+    public CoordinatorExecutor(ScheduledAgentFactory agentFactory, AgentRunner runner,
+                               ToolCallBudget toolCallBudget, long chiefTimeoutSeconds) {
+        this(agentFactory, runner, toolCallBudget, StageTimeoutPolicy.defaults(), chiefTimeoutSeconds);
     }
 
     @Override
@@ -76,10 +85,13 @@ public class CoordinatorExecutor extends ScheduledExecutionStrategy {
             // 事后整体追加，子智能体停滞/超时的那次尝试其局部日志会随异常丢弃（I6 现状 a），
             // 失败后只剩一句引导文本。改为全量 progressListener 后，卡在哪一步在运行历史里也看得到。
             // 走 runWithCandidates：模型级错误时换下一个档案接着跑，而不是把整次委托判死。
+            // 子会话硬超时同样按阶段取：委托写作（stage=WRITING）与 PIPELINE 的写作阶段是同一件事，
+            // 同样需要 900s 档——此前这里传 0（沿用全局 300s），委托写作会被同一堵墙误杀。
             long startedAt = System.nanoTime();
             try {
                 AgentRunner.Outcome outcome = runner.runWithCandidates(candidates, command, null, logPrefix,
-                        toolCallBudget.subAgentLimitFor(stage), 0, workspace.progressListener());
+                        toolCallBudget.subAgentLimitFor(stage), stageTimeoutPolicy.forStage(stage),
+                        workspace.progressListener());
                 // 子智能体的工具失败也要计入运行级失败数（终态判定见 TaskWorkspace.toolFailureCount）
                 workspace.addToolFailures(outcome.toolFailures());
                 workspace.addProfilesUsed(outcome.profilesUsed());
