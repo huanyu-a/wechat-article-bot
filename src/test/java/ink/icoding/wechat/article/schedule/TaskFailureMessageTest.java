@@ -46,7 +46,11 @@ class TaskFailureMessageTest {
                 .contains("【会话停滞】")
                 .contains("不会")   // 明确说清「已调用工具时不切换」
                 .contains("profilesUsed")
-                .doesNotContain("已自动尝试切换");
+                .doesNotContain("已自动尝试切换")
+                // 判据是「有副作用的工具」而不是「任何工具」：run#20 的调研阶段调了 25 次只读检索
+                // 后仍正常切换了档案，写「已调用过工具就不会切换」同样误导排查。
+                .contains("有副作用")
+                .contains("只读");
     }
 
     /** 停滞常被包在 ExecutionException 里抛出，分类必须沿 cause 链找得到。 */
@@ -120,6 +124,44 @@ class TaskFailureMessageTest {
                 new IllegalStateException("submit_review - Failed to parse tool param JSON"));
 
         assertThat(message).contains("【参数格式】").contains("合法 JSON");
+    }
+
+    /**
+     * 渲染服务未配置必须单独归类，不能被 BusinessException 兜底吞成「交付内容不满足落库要求」。
+     *
+     * <p>这是 2026-09-18 实机踩到的真实误导：任务绑定了 MarkFlow 排版技能，但「排版渲染服务」
+     * 没配令牌，报错原文是「排版技能需要 MarkFlow 渲染服务，请到系统设置 → 排版渲染服务启用并配置令牌」。
+     * 它是个 {@link BusinessException}，于是被兜底那条改写成「交付内容不满足落库要求（如标题/摘要超长、
+     * 素材归属等）」——**把用户引向完全错误的方向**：内容根本没开始生成（0 次工具调用），
+     * 与标题超长、素材归属毫无关系。
+     *
+     * <p>两条断言缺一不可：既要有正确的分类，也要**不再**出现那句误导文案。
+     */
+    @Test
+    void unconfiguredRenderServiceIsNotBlamedOnTheDeliverable() {
+        String message = TaskExecutionService.failureMessage(new BusinessException(
+                "排版技能需要 MarkFlow 渲染服务，请到系统设置 → 排版渲染服务启用并配置令牌，或改用指令式排版技能"));
+
+        assertThat(message).contains("【渲染服务未就绪】").contains("排版渲染服务");
+        assertThat(message)
+                .as("不得再套用「交付内容不满足落库要求」——内容压根没生成，这个方向是错的")
+                .doesNotContain("交付内容不满足落库要求");
+    }
+
+    /**
+     * 真的渲染故障不得被归成「服务未就绪」——否则等于用一个新误判换掉一个旧误判。
+     *
+     * <p>「没配令牌」是环境问题（用户去设置页即可解决），「语法非法 / 获取指令失败」是运行期故障
+     * （要去查上游或产物），两者的处置方向完全不同，不能混为一类。
+     */
+    @Test
+    void genuineRenderFailureIsNotMisfiledAsMissingConfiguration() {
+        String syntax = TaskExecutionService.failureMessage(new BusinessException(
+                "MarkFlow 渲染失败：markdown 语法非法：未知容器 :::foo"));
+
+        assertThat(syntax)
+                .as("语法类渲染故障不得被说成「渲染服务未就绪」")
+                .doesNotContain("【渲染服务未就绪】");
     }
 
     /** 认不出的错误原样输出，不硬套一个类别——错误的分类比没有分类更误导。 */
