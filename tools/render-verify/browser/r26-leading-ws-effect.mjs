@@ -15,7 +15,8 @@
  *     `String.includes('')` 恒真 ⇒ 这条判据**不可能失败**（第二十六轮「改前」那一跑 ② 7/7 全过）；
  *   · 原③只比「灌回后 == 打开后」，两边同源 ⇒ 属**甲类盲区**，对「打开时就一致地丢」型 bug 天然免疫。
  * 收紧后同一批存档离线复判：`--bundle before-dist` 那一跑 ①/②/③ 各 **1/7**（只有全角空格 A5 存活），
- * 当前包与修复包各 **7/7**。反例自检：`--selftest`（离线读第二十六轮的坏版本存档，必须判 FAIL）。
+ * 当前包与修复包各 **7/7**。反例自检：`--selftest`（纯离线；历史坏版本存档已随 `target/probe/` 清库丢失，
+ * 改按 §3.26 的坏版本构造**合成**「被改坏的量测」，同一把 `judge()` 必须判 FAIL——历史结论定格不重写）。
  *
  * 对照口径：同一份正文、同一台浏览器，`--bundle` 换改前 / 改后两份前端各跑一遍。
  *
@@ -119,32 +120,6 @@ function judge({ doc, parsed, again, saveExit }) {
   return rows
 }
 
-// ---------- `--selftest`：纯离线，拿**已知坏版本**的存档套同一套判据，必须判 FAIL ----------
-// 存档 = 第二十六轮 `--bundle target/probe/r26/before-dist` 那一跑（段首空白在「打开」时就被吃掉）。
-// 判据：① 收紧后的判据②在它上面**至少要失败一条**；② 收紧后的判据③同样至少要失败一条。
-// 任一条「全过」即说明闸又写松了，**exit 1**。
-if (ARGS.includes('--selftest')) {
-  const 存档 = resolve(BROWSER_OUT, 'r26_effect_before.json')
-  if (!existsSync(存档)) { console.error('没有存档 ' + 存档 + '（先跑第二十六轮的 --bundle before-dist）'); process.exit(3) }
-  const payload = JSON.parse(readFileSync(存档, 'utf8'))
-  const rows = judge(payload)
-  const count = (key) => rows.filter((row) => row[key]).length
-  const c1 = count('判据一_占位'), c2 = count('判据二_出口里带着'), c3 = count('判据三_灌回后相同')
-  console.log('反例自检（已知坏版本存档）:', 存档)
-  console.log('  bundle = ' + (payload.bundle || '(未记)'))
-  console.log('  条数 ' + rows.length + ' · 判据① ' + c1 + ' · 判据② ' + c2 + ' · 判据③ ' + c3)
-  for (const row of rows) {
-    console.log('    [' + String(row.第几块).padStart(2) + '] 原文 ' + row.原文里的段首空白.padEnd(6)
-      + ' 出口里 ' + row.判据二_出口里的段首空白.padEnd(8)
-      + ' ①' + (row.判据一_占位 ? '通过' : '失败') + ' ②' + (row.判据二_出口里带着 ? '通过' : '失败')
-      + ' ③' + (row.判据三_灌回后相同 ? '通过' : '失败'))
-  }
-  const caught2 = c2 < rows.length, caught3 = c3 < rows.length
-  console.log('  → 判据②抓住坏版本: ' + (caught2 ? '是 ✅' : '否 ❌（闸写松了）'))
-  console.log('  → 判据③抓住坏版本: ' + (caught3 ? '是 ✅' : '否 ❌（闸写松了）'))
-  process.exit(caught2 && caught3 ? 0 : 1)
-}
-
 /**
  * 每一种写法只差「空白写在哪、写成什么字符」，其余一模一样。
  * 与第二十五轮 `r25-whitespace-probe.mjs` 的语料**逐字相同**——
@@ -164,6 +139,68 @@ const doc = [
   '<p>  LEADING-SPACES</p>',                  // 第二十五轮副作用试验的样本
   '<p>\tLEADING-TAB</p>',
 ].join('')
+
+// ---------- 合成量测（`--selftest` 专用）----------
+// ⚠️ 历史真跑存档 `r26_effect_before.json`（`--bundle target/probe/r26/before-dist` 那一跑）
+//    已随 `target/probe/` 清库丢失，**不伪造存档**。反例改按 §3.26 记载的坏版本构造**合成**：
+//    修复前行为 = 段首的半角空格 / 制表符在 `setContent` 第一次解析里被吃掉
+//    （&nbsp;、全角空格、零宽空格不受影响，见文件头）；`剥段首空白 = false` 等价于窄修法生效：
+//    块首空白换成不塌缩的等价字符（`&nbsp;`），保存出口与重灌后都还在。
+//    历史真跑结论（坏版本 ①/②/③ 各 1/7、当前包与修复包各 7/7）**已定格，不重写**。
+const SELFTEST_BASE_X = 702      // 首字符 x 的基准（判据只看「有没有 / 变没变」，不看绝对值）
+const SELFTEST_INDENT_PX = 6.72  // 2 个半角空格在编辑器排版上下文里的宽度（第二十六轮实测）
+const 合成量测 = ({ 剥段首空白 }) => {
+  const 被吃 = (leading) => 剥段首空白 && /[ \t]/.test(leading)
+  const blocks = doc.match(BLOCK_RE()) || []
+  const parsed = []
+  const again = []
+  let saveExit = ''
+  for (const [index, block] of blocks.entries()) {
+    const tag = (/^<([a-z0-9]+)/i.exec(block) || [])[1] || 'p'
+    const plain = plainOf(block)
+    const leading = leadingOf(block)
+    const rest = plain.slice(leading.length)
+    const 打开文本 = 被吃(leading) ? rest : leading.replace(/[ \t]/g, '\u00A0') + rest
+    const 出口段首 = 被吃(leading) ? '' : leading.replace(/[ \t]/g, '&nbsp;')
+    const x = leading && !被吃(leading) ? SELFTEST_BASE_X + SELFTEST_INDENT_PX : SELFTEST_BASE_X
+    parsed[index] = { tag, text: JSON.stringify(打开文本), 首字符x: x }
+    again[index] = { tag, text: JSON.stringify(打开文本), 首字符x: x }
+    saveExit += '<' + tag + '>' + 出口段首 + rest + '</' + tag + '>'
+  }
+  return { doc, parsed, again, saveExit }
+}
+
+// ---------- `--selftest`：纯离线，拿**合成坏版本**套同一套判据（judge 一字未改），必须判 FAIL ----------
+// 判据：合成坏版本上 ①②③ **每一条都至少失败一例**（抓得住）；合成好版本（窄修法生效）上
+// ①②③ 全过（不误报）。任一不符即说明闸写松了，**exit 1**。
+if (ARGS.includes('--selftest')) {
+  const 坏 = judge(合成量测({ 剥段首空白: true }))
+  const 好 = judge(合成量测({ 剥段首空白: false }))
+  const count = (rows, key) => rows.filter((row) => row[key]).length
+  const c1 = count(坏, '判据一_占位'), c2 = count(坏, '判据二_出口里带着'), c3 = count(坏, '判据三_灌回后相同')
+  console.log('反例自检（**合成**坏版本，非真跑存档）：构造 = §3.26 修复前行为（段首半角空白在第一次解析被吃）')
+  console.log('  历史真跑存档 r26_effect_before.json 已随 target/probe 清库丢失；历史结论（坏版本 ①/②/③ 各 1/7）定格不重写。')
+  console.log('  判据行 ' + 坏.length + ' 条（分母取自灌进去的原文）· 坏版本：① ' + c1 + ' ② ' + c2 + ' ③ ' + c3
+    + ' · 好版本：① ' + count(好, '判据一_占位') + ' ② ' + count(好, '判据二_出口里带着') + ' ③ ' + count(好, '判据三_灌回后相同'))
+  for (const row of 坏) {
+    console.log('    [' + String(row.第几块).padStart(2) + '] 原文 ' + row.原文里的段首空白.padEnd(6)
+      + ' 出口里 ' + row.判据二_出口里的段首空白.padEnd(8)
+      + ' ①' + (row.判据一_占位 ? '通过' : '失败') + ' ②' + (row.判据二_出口里带着 ? '通过' : '失败')
+      + ' ③' + (row.判据三_灌回后相同 ? '通过' : '失败'))
+  }
+  // ⚠️ ①②③ 不能当 JS 标识符（与 run-suite.sh 里「中文变量名」同一类坑），判定变量用 ASCII。
+  const caught1 = c1 < 坏.length, caught2 = c2 < 坏.length, caught3 = c3 < 坏.length
+  const 不误报 = 好.length > 0 && count(好, '判据一_占位') === 好.length
+    && count(好, '判据二_出口里带着') === 好.length && count(好, '判据三_灌回后相同') === 好.length
+  console.log('  → 判据①抓住坏版本: ' + (caught1 ? '是 ✅' : '否 ❌（闸写松了）'))
+  console.log('  → 判据②抓住坏版本: ' + (caught2 ? '是 ✅' : '否 ❌（闸写松了）'))
+  console.log('  → 判据③抓住坏版本: ' + (caught3 ? '是 ✅' : '否 ❌（闸写松了）'))
+  console.log('  → 好版本（窄修法生效）不误报: ' + (不误报 ? '是 ✅' : '否 ❌'))
+  const 全对 = caught1 && caught2 && caught3 && 不误报
+  console.log(全对 ? '→ 反例自检通过：合成坏版本 ①②③ 都判红、好版本不误报；历史结论定格不重写。'
+    : '→ 反例自检**不通过**：本支的判定与上面任一条不符，必须查。')
+  process.exit(全对 ? 0 : 1)
+}
 
 const GUARD = `(() => {
   window.__writeGuard = { blocked: [], lastSave: null };

@@ -110,7 +110,10 @@ const 判 = ({ 结果 }) => 结果
 if (ARGS.includes('--selftest')) {
   // 坏输入用**真实存档**造，不是编的：拿 #38 那一轮的产物复制两份，
   // 一份原样（自比必然全同）、一份改掉一个数值叶子、一份删掉一个用例。
-  const 源 = resolve(ROOT, 'target/probe/browser/r24_article38_before_result.json')
+  // ⚠️ 本轮：原源 `r24_article38_before_result.json`（第二十四轮改前 bundle 那一跑）
+  //    已随 `target/probe/` 清库丢失、不可重造；改读**当前真测** `r24_article38_r27-after_result.json`
+  //    （同一支 `r24-article38-symptoms.mjs` 对现活应用真跑的产物），造坏方式一字不改。
+  const 源 = resolve(ROOT, 'target/probe/browser/r24_article38_r27-after_result.json')
   const 目录 = mkdtempSync(join(tmpdir(), 'r27c-'))
   const 原样 = join(目录, 'a.json')
   const 改叶子 = join(目录, 'b.json')
@@ -126,11 +129,18 @@ if (ARGS.includes('--selftest')) {
     for (const key of Object.keys(node)) {
       const value = node[key]
       if (命中) return
-      if (typeof value === 'number') { node[key] = value + 1; 命中 = path + '.' + key; return }
+      if (typeof value === 'number') { node[key] = value + 1; 命中 = path + '.' + key + ' ' + value + ' → ' + (value + 1); return }
       if (value && typeof value === 'object') 改(value, path + '.' + key)
     }
   }
   改(改过.editor.items[0].value, 'editor.items[0].value')
+  if (!命中) {
+    // ⚠️ 本轮：#38 的正文已被用户改写（第三十五轮「文章38只保留还未修复组件的展示」及其后续编辑），
+    // 11 条探针在纯文章路径上**实测全为 null**（历史量测值已定格，不重写）。
+    // 造坏退而落在**第 1 条的实测值本身**：null 捏成「凭空多一份量测值」——对账必须如实判红。
+    改过.editor.items[0].value = { 自检造坏count: 1 }
+    命中 = 'editor.items[0].value（实测 null → 凭空多一份量测值 {自检造坏count: 1}）'
+  }
   writeFileSync(改叶子, JSON.stringify(改过), 'utf8')
 
   const 删掉 = JSON.parse(JSON.stringify(存档))
@@ -140,7 +150,7 @@ if (ARGS.includes('--selftest')) {
   process.exitCode = 自检('27-C round27_c_compare（逐值对账，不归一不容差）', 判, [
     { 名: '真实存档自比（' + 存档.editor.items.length + ' 条用例）', 数据: { 结果: 对账([原样, 原样]) }, 期望: 0,
       备注: '同一份文件对同一份文件' },
-    { 名: '改掉一个数值叶子（' + 命中 + ' +1）', 数据: { 结果: 对账([原样, 改叶子]) }, 期望: 1,
+    { 名: '改掉一个数值叶子（' + 命中 + '）', 数据: { 结果: 对账([原样, 改叶子]) }, 期望: 1,
       备注: '差一处也要判红' },
     { 名: '删掉一个用例（' + 被删.id + '）', 数据: { 结果: 对账([原样, 少用例]) }, 期望: 1,
       备注: '用例集合不同' },

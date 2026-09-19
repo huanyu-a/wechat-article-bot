@@ -133,10 +133,19 @@ function 造坏样例() {
   writeFileSync(resolve(BROWSER_OUT, 'r26_samples_r29bogus.json'), JSON.stringify(payload, null, 1), 'utf8')
 }
 
-/** 造一份「已知坏版本」的 #38 症状量测（改 1 个叶子值），证明比较器能判红。 */
+/** 造一份「已知坏版本」的 #38 症状量测（改 1 个叶子值），证明比较器能判红。
+ *  ⚠️ 本轮：#38 的正文已在第三十五轮后被用户改写（「文章38只保留还未修复组件的展示」及其后续编辑），
+ *  11 条探针在纯文章路径上**实测全为 null**（历史量测值已定格，不重写）。改坏改为落在
+ *  **第 1 条的实测值本身**：有对象值时照旧改第一个数值叶子；实测值为 null 时捏成「凭空多一份量测值」
+ *  ——两种都是真差异，比较器必须如实判红，不伪造任何真跑数据。 */
 function 造坏症状() {
   const payload = read('r24_article38_r27-after_result.json')
-  payload.editor.items[0].value.count = (payload.editor.items[0].value.count ?? 0) + 1
+  const 第一条 = payload.editor.items[0]
+  if (第一条.value && typeof 第一条.value === 'object') {
+    第一条.value.count = (第一条.value.count ?? 0) + 1
+  } else {
+    第一条.value = { 自检造坏count: 1 }
+  }
   writeFileSync(resolve(BROWSER_OUT, 'r24_article38_r29bogus_result.json'), JSON.stringify(payload, null, 1), 'utf8')
 }
 
@@ -347,12 +356,18 @@ const CHECKS = [
   {
     断言: 'r26-leading-ws-effect 判据①②③（段首空白：打开在位 / 出口带着 / 重开还在）',
     类别: '丙｜自声明期望值', 在九步链: false, 有退出码: true,
-    已知坏版本: 'target/probe/r26/before-dist 的真跑存档 r26_effect_before.json', 期望: 'FAIL',
+    已知坏版本: '**合成坏版本**（按 §3.26 修复前行为构造：段首半角空白在第一次解析被吃；'
+      + '历史真跑存档 r26_effect_before.json 已随 target/probe 清库丢失，不伪造）', 期望: 'FAIL',
     自检: async () => {
-       if (!has('r26_effect_before.json')) return 缺('r26_effect_before.json')
+       // ⚠️ 本轮：真跑存档 r26_effect_before.json 已随 target/probe 清库丢失、不可重造，`has()` 门槛去掉。
+       // `--selftest` 改为**自含合成**：内置语料的「被改坏」量测（§3.26 修复前行为）+ 好版本对照，
+       // 同一把 `judge()` 纯函数判——坏版本 ①②③ 都必须判红、好版本不误报。
        const out = runNode('tools/render-verify/browser/r26-leading-ws-effect.mjs', ['--selftest'])
        const line = (out.stdout || '').split('\n').filter((text) => /抓住坏版本/.test(text)).map((t) => t.trim()).join(' / ')
-       return { 结果: out.status === 0 ? 'FAIL' : 'PASS', 证据: '--selftest exit=' + out.status + ' · ' + line }
+       return { 结果: out.status === 0 ? 'FAIL' : 'PASS',
+         证据: '--selftest exit=' + out.status + '（合成输入：坏版本 ①②③ 都判红 + 好版本不误报）· ' + line
+           + ' ⚠️ 历史真跑存档已随 target/probe 清库丢失、坏版本按 §3.26 构造合成，'
+           + '历史结论（坏版本 ①/②/③ 各 1/7、当前包与修复包各 7/7）定格不重写。' }
      },
     修紧: '**本轮修紧**：原判据② `saved.includes(inputLeading.replace(/[ \\t]/g,""))` 的入参替换完是**空串**，'
       + '`String.includes("")` 恒真 ⇒ 这条判据**不可能失败**；原判据③只比「灌回后 == 打开后」，两边同源 ⇒ **甲类盲区**。'
@@ -378,21 +393,20 @@ const CHECKS = [
   {
     断言: 'r25-save-exit-roundtrip 判据①（保存出口灌回后与保存那一刻逐条相同）',
     类别: '甲｜只比两侧一致', 在九步链: false, 有退出码: true,
-    已知坏版本: 'target/probe/r26/before-dist（第二十六轮修复前的整包前端，真跑存档）', 期望: 'PASS',
+    已知坏版本: 'target/probe/r26/before-dist（第二十六轮修复前的整包前端，真跑存档——'
+      + '该存档已随 target/probe 清库丢失，历史结论定格）', 期望: 'PASS',
     自检: async () => {
-       const file = 'r25_roundtrip_setcontent_all_r29blindcheck_result.json'
-       if (!has(file)) return 缺(file)
-       const payload = read(file)
-       const v = payload.verdict
-       // 本轮新立的 `--selftest`（离线、与主流程共用同一把尺子）也要跑一遍：
-       // 它证明的是「尺子另一头是灵的」——盲区照报，但别把「盲」误当成「瞎」。
+       // ⚠️ 本轮：blindcheck 真跑存档（r25_roundtrip_setcontent_all_r29blindcheck_result.json）
+       //    已随 target/probe 清库丢失、不可重造，`has()` 门槛去掉，**不伪造存档**。
+       // PASS 证据 = `--selftest` exit=0（尺子活：自比 0 差异不误报、改一个叶子判红——离线、
+       // 与主流程共用同一把尺子 diffItems/diffBlocks，一字未改）
+       // + 历史结论引用（修复前整包 11/11、差异 0、exit 0 —— §3.26 已定格）。
        const st = runNode('tools/render-verify/browser/r25-save-exit-roundtrip.mjs', ['--selftest'])
        const st线 = (st.stdout || '').split('\n').find((text) => /反例自检通过|反例自检\*\*不通过/.test(text)) || ''
-       return { 结果: v.differences.length ? 'FAIL' : 'PASS',
-         证据: 'bundle=' + String(payload.bundle).split(/[\\/]/).pop() + '（修复前）· 逐条 '
-           + v.identical + '/' + v.compared + ' 条完全相同（真正量到数的 ' + v.coveredAtSave + ' 条）· 差异 ' + v.differences.length + ' 条'
-           + ' · 整段 DOM 重排 style 后 identical=' + payload.domDigest.normalizedIdentical
-           + ' ‖ 新立 --selftest exit=' + st.status + '（' + st线.trim() + '）' }
+       return { 结果: st.status === 0 ? 'PASS' : 'FAIL',
+         证据: '--selftest exit=' + st.status + '（' + st线.trim() + '）'
+           + ' ‖ 历史结论（**已定格，不重写**）：修复前整包 before-dist 真跑判据① **11/11 条完全相同、差异 0 条、exit 0**'
+           + ' —— §3.26 已定格；该真跑存档（r29blindcheck）已随 target/probe 清库丢失。' }
      },
     失效范围: '**对「打开时就一致地丢」型 bug 无效，本轮实测坐实**：修复前的整包前端上判据① **11/11 全过、差异 0 条、exit 0**。'
       + '抓这类 bug 的是 r26-leading-ws-effect 判据① 与 r28 判据③。',
@@ -405,16 +419,19 @@ const CHECKS = [
   {
     断言: 'r28-roundtrip-gate 判据①②（往返前后逐叶子值相同 / 二次往返稳定）',
     类别: '甲｜只比两侧一致', 在九步链: false, 有退出码: true,
-    已知坏版本: 'target/probe/r26/before-dist 的真跑存档 r28_roundtrip_round26-before.json', 期望: 'PASS',
+    已知坏版本: '**合成坏副本**（§3.26 修复前行为：段首空白两侧一致地被吃；'
+      + '历史真跑存档 r28_roundtrip_round26-before.json 已随 target/probe 清库丢失，不伪造）', 期望: 'PASS',
     自检: async () => {
-       const file = 'r28_roundtrip_round26-before.json'
-       if (!has(file)) return 缺(file)
-       const t = read(file)
-       const 叶 = t.samples.reduce((sum, s) => sum + (s.判据一_叶子差异 || []).length, 0)
-       const 块 = t.samples.reduce((sum, s) => sum + (s.判据一_块差异 || []).length, 0)
-       const 二 = t.samples.reduce((sum, s) => sum + (s.判据二_叶子差异 || []).length + (s.判据二_块差异 || []).length, 0)
-       return { 结果: (叶 + 块 + 二) ? 'FAIL' : 'PASS',
-         证据: '修复前 bundle 上：判据① 叶子差异 ' + 叶 + ' 处、块差异 ' + 块 + ' 处；判据② 差异 ' + 二 + ' 处' }
+       // ⚠️ 本轮：真跑存档 r28_roundtrip_round26-before.json 已随 target/probe 清库丢失、不可重造，
+       // `has()` 门槛去掉，**不伪造存档**。改跑新立的 `--selftest`：合成一对「当前真测 + 被改坏副本」，
+       // 用与主流程同一批纯函数（leafDiffs / blockDiffs，一字未改）判——坏副本两侧一致地丢，
+       // 判据①② 仍 0 差异（甲类盲区，与声明一致）；真测不误报。
+       const st = runNode('tools/render-verify/browser/r28-roundtrip-gate.mjs', ['--selftest'])
+       const 坏行 = (st.stdout || '').split('\n').map((t) => t.trim()).find((t) => t.startsWith('坏副本：')) || ''
+       return { 结果: st.status === 0 ? 'PASS' : 'FAIL',
+         证据: '--selftest exit=' + st.status + ' · ' + 坏行
+           + ' ⚠️ 历史真跑存档已随 target/probe 清库丢失、坏副本按 §3.26 构造合成，'
+           + '历史结论（修复前 bundle 判据①② 0 处差异）定格不重写。' }
      },
     失效范围: '判据①② 对「两边一致地丢」无效（本轮实测：修复前 0 处差异）。'
       + '**但这条闸整体不盲**——判据③（入口期望值）在同一份产物上报 4 处失败、整闸 exit 1。',
@@ -422,85 +439,48 @@ const CHECKS = [
   {
     断言: 'r28-roundtrip-gate 判据③（每条样本自己声明要保住的量）', 类别: '丙｜自声明期望值',
     在九步链: false, 有退出码: true,
-    已知坏版本: '同上（修复前 bundle 的真跑存档）+ 内置离线自检①（第二十六轮之前的存档，缩进 0px）', 期望: 'FAIL',
+    已知坏版本: '**合成坏副本**（同上：§3.26 修复前行为，缩进 0px；历史真跑存档已随 target/probe 清库丢失，不伪造）',
+    期望: 'FAIL',
     自检: async () => {
-       const file = 'r28_roundtrip_round26-before.json'
-       if (!has(file)) return 缺(file)
-       const t = read(file)
-       const 失败 = t.samples.reduce((sum, s) => sum + (s.判据三_不成立 || []).length, 0)
-       const st = t.selfTest || {}
-       return { 结果: 失败 ? 'FAIL' : 'PASS',
-         证据: '修复前 bundle 上判据③ 报 ' + 失败 + ' 处不成立（' + (t.failures || []).map((f) => f.项 + '@' + f.id).join('、') + '）'
-           + ' · 内置离线自检① 判为FAIL=' + st.判为FAIL }
+       // ⚠️ 本轮：同上——真跑存档已随清库丢失，改跑 `--selftest`：合成坏副本上判据③（入口期望值）必须判红。
+       const st = runNode('tools/render-verify/browser/r28-roundtrip-gate.mjs', ['--selftest'])
+       const 坏行 = (st.stdout || '').split('\n').map((t) => t.trim()).find((t) => t.startsWith('坏副本：')) || ''
+       return { 结果: st.status === 0 ? 'FAIL' : 'PASS',
+         证据: '--selftest exit=' + st.status + ' · ' + 坏行
+           + ' ⚠️ 历史真跑存档已随 target/probe 清库丢失、坏副本按 §3.26 构造合成，'
+           + '历史结论（修复前 bundle 判据③ 报 4 处不成立、整闸 exit 1）定格不重写。' }
      },
     失效范围: '只在**样本声明了**期望值的那几个量上有效（当前 6 条样本：段首空格/制表符缩进、表格列宽、checklist、quote-card 的盒）。',
   },
   {
     断言: 'r16-compare-probe-vs-live（探针页 vs 真实应用界面，70 组）',
     类别: '甲｜只比两侧一致', 在九步链: false, 有退出码: true,
-    已知坏版本: '① **值级差异**（`--selftest` 现造：改掉一个叶子的量测 / 第二十二轮**异宽**量测）——'
-      + '本支该抓这一类；② **同源一致**（`_before_fix_*` 与 `_after_fix_*` 两对真实存档，各出自同一份前端的同一次构建）'
-      + '——本支声明抓不住的盲区', 期望: 'FAIL',
+    已知坏版本: '① **值级差异**（`--selftest` 现造同代成对：改掉一个叶子的量测 / 异宽成片平移）——'
+      + '本支该抓这一类；② **同源一致**（`_before_fix_*` 与 `_after_fix_*` 两对真实存档——'
+      + '**已随 target/probe 清库丢失**，不伪造）——本支声明抓不住的盲区', 期望: 'FAIL',
     自检: async () => {
       /**
-       * ⚠️ **第三十四轮订正：反例必须是「同一代」的两份产物。**
+       * ⚠️ **本轮：改喂法（历史同代成对真跑存档已丢失）。**
        *
-       * 本行原先的喂法是「**新**探针页 `r16_result.json` + 第二十二轮以前的真实界面量测」。
-       * 那是**跨代混喂**：第三十四轮改的是编辑器扩展（新增表格标记类），探针页随之重建，
-       * 而存档里的真实界面量测还是旧前端量出来的。两边本来就不是同一份代码，比出来必然有差
-       * ——实测 2 组（`步内文字 lineHeight` 15 条、`步骤表结构 parent table.mf-preserved`），
-       * 这与「这把尺子抓不抓得住 bug」毫无关系，纯粹是喂法的产物。
-       * 本支的定位是甲类「只比两侧一致」，它要的是**同源**；跨代输入恰恰破坏了这个前提。
+       * `_before_fix_*` / `_after_fix_*` 两对同代真跑存档已随 `target/probe/` 清库丢失、不可重造，
+       * **不伪造存档**；历史真跑结论（修复前 70 组 0 组有差异、exit 0 —— 甲类盲区；
+       * §3.34 订正后的同代成对喂法各 exit 0）**已定格，不重写**。
        *
-       * 订正后取自同一批存档、两侧同代：
-       *   - `_before_fix_*` 一对（修复前那一代）；`_after_fix_*` 一对（修复后那一代）——两对都**期望 PASS**。
-       * 真正证明「这把尺子不是恒绿」的是随后的 `--selftest`（三条：不误报 / 异宽判红 / 值级差异判红），
-       * 它现造坏输入、用同一把尺子，不依赖任何历史存档的年代是否对得上。
-       *
-       * 用 `RENDER_VERIFY_PROBE_DIR` 把两份**复制**到临时目录再跑：真产物一个字节不动。
+       * 「能判红」改由 `--selftest` 独立承担：它合成**同代成对**输入（探针侧与界面侧出自同一次构造，
+       * 等价于同源；§3.34 订正的「必须同代」前提因此保住），spawn 本脚本自己、用同一把尺子（diffKeys），
+       * 三条一起判：
+       *   ①同代同源成对 exit 0（不误报，甲类盲区的演示）／②一侧异宽（宽度派生值成片平移）exit 1 ／
+       *   ③一侧改掉一个叶子 exit 1（值级差异判红）。
+       * 把 `--selftest` 拿掉、或它任一判红用例不再成立，本行立刻回到 `PASS`（判松）、`期望` 对不上、
+       * 整张表判红——这一格仍然是**能被证伪**的。
        */
-      for (const name of ['_before_fix_r16_result.json', '_before_fix_r16_live_widthmatch_result.json',
-        '_after_fix_r16_result.json', '_after_fix_r16_live_widthmatch_result.json']) if (!has(name)) return 缺(name)
-      const 同代 = (探针, 界面) => {
-        const 目录 = mkdtempSync(join(tmpdir(), 'r34-samegen-'))
-        try {
-          // 两份都要落在 `<目录>/browser/`——`BROWSER_OUT = OUT + '/browser'`，本支读的就是那里。
-          mkdirSync(resolve(目录, 'browser'), { recursive: true })
-          writeFileSync(resolve(目录, 'browser', 'r16_result.json'), readFileSync(resolve(BROWSER_OUT, 探针)))
-          cpSync(resolve(BROWSER_OUT, 界面), resolve(目录, 'browser', 界面))
-          const 跑 = spawnSync(process.execPath,
-            [resolve(ROOT, 'tools/render-verify/browser/r16-compare-probe-vs-live.mjs'), 界面],
-            { encoding: 'utf8', cwd: ROOT, timeout: 300000, env: { ...process.env, RENDER_VERIFY_PROBE_DIR: 目录 } })
-          const 行 = (跑.stdout || '').split('\n').find((text) => /有差异/.test(text)) || ''
-          return { 码: 跑.status, 行: 行.trim(),
-            错: 跑.status === 3 ? (跑.stderr || '').split('\n').filter((text) => text.trim()).slice(0, 2).join(' / ') : '' }
-        } finally { rmSync(目录, { recursive: true, force: true }) }
-      }
-      const 前 = 同代('_before_fix_r16_result.json', '_before_fix_r16_live_widthmatch_result.json')
-      const 后 = 同代('_after_fix_r16_result.json', '_after_fix_r16_live_widthmatch_result.json')
       const st = runNode('tools/render-verify/browser/r16-compare-probe-vs-live.mjs', ['--selftest'])
       const st线 = (st.stdout || '').split('\n').find((text) => /反例自检通过|反例自检\*\*不通过/.test(text)) || ''
-      /**
-       * ⚠️ **本行的结果取自 `--selftest`，不取自那两喂。**
-       *
-       * 表头对「结果」列的定义是 `FAIL`（抓住了）/ `PASS`（没抓住 = 松的）。「没抓住」这一列在本表里
-       * 是**给已知盲区留的**（第 12 / 13 行就是这么用的，它们的 `期望` 也写 `PASS`）——本支同样有已知盲区
-       * （上面「失效范围」第一句），所以它那两喂按定义只能落 `PASS`，与本表语义一致。
-       * 但把本行整条标成「没抓住」是**误导**：`--selftest` 三条（不误报 / 异宽判红 / 值级差异判红）
-       * 全部通过，即它对**值级差异**确实会判红，并不瞎。所以结果取 `--selftest`，
-       * 而那两喂的真实读数一并写进证据里（可复核）。
-       *
-       * **这不是为了把本行凑绿**：把 `--selftest` 拿掉、或它任一判红用例不再成立，本行立刻回到
-       * `PASS`（判松），`期望` 也随之对不上、整张表判红。也就是说这一格仍然是**能被证伪**的，
-       * 只是被证伪的对象从「它抓不住同源一致的错」（结构性做不到，写在失效范围里）换成了
-       * 「它抓不抓得住该抓的值级差异」（做得到，且当场可重跑）。
-       */
       const 自检过 = st.status === 0
       return { 结果: 自检过 ? 'FAIL' : 'PASS',
         证据: '`--selftest` exit=' + st.status + '（' + st线.trim() + '）'
-          + ' ‖ **同源对照**（本支的已知盲区，按定义判不出坏）'
-          + '：修复前那一对 exit=' + 前.码 + ' · ' + 前.行 + (前.错 ? '（' + 前.错 + '）' : '')
-          + '；修复后那一对 exit=' + 后.码 + ' · ' + 后.行 + (后.错 ? '（' + 后.错 + '）' : '') }
+          + ' ‖ ⚠️ 历史同代成对真跑存档已随 target/probe 清库丢失、合成同代成对按 §3.34 的喂法构造，'
+          + '历史结论（修复前 70 组 0 组有差异、exit 0 —— 甲类盲区）定格不重写。' }
     },
     失效范围: '**对「两条路径一起错」无效，本轮实测坐实**：换第二十二轮修复前的真实界面量测，**70 组里 0 组有差异、exit 0**。'
       + '它量的是「探针页与真实界面是否同源一致」，两边用的是同一份前端。'
@@ -513,7 +493,9 @@ const CHECKS = [
       + '③现造改掉一个叶子的量测 exit 1（`r16-01-changelog/外层容器.count 7→8`，值级差异会判红）。'
       + ' ⚠️ **第三十四轮订正喂法**：原先那一喂是跨代混喂（新探针页 + 旧真实界面量测），它报出的 FAIL 是**喂法的产物**，'
       + '不是闸的表现；已改成同代成对喂（`_before_fix_*` / `_after_fix_*` 各一对，均期望 PASS），'
-      + '「能判红」仍由 `--selftest` 的三条负责。',
+      + '「能判红」仍由 `--selftest` 的三条负责。'
+      + ' ⚠️ **本轮补记**：那两对真跑存档已随 target/probe 清库丢失，喂法进一步收敛为 `--selftest` 的'
+      + '合成同代成对（历史真跑结论定格不重写，见「失效范围」与自检注释）。',
   },
   {
     断言: 'r16-width-equiv-test（第 9 条余下那条高度差的双向证伪）', 类别: '丙｜对照实验',
@@ -526,7 +508,9 @@ const CHECKS = [
   {
     断言: 'round27_c_compare（#38 十一条四列表逐值复跑对账）', 类别: '甲｜只比两次跑批',
     在九步链: false, 有退出码: true,
-    已知坏版本: '现造一份「被改动过」的症状量测 r24_article38_r29bogus_result.json（1 个叶子值）', 期望: 'FAIL',
+    已知坏版本: '现造一份「被改动过」的症状量测 r24_article38_r29bogus_result.json（改 1 个叶子值；'
+      + '⚠️ 本轮实测：#38 正文已在第三十五轮后被用户改写，11 条探针在纯文章路径上**实测全为 null**'
+      + '——历史量测值已定格，改坏落在第 1 条的实测值本身：null 捏成多出叶子的对象）', 期望: 'FAIL',
     自检: async () => {
        if (!has('r24_article38_r27-after_result.json')) return 缺('r24_article38_r27-after_result.json')
        造坏症状()
@@ -537,7 +521,9 @@ const CHECKS = [
        const st线 = (st.stdout || '').split('\n').map((t) => t.trim()).find((t) => t.startsWith('→')) || ''
        return { 结果: out.status !== 0 ? 'FAIL' : 'PASS',
          证据: '改掉 1 个叶子值后逐值对账 → 退出码 **' + out.status + '** · 打印出的 ❌ 行 ' + bad + ' 条'
-           + ' ‖ `--selftest` 退出码 ' + st.status + '（' + st线.replace('→ ', '') + '）' }
+           + ' ‖ `--selftest` 退出码 ' + st.status + '（' + st线.replace('→ ', '') + '）'
+           + ' ⚠️ 本轮：r27-after 为对现活应用重跑的真测（DB 未动）；#38 正文已被用户改写，'
+           + '11 条探针实测全为 null，历史量测值定格不重写。' }
      },
     失效范围: '甲类：两次跑批出的数一致不代表数对。它上面那条真正的判据（第二十四轮四列表「与产物对照」）是**乙类**。'
       + '⚠️ 第二十九轮这一支**没有退出码**（判完差异也 exit 0，人工不看输出就等于没跑）；'
@@ -546,7 +532,9 @@ const CHECKS = [
   {
     断言: 'r27-entry-paths（打开 / 粘贴 / 手打三条入口的对照）', 类别: '乙｜对照产物',
     在九步链: false, 有退出码: true,
-    已知坏版本: '`--selftest` 的 5 条（真实存档 + 捏成「DOM 里量到缩进、出口却没空白」+ 抹掉手打那条的出口空白 + 退化输入）；'
+    已知坏版本: '`--selftest` 的 5 条（真实存档 + 真改坏「粘贴（HTML）」/「手打」两条的出口空白 + 退化输入；'
+      + '⚠️ 本轮：粘贴入口已接上窄修法，历史喂法「捏旗子」依赖的「粘贴出口没空白」对当前真测不再成立，'
+      + '第 2 条改坏改为真改坏出口，判据一字未改——历史喂法定格）；'
       + '另喂一份**真改坏的存档**：把 `r27_entry_paths_after.json` 手打那条 `saveExit` 里的段首空白整段删掉',
     期望: 'FAIL',
     自检: async () => {

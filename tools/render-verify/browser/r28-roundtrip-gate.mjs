@@ -36,7 +36,12 @@
  * 闸的**自检**（防「写松了」）：
  *   ① 离线：拿第二十六轮之前的**存档实测**（`r27_entry_paths_before.json` 里 `setcontent` 那条路的
  *      真实 DOM 缩进 = 0px）套用判据③同一套阈值，必须判 **FAIL**；
- *   ② 实跑：`--bundle target/probe/r26/before-dist`（修复前的整包前端）跑同一套断言，必须 **exit 1**。
+ *      （⚠️ 本轮：该存档已随 `target/probe/` 清库丢失，不在时**跳过、不影响退出码**——行为与原设计一致。）
+ *   ② 实跑：`--bundle target/probe/r26/before-dist`（修复前的整包前端）跑同一套断言，必须 **exit 1**；
+ *   ③ **`--selftest`（本轮新立，纯离线）**：历史真跑存档 `r28_roundtrip_round26-before.json` 也已随清库丢失，
+ *      改为合成一对「当前真测 + 被改坏副本（§3.26 修复前行为）」，用与主流程同一批纯函数
+ *      （`leafDiffs` / `blockDiffs` / `invariants`，一字未改）判：真测不误报、坏副本上判据①② 仍 PASS
+ *      （甲类盲区与声明一致）、判据③ 判红。历史真跑结论（修复前 ①② 0 处差异、③ 4 处不成立）定格不重写。
  *
  * ⚠️ **不写生产数据**：应用层拦下 `PUT`（拦到的 body 就是「保存出口」）+ CDP `Fetch.failRequest`
  * 兜底 + 跑完回读 `revision`/`updatedAt` 逐字比对。
@@ -44,6 +49,7 @@
  * 用法：
  *     node tools/render-verify/browser/r28-roundtrip-gate.mjs
  *     node tools/render-verify/browser/r28-roundtrip-gate.mjs --label round26-before --bundle target/probe/r26/before-dist
+ *     node tools/render-verify/browser/r28-roundtrip-gate.mjs --selftest   # 纯离线反例自检（合成），不开浏览器
  * 产物：target/probe/browser/r28_roundtrip_<label>.json
  *       target/probe/browser/r28_dom_<label>/<样本>.<第几圈>.html
  */
@@ -65,6 +71,141 @@ const PORT = Number(argOf('--port', '9367'))
 const ARTICLE_ID = 38
 if (BUNDLE && !existsSync(resolve(BUNDLE, 'index.html'))) { console.error('--bundle 目录里没有 index.html'); process.exit(3) }
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
+
+/**
+ * 只把 `style` 属性值里的声明按字典序重排（与叶子口径里那条唯一的规范化同一个东西）。
+ * 用来回答「两份出口字节不同」到底是**声明顺序**还是**实质差异**——不作判据，只作解释。
+ * （⚠️ 本轮从主流程中部上移到这里：`--selftest` 要在登录/起浏览器之前用到这批纯函数，函数本体一字未改。）
+ */
+const canonHtml = (html) => html.replace(/style="([^"]*)"/g, (whole, value) => 'style="'
+  + value.split(';').map((part) => part.trim()).filter(Boolean).sort().join(';') + '"')
+const leafDiffs = (a, b) => {
+  const left = new Map(a.leaves.map((leaf) => [leaf.p, leaf]))
+  const right = new Map(b.leaves.map((leaf) => [leaf.p, leaf]))
+  const diffs = []
+  for (const path of new Set([...left.keys(), ...right.keys()])) {
+    const one = left.get(path)
+    const other = right.get(path)
+    if (JSON.stringify(one) === JSON.stringify(other)) continue
+    diffs.push({ 路径: path, 保存时: one ?? '(没有这个节点)', 再打开后: other ?? '(没有这个节点)' })
+  }
+  return diffs
+}
+const blockDiffs = (a, b) => {
+  const diffs = []
+  const total = Math.max(a.blocks.length, b.blocks.length)
+  for (let index = 0; index < total; index += 1) {
+    const one = a.blocks[index]
+    const other = b.blocks[index]
+    if (JSON.stringify(one) === JSON.stringify(other)) continue
+    diffs.push({ 第几块: index, 保存时: one ?? '(没有这一块)', 再打开后: other ?? '(没有这一块)' })
+  }
+  return diffs
+}
+const digest = (text) => createHash('sha256').update(text || '', 'utf8').digest('hex').slice(0, 16)
+
+/** 判据③ 的三种谓词，全部在 Node 侧判，规则写死在样本声明里。 */
+const invariants = (sample, snap, 入口HTML) => {
+  const fails = []
+  if (sample.期望缩进) {
+    const hit = snap.blocks.find((block) => block.text.includes(sample.期望缩进.锚点))
+    if (!hit) fails.push({ 项: '期望缩进', 说明: '往返后在正文里找不到锚点块「' + sample.期望缩进.锚点 + '」' })
+    else if (hit.缩进 === null || hit.缩进 < sample.期望缩进.至少) {
+      fails.push({ 项: '期望缩进', 说明: '锚点块「' + sample.期望缩进.锚点 + '」的段首缩进 ' + hit.缩进
+        + 'px < 要求的 ' + sample.期望缩进.至少 + 'px' })
+    }
+  }
+  if (sample.列宽一致) {
+    // 入口的声明从样本 HTML 上读，往返后的声明从**实时 DOM 上的 `<col>` 元素**上读，
+    // 两侧用的是同一份规则（colwidth-rules.mjs，与 U10 那道闸共用一个定义）。
+    const entry = widthsOf(入口HTML)
+    const here = snap.cols.map(declaredWidth)
+    if (JSON.stringify(entry) !== JSON.stringify(here)) {
+      fails.push({ 项: '列宽一致', 说明: '入口声明 ' + JSON.stringify(entry) + ' → 往返后 ' + JSON.stringify(here) })
+    }
+  }
+  for (const rule of sample.元素盒 || []) {
+    const boxes = snap.boxes[rule.选择器] || []
+    const hit = boxes.filter(rule.谓词).length
+    if (hit < rule.至少) {
+      fails.push({ 项: '元素盒', 说明: rule.说明 + '：`' + rule.选择器 + '` 里满足条件的只有 ' + hit
+        + ' 个（要求至少 ' + rule.至少 + ' 个）· 实得盒 ' + JSON.stringify(boxes.slice(0, 8)) })
+    }
+  }
+  if (sample.至少零间距段落 && snap.段落margin零 < sample.至少零间距段落) {
+    fails.push({ 项: '零间距段落', 说明: '往返后上下 margin 都是 0 的有文字的段落只剩 ' + snap.段落margin零
+      + ' 个（要求至少 ' + sample.至少零间距段落 + ' 个）——金句卡里那层合成段落一旦重新拿到间距，卡片就会凭空变高' })
+  }
+  if (sample.至少顶层块 && snap.blocks.length < sample.至少顶层块) {
+    fails.push({ 项: '顶层块数', 说明: '往返后只剩 ' + snap.blocks.length + ' 块（要求至少 ' + sample.至少顶层块 + '）' })
+  }
+  return fails
+}
+
+// ---------- `--selftest`：纯离线反例自检（合成一对「当前真测 + 被改坏副本」），不开浏览器、不连库 ----------
+// ⚠️ 历史真跑存档 `r28_roundtrip_round26-before.json`（`--bundle target/probe/r26/before-dist` 那一跑）
+//    已随 `target/probe/` 清库丢失，**不伪造存档**；历史结论（修复前 bundle：判据①② **0 处差异**
+//    —— 两侧一致地丢，甲类盲区；判据③ 报 **4 处**不成立、整闸 exit 1）**已定格，不重写**。
+// 反例改按 §3.26 的坏版本构造**合成**：用上面同一批纯函数（`leafDiffs` / `blockDiffs` / `invariants`，一字未改），
+// 合成一对「当前真测（窄修法生效：段首空白活着）＋ 被改坏副本（修复前行为：段首空白两侧一致地被吃）」：
+//   · 真测：判据①② 0 差异、判据③ 0 失败（不误报）
+//   · 坏副本：判据①② 仍 0 差异（＝甲类盲区的演示：两侧一致地丢，①② 的口径结构性抓不住）
+//             判据③ 失败（＝入口期望值这一格抓得住）
+// 任一不符 **exit 1**。
+if (ARGS.includes('--selftest')) {
+  const 样本 = { id: 'lead-space', 说明: '段首 2 个半角空格（合成自检）',
+    html: '<p>  LEAD-SP</p><p>PLAIN</p>', 期望缩进: { 锚点: 'LEAD-SP', 至少: 5 } }
+  const INDENT = 6.72  // 2 个半角空格的实测宽度（第二十六轮）：窄修法生效时段首空白以 &nbsp; 活着并占位
+  const 快照 = (存活) => ({
+    left: 702, top: 0, whiteSpace: 'normal', html: '',
+    leaves: [{ p: '/0/0', k: 't', v: 存活 ? '\u00A0\u00A0LEAD-SP' : 'LEAD-SP' }, { p: '/1/0', k: 't', v: 'PLAIN' }],
+    blocks: [
+      { tag: 'p', text: 存活 ? '\u00A0\u00A0LEAD-SP' : 'LEAD-SP', dy: 0, h: 27,
+        首字符x: 存活 ? 702 + INDENT : 702, 缩进: 存活 ? INDENT : 0 },
+      { tag: 'p', text: 'PLAIN', dy: 40, h: 27, 首字符x: 702, 缩进: 0 },
+    ],
+    boxes: {}, cols: [], 段落margin零: 2,
+  })
+  // 当前真测：A（保存时）/ B（第一次往返）/ C（第二次往返）三份快照逐叶子值相同。
+  const A = 快照(true), B = 快照(true), C = 快照(true)
+  // 被改坏副本（§3.26 修复前行为）：把 A/B/C 的段首空白**两侧一致地**剥掉——
+  // 这正是旧前端「打开和再打开一致地丢」的形态，判据①② 对它结构性失明，判据③ 要接住。
+  const 坏A = JSON.parse(JSON.stringify(A))
+  for (const leaf of 坏A.leaves) if (leaf.p === '/0/0') leaf.v = 'LEAD-SP'
+  坏A.blocks[0].text = 'LEAD-SP'
+  坏A.blocks[0].缩进 = 0
+  坏A.blocks[0].首字符x = 702
+  const 坏B = JSON.parse(JSON.stringify(坏A)), 坏C = JSON.parse(JSON.stringify(坏A))
+
+  const 真测一 = leafDiffs(A, B), 真测一块 = blockDiffs(A, B)
+  const 真测二 = leafDiffs(B, C), 真测二块 = blockDiffs(B, C)
+  const 真测三 = invariants(样本, B, 样本.html)
+  const 坏一 = leafDiffs(坏A, 坏B), 坏一块 = blockDiffs(坏A, 坏B)
+  const 坏二 = leafDiffs(坏B, 坏C), 坏二块 = blockDiffs(坏B, 坏C)
+  const 坏三 = invariants(样本, 坏B, 样本.html)
+
+  console.log('反例自检（**合成**「当前真测 + 被改坏副本」，非真跑存档）：构造 = §3.26 修复前行为（段首空白两侧一致地被吃）')
+  console.log('  历史真跑存档 r28_roundtrip_round26-before.json 已随 target/probe 清库丢失；'
+    + '历史结论（修复前 bundle：判据①② 0 处差异、判据③ 报 4 处不成立、整闸 exit 1）定格不重写。')
+  console.log('  真测：判据① 叶子差异 ' + 真测一.length + '/块差异 ' + 真测一块.length
+    + ' · 判据② 差异 ' + (真测二.length + 真测二块.length)
+    + ' · 判据③ 失败 ' + 真测三.length + '（期望全 0：不误报）')
+  console.log('  坏副本：判据① 叶子差异 ' + 坏一.length + '/块差异 ' + 坏一块.length
+    + ' · 判据② 差异 ' + (坏二.length + 坏二块.length)
+    + '（两侧一致地丢 → 按声明仍是 0：甲类盲区）· 判据③ 失败 ' + 坏三.length
+    + (坏三.length ? '（' + 坏三.map((f) => f.项 + '：' + f.说明).join('；') + '）' : ''))
+  const 不误报 = 真测一.length === 0 && 真测一块.length === 0 && 真测二.length === 0 && 真测二块.length === 0
+    && 真测三.length === 0
+  const 盲区如声明 = 坏一.length === 0 && 坏一块.length === 0 && 坏二.length === 0 && 坏二块.length === 0
+  const 抓住 = 坏三.length > 0
+  console.log('  → 真测不误报: ' + (不误报 ? '是 ✅' : '否 ❌'))
+  console.log('  → 坏副本上判据①② 仍判 PASS（甲类盲区，与声明一致）: ' + (盲区如声明 ? '是 ✅' : '否 ❌'))
+  console.log('  → 判据③抓住坏副本: ' + (抓住 ? '是 ✅' : '否 ❌（闸写松了）'))
+  const 全对 = 不误报 && 盲区如声明 && 抓住
+  console.log(全对 ? '→ 合成自检通过：判据①②的盲区与声明一致、判据③抓得住坏副本、真测不误报；历史结论定格不重写。'
+    : '→ 合成自检**不通过**：本支的判定与上面任一条不符，必须查。')
+  process.exit(全对 ? 0 : 1)
+}
 
 const artifact = (name) => {
   const file = resolve(OUT, 'r16', name + '.html')
@@ -347,75 +488,6 @@ const saveAndCapture = async () => {
   }
   await sleep(2600)
   return JSON.parse(await page.evaluate(`JSON.stringify(window.__writeGuard.lastSave || null)`))
-}
-
-/**
- * 只把 `style` 属性值里的声明按字典序重排（与叶子口径里那条唯一的规范化同一个东西）。
- * 用来回答「两份出口字节不同」到底是**声明顺序**还是**实质差异**——不作判据，只作解释。
- */
-const canonHtml = (html) => html.replace(/style="([^"]*)"/g, (whole, value) => 'style="'
-  + value.split(';').map((part) => part.trim()).filter(Boolean).sort().join(';') + '"')
-const leafDiffs = (a, b) => {
-  const left = new Map(a.leaves.map((leaf) => [leaf.p, leaf]))
-  const right = new Map(b.leaves.map((leaf) => [leaf.p, leaf]))
-  const diffs = []
-  for (const path of new Set([...left.keys(), ...right.keys()])) {
-    const one = left.get(path)
-    const other = right.get(path)
-    if (JSON.stringify(one) === JSON.stringify(other)) continue
-    diffs.push({ 路径: path, 保存时: one ?? '(没有这个节点)', 再打开后: other ?? '(没有这个节点)' })
-  }
-  return diffs
-}
-const blockDiffs = (a, b) => {
-  const diffs = []
-  const total = Math.max(a.blocks.length, b.blocks.length)
-  for (let index = 0; index < total; index += 1) {
-    const one = a.blocks[index]
-    const other = b.blocks[index]
-    if (JSON.stringify(one) === JSON.stringify(other)) continue
-    diffs.push({ 第几块: index, 保存时: one ?? '(没有这一块)', 再打开后: other ?? '(没有这一块)' })
-  }
-  return diffs
-}
-const digest = (text) => createHash('sha256').update(text || '', 'utf8').digest('hex').slice(0, 16)
-
-/** 判据③ 的三种谓词，全部在 Node 侧判，规则写死在样本声明里。 */
-const invariants = (sample, snap, 入口HTML) => {
-  const fails = []
-  if (sample.期望缩进) {
-    const hit = snap.blocks.find((block) => block.text.includes(sample.期望缩进.锚点))
-    if (!hit) fails.push({ 项: '期望缩进', 说明: '往返后在正文里找不到锚点块「' + sample.期望缩进.锚点 + '」' })
-    else if (hit.缩进 === null || hit.缩进 < sample.期望缩进.至少) {
-      fails.push({ 项: '期望缩进', 说明: '锚点块「' + sample.期望缩进.锚点 + '」的段首缩进 ' + hit.缩进
-        + 'px < 要求的 ' + sample.期望缩进.至少 + 'px' })
-    }
-  }
-  if (sample.列宽一致) {
-    // 入口的声明从样本 HTML 上读，往返后的声明从**实时 DOM 上的 `<col>` 元素**上读，
-    // 两侧用的是同一份规则（colwidth-rules.mjs，与 U10 那道闸共用一个定义）。
-    const entry = widthsOf(入口HTML)
-    const here = snap.cols.map(declaredWidth)
-    if (JSON.stringify(entry) !== JSON.stringify(here)) {
-      fails.push({ 项: '列宽一致', 说明: '入口声明 ' + JSON.stringify(entry) + ' → 往返后 ' + JSON.stringify(here) })
-    }
-  }
-  for (const rule of sample.元素盒 || []) {
-    const boxes = snap.boxes[rule.选择器] || []
-    const hit = boxes.filter(rule.谓词).length
-    if (hit < rule.至少) {
-      fails.push({ 项: '元素盒', 说明: rule.说明 + '：`' + rule.选择器 + '` 里满足条件的只有 ' + hit
-        + ' 个（要求至少 ' + rule.至少 + ' 个）· 实得盒 ' + JSON.stringify(boxes.slice(0, 8)) })
-    }
-  }
-  if (sample.至少零间距段落 && snap.段落margin零 < sample.至少零间距段落) {
-    fails.push({ 项: '零间距段落', 说明: '往返后上下 margin 都是 0 的有文字的段落只剩 ' + snap.段落margin零
-      + ' 个（要求至少 ' + sample.至少零间距段落 + ' 个）——金句卡里那层合成段落一旦重新拿到间距，卡片就会凭空变高' })
-  }
-  if (sample.至少顶层块 && snap.blocks.length < sample.至少顶层块) {
-    fails.push({ 项: '顶层块数', 说明: '往返后只剩 ' + snap.blocks.length + ' 块（要求至少 ' + sample.至少顶层块 + '）' })
-  }
-  return fails
 }
 
 const records = []

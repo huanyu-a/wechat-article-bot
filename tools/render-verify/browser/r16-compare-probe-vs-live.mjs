@@ -19,9 +19,10 @@
  *    真正管「值对不对」的是 `summarize-r16.mjs`（参照栏 = 渲染服务产物，乙类）。
  *    另立 `--selftest` 证明它对**值级差异**确实会判红（不免疫 ≠ 瞎）。
  */
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { resolve } from 'node:path'
+import { resolve, join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { BROWSER_OUT, ROOT } from '../paths.mjs'
 
 const ARGS = process.argv.slice(2)
@@ -35,76 +36,56 @@ const IGNORED_KEYS = new Set(['inline', 'parentInline', 'src'])
 // ---------------------------------------------------------------------------
 // `--selftest`：**反例自检** —— 证明这把尺子不是恒绿的。
 //
-// 做法：拿三份输入 spawn 本脚本自己（`process.argv[1]`），**用的就是同一把尺子**，
-// 不复制判定逻辑——这是第二十九轮 A 对「反例自检」的要求：自检必须走真判据，
-// 不能另写一套「看起来一样」的比较器。
-//   ① 当前包（同宽）             → 必须 exit 0（不误报）
-//   ② 第二十二轮**异宽**那次量测 → 必须 exit 1（真能判红：宽度派生值成片平移）
-//   ③ 现造一份改掉一个叶子的量测 → 必须 exit 1（真能判红：值级差异）
+// ⚠️ 本轮：历史同代成对真跑存档（`_before_fix_*` / `_after_fix_*` 两对、第二十二轮异宽的
+//    `r16_live_result.json`、以及原自检 ①③ 依赖的 `r16_live_widthmatch_result.json`）
+//    已随 `target/probe/` 清库丢失，**不伪造存档**；历史真跑结论（修复前 70 组 0 组有差异、exit 0
+//    —— 甲类盲区；§3.34 订正后的同代成对喂法各 exit 0）**已定格，不重写**。
+//
+// 自检改为**自含合成**：现造「同代成对」输入 —— 探针侧与界面侧出自同一次构造（等价于同源），
+// 写进临时目录、用 `RENDER_VERIFY_PROBE_DIR` 指过去 spawn 本脚本自己判
+// （`diffKeys` 那把尺子原样生效，不复制判定逻辑）：
+//   ① 同代同源成对（逐项相同）              → 必须 exit 0（不误报；甲类盲区的演示）
+//   ② 同代成对，一侧「异宽」（宽度派生值成片平移）→ 必须 exit 1（尺子对成片平移会判红）
+//   ③ 同代成对，一侧改掉一个叶子值           → 必须 exit 1（尺子对值级差异会判红）
 // 三条都成立才 exit 0；任何一条相反即说明闸写松了。
 // ---------------------------------------------------------------------------
 if (ARGS.includes('--selftest')) {
   const 本脚本 = resolve(process.argv[1])
-  const run = (file) => spawnSync(process.execPath, file ? [本脚本, file] : [本脚本],
-    { encoding: 'utf8', cwd: ROOT, timeout: 120000 })
-
-  /** 在探针量测里找**一个**非图片、非忽略键的数值叶子——改它一个就够了。 */
-  const 找叶子 = (node, path = '') => {
-    if (!node || typeof node !== 'object') return null
-    for (const key of Object.keys(node)) {
-      if (IGNORED_KEYS.has(key)) continue
-      const value = node[key]
-      const at = path ? `${path}.${key}` : key
-      if (typeof value === 'number' && !/(^|\.)(complete|natural|box|wrapperBox)(\.|$)/.test(at)) {
-        return { 宿主: node, 键: key, at, 值: value }
-      }
-      if (value && typeof value === 'object') {
-        const hit = 找叶子(value, at)
-        if (hit) return hit
-      }
-    }
-    return null
-  }
-
-  const bogus = (() => {
-    const source = resolve(BROWSER_OUT, 'r16_live_widthmatch_result.json')
-    if (!existsSync(source)) return null
-    const payload = JSON.parse(readFileSync(source, 'utf8'))
-    for (const item of payload.results) {
-      for (const entry of item.editor.probes) {
-        if (entry.editor?.kind === 'img') continue
-        const hit = 找叶子(entry.editor)
-        if (!hit) continue
-        hit.宿主[hit.键] = hit.值 + 1
-        const file = resolve(BROWSER_OUT, 'r16_live_r29bogus_result.json')
-        writeFileSync(file, JSON.stringify(payload, null, 1), 'utf8')
-        return { file, 改了: `${item.id}/${entry.probe}.${hit.at} ${hit.值}→${hit.值 + 1}` }
-      }
-    }
-    return null
-  })()
-
+  const 编辑器侧 = (覆盖 = {}) => ({ kind: 'text', textLength: 96, fontSize: '16px', lineHeight: '27px',
+    boxWidth: 731, ...(覆盖 || {}) })
+  const 探针档 = (侧) => ({ samples: [{ id: 'selftest-sample',
+    probes: [{ probe: '外层容器', editor: 侧 }] }] })
+  const 界面档 = (侧) => ({ mode: 'selftest', widthMatch: true, articleId: 0,
+    results: [{ id: 'selftest-sample', editor: { textLength: 96, probes: [{ probe: '外层容器', editor: 侧 }] },
+      expectedTextLength: 96 }] })
   const 用例 = [
-    { 名: '① 当前包（同宽）· 不误报', 期望: 0, 参数: [] },
-    { 名: '② 第二十二轮异宽量测 · 应判红', 期望: 1, 参数: ['r16_live_result.json'], 前置: 'r16_live_result.json' },
-    { 名: '③ 现造改一个叶子的量测 · 应判红', 期望: 1, 参数: bogus ? [bogus.file] : null },
+    { 名: '① 同代同源成对（逐项相同）· 不误报', 期望: 0, 探针: 编辑器侧(), 界面: 编辑器侧() },
+    { 名: '② 同代成对 · 一侧异宽（宽度派生值成片平移）· 应判红', 期望: 1,
+      探针: 编辑器侧(), 界面: 编辑器侧({ boxWidth: 684, lineHeight: '25px' }) },
+    { 名: '③ 同代成对 · 一侧改掉一个叶子值 · 应判红', 期望: 1,
+      探针: 编辑器侧(), 界面: 编辑器侧({ textLength: 97 }) },
   ]
-  if (bogus) console.log('反例自检 · 现造坏量测改的是：' + bogus.改了 + '（' + bogus.file + '）')
   let 全对 = true
-  for (const item of 用例) {
-    if (!item.参数) { console.log(`  ${item.名}：未做（缺前置产物）`); 全对 = false; continue }
-    if (item.前置 && !existsSync(resolve(BROWSER_OUT, item.前置))) {
-      console.log(`  ${item.名}：未做（缺 ${item.前置}）`); 全对 = false; continue
-    }
-    const out = run(item.参数[0])
-    const line = (out.stdout || '').split('\n').find((text) => /有差异/.test(text)) || ''
-    const 实际 = out.status === 0 ? 0 : 1
-    const ok = 实际 === item.期望
-    全对 = 全对 && ok
-    console.log(`  ${item.名}：exit=${out.status}（期望 ${item.期望 === 0 ? '0' : '非 0'}）`
-      + `${ok ? ' ✅' : ' ❌ 闸写松了'} · ${line.trim()}`)
+  for (const 条 of 用例) {
+    const 目录 = mkdtempSync(join(tmpdir(), 'r16-selftest-'))
+    try {
+      // 两份合成档都要落在 `<目录>/browser/`——`BROWSER_OUT = OUT + '/browser'`，本支读的就是那里。
+      mkdirSync(join(目录, 'browser'), { recursive: true })
+      writeFileSync(join(目录, 'browser', 'r16_result.json'), JSON.stringify(探针档(条.探针)), 'utf8')
+      writeFileSync(join(目录, 'browser', 'r16_selftest_live.json'), JSON.stringify(界面档(条.界面)), 'utf8')
+      const 跑 = spawnSync(process.execPath, [本脚本, 'r16_selftest_live.json'],
+        { encoding: 'utf8', cwd: ROOT, timeout: 120000,
+          env: { ...process.env, RENDER_VERIFY_PROBE_DIR: 目录 } })
+      const 行 = (跑.stdout || '').split('\n').find((text) => /有差异/.test(text)) || ''
+      const 实际 = 跑.status === 0 ? 0 : 1
+      const ok = 实际 === 条.期望
+      全对 = 全对 && ok
+      console.log(`  ${条.名}：exit=${跑.status}（期望 ${条.期望 === 0 ? '0' : '非 0'}）`
+        + `${ok ? ' ✅' : ' ❌ 闸写松了'} · ${行.trim()}`)
+    } finally { rmSync(目录, { recursive: true, force: true }) }
   }
-  console.log(全对 ? '→ 反例自检通过：本支对值级差异会判红，盲区是「两边一起错」（定位决定）。'
+  console.log(全对 ? '→ 反例自检通过：同代同源不误报、异宽/值级差异判红；盲区是「两边一起错」（定位决定），'
+      + '历史真跑存档已丢、结论定格不重写。'
     : '→ 反例自检**不通过**：本支的判定与上面任一条不符，必须查。')
   process.exit(全对 ? 0 : 1)
 }

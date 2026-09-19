@@ -33,7 +33,9 @@
  *
  * 另有**闸的自检**：拿第廿五轮存档的**旧编辑器出口**（`r25_setcontent_r16-06-title-da01_before_saveexit.html`，
  * 两列都被拍成 `min-width: 25px`）喂给本支同一套解析规则，必须被判 **FAIL**——
- * 否则说明这条闸已经被写松到「怎么塌都算过」。存档在就判，不在就跳过（不影响退出码）。
+ * 否则说明这条闸已经被写松到「怎么塌都算过」。存档在就判，不在就跳过（不影响退出码）；
+ * ⚠️ 本轮：该真跑存档已随 `target/probe/` 清库丢失，缺档时按 §3.25 记载的坏出口形态
+ * 在脚本内**合成同构坏出口**喂同一套规则（`widthsOf` 一字未改），自检结论照常写进产物 `selfTest` 段。
  *
  * 全程**不写生产数据**：`PUT /api/articles/38` 在页面内被拦下（拦到的 body 就是「保存出口」），
  * CDP 侧再把非 GET 请求一律 `Fetch.failRequest`，最后复查库里的 `revision` / `updatedAt`。
@@ -88,8 +90,23 @@ const SAMPLES = [
   { id: 'bing-collapsed', 说明: '用户那篇的塌陷形态（入口就没有宽度声明）', html: COLLAPSED, 判据: false },
 ]
 
-/** 第二十五轮存档的旧编辑器出口：闸的自检拿它当反例。 */
+/**
+ * 第二十五轮存档的旧编辑器出口：闸的自检拿它当反例。
+ * ⚠️ 本轮：该真跑存档（`r25_setcontent_r16-06-title-da01_before_saveexit.html`，两列都被拍成
+ * `min-width: 25px`）已随 `target/probe/` 清库丢失，**不伪造存档**；存档不在时按 §3.25 记载的
+ * 坏出口形态（「旧编辑器出口：`<colgroup><col style="min-width: 25px;">×2</colgroup>`」）在脚本内
+ * **合成同构的坏出口**喂同一套规则（`widthsOf`，一字未改）。历史真跑结论（旧编辑器出口被判 FAIL）
+ * 已定格，不重写。
+ */
 const LEGACY_EXIT = resolve(BROWSER_OUT, 'r25_setcontent_r16-06-title-da01_before_saveexit.html')
+const LEGACY_EXIT_SYNTH = '<section style="margin:0px 0px 30px">'
+  + '<section class="tableWrapper">'
+  + '<table style="border:0px;border-collapse:collapse;table-layout:fixed;width:100%">'
+  + '<colgroup><col style="min-width: 25px;"><col style="min-width: 25px;"></colgroup>'
+  + '<tbody><tr>'
+  + '<td valign="top" style="vertical-align:top;border:0px;padding:0px"><p>L1-left</p></td>'
+  + '<td valign="top" style="vertical-align:top;border:0px;padding:0px"><p>L2-right</p></td>'
+  + '</tr></tbody></table></section></section>'
 
 // ---------- 入口 / 出口两侧都按同一套规则取「这一列声明了多宽」 ----------
 // 解析规则**不在这里定义**：第二十八轮往返闸（U11-b）要用同一条规则，抽到 colwidth-rules.mjs 里，
@@ -263,7 +280,9 @@ for (const sample of SAMPLES) {
   if (sample.判据 && !stable) failures.push({ id: sample.id, 项: '判据② 再存一次列宽变了', 出口: exitWidths, 再存: exit2Widths })
 }
 
-// —— 闸的自检：存档的旧编辑器出口必须被判 FAIL，否则这条闸已经写松了 ——
+// —— 闸的自检：旧编辑器出口必须被判 FAIL，否则这条闸已经写松了 ——
+// （⚠️ 本轮：真跑存档已随 target/probe 清库丢失，缺档时按 §3.25 记载**合成同构坏出口**喂同一套规则，
+//   不伪造存档文件本身；历史真跑结论定格不重写。）
 const DA01_WIDTHS = widthsOf(readFileSync(DA01, 'utf8'))
 let selfTest = null
 if (existsSync(LEGACY_EXIT)) {
@@ -272,6 +291,15 @@ if (existsSync(LEGACY_EXIT)) {
   selfTest = { 存档: LEGACY_EXIT, 产物应该长这样: DA01_WIDTHS, 旧编辑器出口: legacyWidths, 判为FAIL: judged }
   console.log('\n闸的自检（旧编辑器出口必须被判 FAIL）：')
   console.log('  产物该有的列宽 ' + JSON.stringify(DA01_WIDTHS) + ' · 旧编辑器出口 ' + JSON.stringify(legacyWidths)
+    + ' → ' + (judged ? '判 FAIL ✅（这条闸抓得住这个 bug）' : '判 PASS ❌（闸写松了）'))
+  if (!judged) failures.push({ id: 'self-test', 项: '旧编辑器出口被判成了 PASS' })
+} else {
+  const legacyWidths = widthsOf(LEGACY_EXIT_SYNTH)
+  const judged = JSON.stringify(DA01_WIDTHS) !== JSON.stringify(legacyWidths)
+  selfTest = { 存档: LEGACY_EXIT + '（真跑存档已随 target/probe 清库丢失；反例按 §3.25 记载的坏出口形态合成，非历史真跑）',
+    产物应该长这样: DA01_WIDTHS, 旧编辑器出口: legacyWidths, 判为FAIL: judged }
+  console.log('\n闸的自检（旧编辑器出口必须被判 FAIL；真跑存档已丢，反例按 §3.25 记载合成同构坏出口）：')
+  console.log('  产物该有的列宽 ' + JSON.stringify(DA01_WIDTHS) + ' · 合成坏出口 ' + JSON.stringify(legacyWidths)
     + ' → ' + (judged ? '判 FAIL ✅（这条闸抓得住这个 bug）' : '判 PASS ❌（闸写松了）'))
   if (!judged) failures.push({ id: 'self-test', 项: '旧编辑器出口被判成了 PASS' })
 }

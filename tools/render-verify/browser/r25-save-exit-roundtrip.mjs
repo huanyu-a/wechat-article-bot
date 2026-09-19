@@ -117,25 +117,40 @@ function diffBlocks(liveAtSave, liveRoundTrip) {
 }
 
 // ---------------------------------------------------------------------------
-// `--selftest`：**反例自检** —— 离线，不开浏览器、不连库、不打 API。
+// `--selftest`：**反例自检** —— 离线，不开浏览器、不连库、不打 API，**自含合成**。
 //
-// 输入 = 第二十九轮在**修复前整包**上真跑出来的那份存档
-// （`r25_roundtrip_setcontent_all_r29blindcheck_result.json`，bundle = r26/before-dist）。
-// 它在判据①上判了什么，正是本支盲区的实据；这里同时要证明尺子另一头是灵的：
+// ⚠️ 历史真跑存档 `r25_roundtrip_setcontent_all_r29blindcheck_result.json`
+//    （`--inject all --label r29blindcheck --bundle target/probe/r26/before-dist` 那一跑）
+//    已随 `target/probe/` 清库丢失，**不伪造存档**；历史结论（修复前整包判据① 11/11、差异 0、
+//    exit 0 —— 「甲类盲区」的实据）**已定格，不重写**，在 ③ 原样引用。
+// 自检改为现造一对最小量测（两侧同源、逐项相同，形状与主流程 `measureNow` 的产物一致），
+// 仍走同一把尺子（`diffItems` / `diffBlocks`，一字未改）：
 //   ① 自比                    → 差异必须 **0**（不误报）
 //   ② 把「重灌后」改一个叶子  → 差异必须 **恰好 1 条**且 id 对得上（不瞎）
-//   ③ 报出该存档的真实结论    → 这就是「甲类对『打开时就一致地丢』免疫」的实测数字
+//   ③ 打印定格的历史结论      → 「甲类对『打开时就一致地丢』免疫」的引用实据
 // ①② 任一条不符即 exit 1。
 // ---------------------------------------------------------------------------
 if (ARGS.includes('--selftest')) {
-  const file = resolve(BROWSER_OUT, 'r25_roundtrip_setcontent_all_r29blindcheck_result.json')
-  if (!existsSync(file)) { console.error('没有存档 ' + file + '（先跑 `--inject all --label r29blindcheck --bundle target/probe/r26/before-dist`）'); process.exit(3) }
-  const payload = JSON.parse(readFileSync(file, 'utf8'))
-  const { liveAtSave, liveRoundTrip, verdict } = payload
-  if (!liveAtSave?.items || !liveRoundTrip?.items) { console.error('存档里没有 liveAtSave / liveRoundTrip 的逐条量测'); process.exit(3) }
+  const 合成对 = {
+    items: [
+      { id: 'r16-01-changelog', name: '容器边框宽', complaint: '合成自检输入', error: null,
+        value: { count: 1, box: { width: 731, height: 120 }, colors: ['rgb(226, 232, 240)'] } },
+      { id: 'r16-04-quote-card', name: '金句卡高', complaint: '合成自检输入', error: null,
+        value: { count: 1, box: { width: 731, height: 128 } } },
+      { id: 'r16-09-table-card', name: '表格列宽', complaint: '合成自检输入', error: null,
+        value: { cols: [null, 90] } },
+    ],
+    blocks: [
+      { tag: 'p', x: 702, dy: 0, h: 27, 首字符x: 708.72 },
+      { tag: 'section', x: 702, dy: 40, h: 128, 首字符x: 722 },
+    ],
+  }
+  const liveAtSave = 合成对
+  const liveRoundTrip = JSON.parse(JSON.stringify(合成对))
 
-  console.log('反例自检（存档）:', file)
-  console.log('  bundle = ' + String(payload.bundle || '(未记)').split(/[\\/]/).pop() + '（第二十六轮修复前的整包前端）')
+  console.log('反例自检（**合成**最小量测对，非真跑存档）:')
+  console.log('  历史真跑存档 r25_roundtrip_setcontent_all_r29blindcheck_result.json 已随 target/probe 清库丢失；'
+    + '历史结论（修复前整包判据① 11/11、差异 0、exit 0 —— §3.26 定格）**不重写**，见 ③。')
 
   const 自比 = diffItems(liveAtSave, liveRoundTrip)
   const 自比块 = diffBlocks(liveAtSave, liveRoundTrip)
@@ -156,7 +171,7 @@ if (ARGS.includes('--selftest')) {
     return null
   }
   const 目标 = 坏.items.map((item) => ({ item, hit: 叶子(item.value) })).find((row) => row.hit)
-  if (!目标) { console.error('  ② 未做：存档里找不到可改的数值叶子'); process.exit(1) }
+  if (!目标) { console.error('  ② 未做：合成对里找不到可改的数值叶子'); process.exit(1) }
   目标.hit.宿主[目标.hit.键] = 目标.hit.值 + 1
   const 改后 = diffItems(liveAtSave, 坏)
   const 过造坏 = 改后.length === 1 && 改后[0].id === 目标.item.id
@@ -164,13 +179,12 @@ if (ARGS.includes('--selftest')) {
     + ' 改成 ' + (目标.hit.值 + 1) + '：差异 ' + 改后.length + ' 条（期望恰好 1 条，id=' + 目标.item.id + '）→ '
     + (过造坏 ? '判红 ✅' : '**没抓住**❌ 闸写松了'))
 
-  console.log('  ③ 该存档在判据①上的真实结论：' + verdict.identical + ' / ' + verdict.compared
-    + ' 条完全相同（真正量到数的 ' + verdict.coveredAtSave + ' 条）· 差异 ' + verdict.differences.length + ' 条')
-  console.log('     → 修复前的整包前端上**照样判过**——这就是「甲类盲区」的实测实据，'
+  console.log('  ③ 历史结论（**已定格，不重写**）：修复前整包前端（r26/before-dist）真跑判据① '
+    + '**11/11 条完全相同、差异 0 条、exit 0**——这就是「甲类盲区」的实测实据；'
     + '抓这类 bug 的是 r26-leading-ws-effect 判据① 与 r28-roundtrip-gate 判据③。')
 
   const 全对 = 过自比 && 过造坏
-  console.log(全对 ? '→ 反例自检通过：尺子不误报、对值级差异会判红；盲区是「两侧一起丢」（定位决定）。'
+  console.log(全对 ? '→ 反例自检通过：尺子不误报、对值级差异会判红；盲区是「两侧一起丢」（定位决定），历史结论定格。'
     : '→ 反例自检**不通过**：本支的判定与上面任一条不符，必须查。')
   process.exit(全对 ? 0 : 1)
 }
