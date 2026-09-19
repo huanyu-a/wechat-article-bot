@@ -2,7 +2,7 @@
   "agent": "main",
   "timestamp": "2026-09-19T23:05:00",
   "status": "completed",
-  "summary": "第四十一轮（/goal：容器重建核验 + workflow 全量巡检 + 79 样例回归收口）：①容器重建核验——镜像 wechat-article-bot:local（20:36 构建）经 docker cp + zipfile 核验含 D56（UnknownToolFallbackMap 全套类）/D57（7 智能体 7 模型绑定）全部产物；②环境自愈——自部署 MarkFlow 渲染服务（宿主 node 8788）随上次会话退出而死亡，重新拉起并带令牌实测渲染 ok（不拉起则 4 个任务全挂在交付渲染步）；③动态工作流「容器核验与全任务巡检」全链完成：4 个定时任务（含用户自建「123」）全部触发并监测到终态，全部 SUCCESS_WITH_WARNINGS（run#49→文章44 / run#50→文章45 / run#51→文章46 / run#52→文章47），逐任务独立归因（4 个归因员，执行日志/应用日志/产出文章三级取证）结论：零应用代码缺陷、无需改码、D 台账止于 D57 无新增。警告定性：browse_webpage 外部站点失败（重定向循环/HTTP 429/connect timeout/RST_STREAM/远程超大小）属外部环境；save_article_draft 空正文/空标题是模型漏传参数被校验按设计拒绝（toolParamParseFailures=0，重试即自纠）；StageTimeout（调研停滞换档、generate_image 挂起 119-271s、模型 0 字符输出）是网关侧问题被既有自愈吸收（U1/U3 上游）；摘要 126→120、图片描述 600→500、:::table title 告警均为既有守卫按设计工作；四篇文章内容质量项（重复小标题/结尾叠放/图片来源/渲染标记）全部通过。④79 样例回归 17 步全绿（非零 0 步）：8/9+9g 红=r16 探针产物未随清库重建（重造后 9g 基线 25→26 逐条归因落盘——新成员 1 条是 ProseMirror 分隔图 0→1（编辑 DOM 痕迹、不进 getHTML），参照侧 title 0→1 顺带证实 §R7 的「title 被丢」上游缺陷在当前上游 bundle 已修复）；9h 红=9 行反例自检依赖的历史真跑存档随 D51 清库丢失（工程师代理：重造 4 份当前态真测 + 行 10/12/13/14/15 喂法按 §3.29 既有先例改自含 --selftest/合成同构坏版本，判据函数本体零改动，历史结论定格不重写，8 文件全落 tools/render-verify/）；6/9 长期红转绿双因定性：文章 #16/#35 外链图已全部本地化（0 张外链）+ 外部图床 robocopmao.github.io 恢复（banner4.webp 返回 200）。⑤工作流踩坑两笔：Date.now() 在动态工作流脚本里被禁（墙钟上限须用轮数表达）；amend 复用时派发必须幂等（沿用 RUNNING 实例而非重复 POST）。⑥遗留：模型网关 bx9y.com.cn 持续停滞/零字符输出叠加模型漏传工具参数，使每轮固定落在 SUCCESS_WITH_WARNINGS，根治卡 U1/U3 上游；巡检心跳 automation-6fe375ff 仍 paused（是否恢复由用户定）；本地提交未 push。",
+  "summary": "第四十一轮（/goal：容器重建核验 + workflow 全量巡检 + 79 样例回归收口）：①容器重建核验——镜像 wechat-article-bot:local（20:36 构建）经 docker cp + zipfile 核验含 D56（UnknownToolFallbackMap 全套类）/D57（7 智能体 7 模型绑定）全部产物；②环境自愈——自部署 MarkFlow 渲染服务（宿主 node 8788）随上次会话退出而死亡，重新拉起并带令牌实测渲染 ok（不拉起则 4 个任务全挂在交付渲染步）；③动态工作流「容器核验与全任务巡检」全链完成：4 个定时任务（含用户自建「123」）全部触发并监测到终态，全部 SUCCESS_WITH_WARNINGS（run#49→文章44 / run#50→文章45 / run#51→文章46 / run#52→文章47），逐任务独立归因（4 个归因员，执行日志/应用日志/产出文章三级取证）结论：零应用代码缺陷、无需改码、D 台账止于 D57 无新增。警告定性：browse_webpage 外部站点失败（重定向循环/HTTP 429/connect timeout/RST_STREAM/远程超大小）属外部环境；save_article_draft 空正文/空标题是模型漏传参数被校验按设计拒绝（toolParamParseFailures=0，重试即自纠）；StageTimeout（调研停滞换档、generate_image 挂起 119-271s、模型 0 字符输出）是网关侧问题被既有自愈吸收（U1/U3 上游）；摘要 126→120、图片描述 600→500、:::table title 告警均为既有守卫按设计工作；四篇文章内容质量项（重复小标题/结尾叠放/图片来源/渲染标记）全部通过。④79 样例回归 17 步全绿（非零 0 步）：8/9+9g 红=r16 探针产物未随清库重建（重造后 9g 基线 25→26 逐条归因落盘——新成员 1 条是 ProseMirror 分隔图 0→1（编辑 DOM 痕迹、不进 getHTML），参照侧 title 0→1 顺带证实 §R7 的「title 被丢」上游缺陷在当前上游 bundle 已修复）；9h 红=9 行反例自检依赖的历史真跑存档随 D51 清库丢失（工程师代理：重造 4 份当前态真测 + 行 10/12/13/14/15 喂法按 §3.29 既有先例改自含 --selftest/合成同构坏版本，判据函数本体零改动，历史结论定格不重写，8 文件全落 tools/render-verify/）；6/9 长期红转绿双因定性：文章 #16/#35 外链图已全部本地化（0 张外链）+ 外部图床 robocopmao.github.io 恢复（banner4.webp 返回 200）。⑤工作流踩坑两笔：Date.now() 在动态工作流脚本里被禁（墙钟上限须用轮数表达）；amend 复用时派发必须幂等（沿用 RUNNING 实例而非重复 POST）。⑥遗留：模型网关 bx9y.com.cn 持续停滞/零字符输出叠加模型漏传工具参数，使每轮固定落在 SUCCESS_WITH_WARNINGS，根治卡 U1/U3 上游；巡检心跳 automation-6fe375ff 仍 paused（是否恢复由用户定）；本地提交已按用户 2026-09-20 指令推送。",
   "artifacts": [
     "docs/handoff/sess-20260919-full-patrol-d56-d57-verify.json（本文件）",
     "target/probe/attribution-task{1..4}.md（四任务归因取证，gitignored）",
@@ -54,7 +54,7 @@
     "U1/U3 上游（网关停滞/零字符输出、模型漏传工具参数）仍开放，属服务商侧",
     "巡检心跳 automation-6fe375ff paused 中，恢复与否由用户决定",
     "r16 探针的『表格标题元素』组依赖上游 title 渲染行为（§R7 已被上游修复），下次上游升级时关注该组条数变化",
-    "本地提交未 push（按约定）"
+    "2026-09-20 已按用户明确指令推送至远程 origin 的 main 分支"
   ],
   "read_files": [
     "docs/dev/known-issues-handoff.md",
