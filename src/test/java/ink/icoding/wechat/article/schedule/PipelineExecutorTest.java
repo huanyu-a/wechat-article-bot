@@ -109,6 +109,7 @@ class PipelineExecutorTest {
     void writingCommandInjectsDeliveryConstraint() throws Exception {
         TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
         StubRunner runner = new StubRunner(workspace, code -> {
+            if (RESEARCH_CODE.equals(code)) workspace.appendResearchNotes("核心结论", "第一轮");
             if (WRITING_CODE.equals(code)) saveDraft(workspace);
             if (REVIEW_CODE.equals(code)) workspace.submitReview(true, List.of(), List.of(), "ok");
             return null;
@@ -141,6 +142,7 @@ class PipelineExecutorTest {
     void skippedStagesAreNotRun() throws Exception {
         TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
         StubRunner runner = new StubRunner(workspace, code -> {
+            if (RESEARCH_CODE.equals(code)) workspace.appendResearchNotes("核心结论", "第一轮");
             if (WRITING_CODE.equals(code)) saveDraft(workspace);
             return null;
         });
@@ -204,6 +206,7 @@ class PipelineExecutorTest {
     void reviewWithoutSubmitReviewTreatedAsPassed() throws Exception {
         TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
         StubRunner runner = new StubRunner(workspace, code -> {
+            if (RESEARCH_CODE.equals(code)) workspace.appendResearchNotes("核心结论", "第一轮");
             if (WRITING_CODE.equals(code)) saveDraft(workspace);
             return null; // 审稿人不调用 submit_review
         });
@@ -236,8 +239,12 @@ class PipelineExecutorTest {
             public Outcome runWithLimit(AgentClient agent, String command, List<MemoryMultipartFile> attachments,
                                         String logPrefix, int maxToolCalls) {
                 limits.add(maxToolCalls);
-                if (isResearcher(agent)) researchLimits.add(agent.getName());
-                else otherLimits.add(agent.getName());
+                if (isResearcher(agent)) {
+                    researchLimits.add(agent.getName());
+                    workspace.appendResearchNotes("核心结论", "第一轮");
+                } else {
+                    otherLimits.add(agent.getName());
+                }
                 if (ink.icoding.wechat.article.agent.AgentFactory.CODE_WRITER.equals(agent.getName())) {
                     saveDraft(workspace);
                 }
@@ -325,9 +332,11 @@ class PipelineExecutorTest {
                 .isInstanceOf(StageTimeoutException.class);
 
         assertThat(workspace.executionLogText()).contains("【调研】调用工具：search_web");
-        // 调研阶段降级后写作阶段同样跑起来并上报了 1 次调用：两次「抛异常前已发生的计数」都必须留住，
-        // 这正是失败路径不能只靠返回值统计的原因。
-        assertThat(workspace.toolCallCount()).isEqualTo(2);
+        // 调研没有落简报会按约定重试一次（两次尝试各在抛异常前上报 1 次调用），降级后写作阶段
+        // 同样跑起来并上报了 1 次：三次「抛异常前已发生的计数」都必须留住——这正是失败路径
+        // 不能只靠返回值统计的原因。
+        assertThat(workspace.executionLogText()).contains("【调研·重试】");
+        assertThat(workspace.toolCallCount()).isEqualTo(3);
     }
 
     @Test
@@ -372,6 +381,7 @@ class PipelineExecutorTest {
                     if (saveDraftBeforeDying) saveDraft(workspace);
                     throw new IllegalStateException("会话中止（模拟超限/停滞）");
                 }
+                if (RESEARCH_CODE.equals(agent.getName())) workspace.appendResearchNotes("核心结论", "第一轮");
                 if (WRITING_CODE.equals(agent.getName())) saveDraft(workspace);
                 if (REVIEW_CODE.equals(agent.getName())) {
                     workspace.submitReview(true, List.of(), List.of(), "ok");
@@ -389,6 +399,49 @@ class PipelineExecutorTest {
     }
 
     @Test
+    void researchStageRetriedOnceWhenFirstAttemptLeavesNoNotes() throws Exception {
+        // 调研简报是调研→写作的交接文档（2026-09-19 约定）：第一轮没落简报必须重试一次，
+        // 且重试指令要明确「本轮必须调 save_research_notes」。
+        TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
+        java.util.concurrent.atomic.AtomicInteger researchCalls = new java.util.concurrent.atomic.AtomicInteger();
+        StubRunner runner = new StubRunner(workspace, code -> {
+            if (RESEARCH_CODE.equals(code) && researchCalls.incrementAndGet() >= 2) {
+                workspace.appendResearchNotes("核心结论：重试后落盘", "重试轮");
+            } else if (WRITING_CODE.equals(code)) {
+                saveDraft(workspace);
+            } else if (REVIEW_CODE.equals(code)) {
+                workspace.submitReview(true, List.of(), List.of(), "通过");
+            }
+            return null;
+        });
+        ArticleAiService.ScheduledAgentResult result = executor(runner)
+                .execute(request(Map.of(), 2), workspace);
+
+        assertThat(runner.stages.stream().filter(RESEARCH_CODE::equals).count()).isEqualTo(2);
+        assertThat(runner.commands.get(1)).contains("save_research_notes").contains("没有留下调研简报");
+        assertThat(result.executionLog()).contains("【调研·重试】").contains("调研简报已落盘");
+        assertThat(result.draft().title()).isEqualTo("测试标题");
+    }
+
+    @Test
+    void researchRetryStillWithoutNotesDegradesToWriterSelfSearch() throws Exception {
+        TaskWorkspace workspace = TaskWorkspace.create(9L, LayoutEngine.PROMPT);
+        StubRunner runner = new StubRunner(workspace, code -> {
+            if (WRITING_CODE.equals(code)) saveDraft(workspace);
+            else if (REVIEW_CODE.equals(code)) workspace.submitReview(true, List.of(), List.of(), "通过");
+            return null;
+        });
+        ArticleAiService.ScheduledAgentResult result = executor(runner)
+                .execute(request(Map.of(), 2), workspace);
+
+        assertThat(runner.stages.stream().filter(RESEARCH_CODE::equals).count()).isEqualTo(2);
+        assertThat(result.executionLog()).contains("重试后仍未产生调研简报");
+        // 两次尝试都「正常结束却没交接」：补记一次降级，让终态带上 SUCCESS_WITH_WARNINGS 的可见提示
+        assertThat(workspace.degradationCount()).isEqualTo(1);
+        assertThat(result.draft().title()).isEqualTo("测试标题");
+    }
+
+    @Test
     void researchStageFailureDegradesInsteadOfFailingTheWholeRun() throws Exception {
         // run#46 的教训：调研的 25 次检索全部成功，只因超出上限 1 次就让整轮 PIPELINE FAILED，
         // 而写作阶段完全有能力依据任务要求自行成文。调研失败必须降级，而不是丢掉整次交付。
@@ -398,8 +451,10 @@ class PipelineExecutorTest {
                 .execute(request(Map.of("illustration", 0L, "review", 0L), 2), workspace);
 
         assertThat(result.draft().title()).isEqualTo("测试标题");
-        assertThat(workspace.degradationCount()).isEqualTo(1);
-        assertThat(result.executionLog()).contains("【调研】阶段中止").contains("未产生调研简报");
+        // 两次尝试（首轮 + 重试）都没有简报，各记一次降级
+        assertThat(workspace.degradationCount()).isEqualTo(2);
+        assertThat(result.executionLog()).contains("【调研】阶段中止").contains("【调研·重试】阶段中止")
+                .contains("重试后仍未产生调研简报");
     }
 
     @Test

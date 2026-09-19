@@ -31,9 +31,12 @@ public class ToolRegistry {
                 "在用户浏览器中读写文章（需编辑器页面打开）",
                 List.of("read_article", "read_blocks", "delete_blocks", "insert_blocks", "replace_blocks",
                         "update_metadata", "update_cover")));
-        groups.put(MEDIA, new Group(MEDIA, "素材与联网工具", false, "搜索、浏览、图片检索/导入/生成/编辑",
-                List.of("search_web", "browse_webpage", "search_web_images", "list_image_assets",
-                        "import_web_image", "generate_image", "edit_image")));
+        // 图片来源硬约束（2026-09-19）：MEDIA 组不含 search_web_images / import_web_image——
+        // 所有图片只允许 generate_image（AI 创作）或素材库既有图片（list_image_assets），
+        // 网络搜图从工具层面就不存在（用户约定，known-issues-handoff.md D55）。
+        groups.put(MEDIA, new Group(MEDIA, "素材与联网工具", false, "搜索、浏览、图片检索/生成/编辑",
+                List.of("search_web", "browse_webpage", "list_image_assets",
+                        "generate_image", "edit_image")));
         groups.put(DRAFT_READ, new Group(DRAFT_READ, "草稿只读", false, "读取任务工作区草稿（检查不动笔的角色使用）",
                 List.of("read_article_draft")));
         groups.put(DRAFT_WRITE, new Group(DRAFT_WRITE, "草稿读写", false, "保存草稿与设置封面",

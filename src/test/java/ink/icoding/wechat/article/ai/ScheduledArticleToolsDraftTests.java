@@ -640,6 +640,41 @@ class ScheduledArticleToolsDraftTests {
      *
      * <p>反面要守住：本项目真正支持的那些标签一个都不能被这条规则误伤。
      */
+    /** 文章 22 实证的「小标题重复」：`## 标题` 后紧跟同题 <p-title>，渲染器两个都输出。 */
+    @Test
+    void h2DuplicatedBySameTitlePTitleIsReported() {
+        String markdown = "## 先看这把「尺子」\n\n"
+                + "<p-title number=\"01\" title=\"先看这把「尺子」\" subtitle=\"THE SCALE\" level=\"1\"></p-title>\n\n正文。";
+        assertThat(ScheduledArticleTools.markflowSyntaxHints(markdown))
+                .anySatisfy(hint -> assertThat(hint).contains("小标题重复"));
+    }
+
+    /** 不同题的 p-title 不算重复（各章节自己的头）；远处的 p-title 也不与更早的 h2 配对。 */
+    @Test
+    void h2WithDifferentTitlePTitleIsNotReported() {
+        String markdown = "## 先看这把「尺子」\n\n正文。\n\n"
+                + "<p-title number=\"02\" title=\"另一个完全不同的标题\" level=\"1\"></p-title>";
+        assertThat(ScheduledArticleTools.markflowSyntaxHints(markdown))
+                .noneMatch(hint -> hint.contains("小标题重复"));
+    }
+
+    /** 文章 22 实证的「结尾重复」：engage-card 与 engage-label 叠放，成稿结尾连续两张收尾卡。 */
+    @Test
+    void stackedEndingComponentsAreReported() {
+        String markdown = "正文。\n\n<engage-card title=\"感谢你读到这里\"></engage-card>\n\n"
+                + "<engage-label title=\"收束语\" label=\"THANKS\"></engage-label>";
+        assertThat(ScheduledArticleTools.markflowSyntaxHints(markdown))
+                .anySatisfy(hint -> assertThat(hint).contains("结尾组件叠放"));
+    }
+
+    /** 单个收尾组件是正常形态。 */
+    @Test
+    void singleEndingComponentIsNotReported() {
+        String markdown = "正文。\n\n<engage-card title=\"感谢你读到这里\"></engage-card>";
+        assertThat(ScheduledArticleTools.markflowSyntaxHints(markdown))
+                .noneMatch(hint -> hint.contains("结尾组件叠放"));
+    }
+
     @Test
     void unsupportedLayoutFamilyIsReported() {
         for (String name : new String[]{"layout-hero", "layout-toc", "layout-metrics", "layout-cards",

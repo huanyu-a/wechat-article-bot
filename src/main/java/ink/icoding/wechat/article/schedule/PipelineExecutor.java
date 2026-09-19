@@ -84,9 +84,29 @@ public class PipelineExecutor extends ScheduledExecutionStrategy {
         AgentRunner.Outcome research = runStageOrContinue(researchCode, "RESEARCH", request, workspace,
                 researchCommand(request), "【调研】", executionLog, null);
         toolCalls += research.toolCalls();
+        // 调研简报是调研→写作的**交接文档**（2026-09-19 用户约定）：第一轮没落盘简报就重试一次，
+        // 指令里明确「本轮必须调 save_research_notes」；重试后仍没有，才走既有降级路径
+        // （写作自行检索并记入日志）。重试同时覆盖「阶段抛异常中止」与「会话正常结束但没调工具」两种形态。
+        if (!workspace.hasResearchNotes()) {
+            executionLog.add("【调研】未产生调研简报，按约定重试一次（简报是调研→写作的交接文档，必须落盘）");
+            int degradationsBeforeRetry = workspace.degradationCount();
+            research = runStageOrContinue(researchCode, "RESEARCH", request, workspace,
+                    researchCommand(request)
+                            + "\n\n【上一轮调研没有留下调研简报】调研环节的交付物就是调研简报：本轮结束时必须调用"
+                            + " save_research_notes 工具，把结构化简报（核心结论、关键事实与数据附来源链接、"
+                            + "可引用素材、给撰稿人的建议）落盘；不调用工具的调研不算完成。",
+                    "【调研·重试】", executionLog, null);
+            toolCalls += research.toolCalls();
+            // 两次尝试都「正常结束却没交接」（没有已计入的硬失败降级）时补记一次降级：
+            // 终态要有 SUCCESS_WITH_WARNINGS 的可见提示，不能静默丢掉调研交接。
+            // 任一尝试硬失败过的话降级已各自计入，这里不重复加。
+            if (!workspace.hasResearchNotes() && workspace.degradationCount() == degradationsBeforeRetry) {
+                workspace.addDegradation();
+            }
+        }
         executionLog.add(workspace.hasResearchNotes()
                 ? "【调研】调研简报已落盘（" + workspace.researchNotesText().length() + " 字）"
-                : "【调研】未产生调研简报，写作阶段将依据任务要求自行检索");
+                : "【调研】重试后仍未产生调研简报，写作阶段将依据任务要求自行检索");
 
         // ② 写作（可降级但须已落盘：会话中止前若已调用 save_article_draft，草稿是完整的，不该丢弃）
         String writingCode = resolveCode(request.stageAgents(), "writing", AgentFactory.CODE_WRITER);

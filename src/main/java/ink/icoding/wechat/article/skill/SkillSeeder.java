@@ -149,14 +149,17 @@ public class SkillSeeder implements ApplicationRunner {
                  · 对齐容器：`:::align align="center"` + 文字 + `:::`（居中引用语、诗歌、金句）。
                  · 代码块容器：`:::code-block lang="js" title="示例"` 包住 ``` 代码块 + `:::`。
                  用法判断（对着真实产物量化过，见下）：**每个二级章节（`##`）的标题都用 `<p-title>` 承接**，
-                 不要只留裸 Markdown 标题——这是成品「像官网示例」最直接的来源；
+                 且写了 `<p-title>` 的章节**必须删掉同题的 `##` 行**——渲染器对两者都会输出，
+                 两个都写的话成稿里同一个标题会出现两遍（先一条普通小标题、再一个章节头组件，
+                 run#17 实证）；二选一，推荐删 `##` 留 `<p-title>`；
                  `<p-title title="…" subtitle="…" level="1"></p-title>` 是官网示例的写法，
                  多写 `number="01"` 会加一条 CHAPTER 01 小标与巨型浅色编号，也好看，二选一即可。
                  另外：长文（5 个以上章节）开篇加一处 `:::reading-path`；步骤/流程用 `:::steps-horizontal`
                  （2–3 步）或 `:::steps-vertical`（4 步以上），不要写成纯 bullet 列表；时间线/演进用
                  `:::timeline`；案例用 `:::case-flow`；开篇标题区用 `:::breaking`；关键结论用 `<statement>`
                  （一篇 1–2 处，克制）；数据/参数对照用 `:::table` 或 `:::compare`；注意事项用 `:::callout`；
-                 结尾用 `<engage-card>` / `<engage-label>`。
+                 结尾用 `<engage-card>` / `<engage-label>`——**全文只保留一个收尾组件**，
+                 两个叠放成稿结尾会连续出现两张收尾卡（run#17 实证）；
                  密度参考（2026-09-13 用真实渲染产物量化，脚本与样本见 `target/probe/density_check.py`）：
                  **不要拿「官网示例每千字 172 个带样式节点」当目标**——那是组件能力展示体（2253 字里塞了
                  9 个 p-title、11 种组件，每 250 字一个标题），不是新闻稿的形态。同一台渲染器、按上面这套
@@ -168,6 +171,9 @@ public class SkillSeeder implements ApplicationRunner {
                  3000 字以上的长文，密度会被篇幅摊薄，靠**多分节**补：每节控制在 400 字以内。
             3. 正文以自然段为主，列表仅在真正的并列项时使用；组件服务于内容表达，不要为排版炫技堆砌，但该用的时候要用足。
             4. 正文图片一律使用素材工具返回的 publicUrl 直链（http/https 相对路径会被渲染服务忽略），图注紧跟图片；不得引用外链图片或占位图。
+               图片来源硬约束（2026-09-19）：**只允许两种来源——generate_image（AI 创作）或素材库既有图片（list_image_assets）**；
+               禁止使用 search_web_images / import_web_image（不得使用任何网络搜来的图片，包括「示意图」）；
+               配图比例统一 **4:3**（横版，如 1200×900 / 1024×768），生图提示词里写明 4:3 横版构图。
             5. 文末以一句与主题相关的收束语自然结束。
 
             主题色策略：accentMode 决定。

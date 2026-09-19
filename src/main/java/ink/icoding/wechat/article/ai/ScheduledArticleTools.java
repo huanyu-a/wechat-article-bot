@@ -199,6 +199,12 @@ public final class ScheduledArticleTools {
      */
     private static final Pattern PAIRED_SELF_CLOSING =
             Pattern.compile("<(badge|icon)\\b[^>]*>[^<]*</\\1\\s*>", Pattern.CASE_INSENSITIVE);
+    /** Markdown 二级小标题行（`## 标题`）。 */
+    private static final Pattern MD_H2_LINE = Pattern.compile("^##\\s+(.+?)\\s*$");
+    /** `<p-title>` 的 title 属性值（章节头组件）。 */
+    private static final Pattern PTITLE_TITLE_ATTR = Pattern.compile("<p-title\\b[^>]*\\btitle=\"([^\"]+)\"");
+    /** 结尾类组件（收尾卡片：engage-card / engage-label，全文只应出现一个）。 */
+    private static final Pattern ENDING_COMPONENT = Pattern.compile("<engage-(?:card|label)\\b");
     /**
      * 渲染器认得的容器名（2026-09-12 逐种复核的真实产物，可反证）。
      *
@@ -387,7 +393,56 @@ public final class ScheduledArticleTools {
                     + "> 必须写成自闭合（`<Badge type=\"tip\" text=\"推荐\" />`）：写成成对标签会把收尾标签"
                     + "原样吐进正文，请改掉后重新保存");
         }
+        // 小标题重复（run#17/文章 22 实证）：`## 标题` 后紧跟同题的 <p-title>——渲染器对**两者**都输出，
+        // 成稿里同一个标题先是一条普通小标题、再一个章节头组件，用户看到的就是「小标题重复」。
+        if (h2DuplicatedByPTitle(body)) {
+            hints.add("小标题重复：有 `## 标题` 行后面紧跟着**同题**的 `<p-title>`（渲染器两个都会输出，"
+                    + "成稿里同一标题出现两遍）。章节头请二选一：删掉 `##` 行只留 `<p-title>`（推荐），"
+                    + "或去掉 `<p-title>` 保留 `##`");
+        }
+        // 结尾重复（同一篇实证）：<engage-card> 与 <engage-label> 叠放——成稿结尾连续出现多张收尾卡片。
+        if (endingComponentsStacked(body)) {
+            hints.add("结尾组件叠放：检测到不止一个收尾组件（<engage-card> / <engage-label>），"
+                    + "成稿结尾会连续出现多张收尾卡。全文结尾请只保留一个收尾组件");
+        }
         return hints;
+    }
+
+    /**
+     * 是否存在「`## 标题` 的紧接着几行内出现**同题** `<p-title>`」——两者的产物都会渲染标题。
+     * 配对窗口只看 h2 之后 4 行内的第一个 p-title；不匹配就不再往远配对
+     * （远处的 p-title 是其它章节自己的头，与这个 h2 无关）。
+     */
+    static boolean h2DuplicatedByPTitle(CharSequence markdown) {
+        String[] lines = markdown.toString().split("\\R");
+        for (int i = 0; i < lines.length; i++) {
+            Matcher h2 = MD_H2_LINE.matcher(lines[i].trim());
+            if (!h2.matches()) continue;
+            String h2Text = flattenTitle(h2.group(1));
+            if (h2Text.isEmpty()) continue;
+            for (int j = i + 1; j <= Math.min(i + 4, lines.length - 1); j++) {
+                Matcher ptitle = PTITLE_TITLE_ATTR.matcher(lines[j]);
+                if (ptitle.find()) {
+                    String title = flattenTitle(ptitle.group(1));
+                    if (!title.isEmpty() && (title.contains(h2Text) || h2Text.contains(title))) return true;
+                    break;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 结尾组件（engage-card / engage-label）是否出现两次以上。 */
+    static boolean endingComponentsStacked(CharSequence markdown) {
+        Matcher matcher = ENDING_COMPONENT.matcher(markdown);
+        int count = 0;
+        while (matcher.find()) count++;
+        return count >= 2;
+    }
+
+    /** 标题配对用的归一化：只压空白，保留原文用字（p-title 与 h2 通常是逐字同题）。 */
+    private static String flattenTitle(String text) {
+        return text == null ? "" : text.replaceAll("\\s+", "");
     }
 
     /** 是否有「只有容器写法」的组件被写成了 XML 标签（判据与其反例见 {@link #CONTAINER_ONLY_AS_TAG}）。 */
