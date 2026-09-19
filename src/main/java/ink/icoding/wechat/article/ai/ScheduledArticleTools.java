@@ -27,6 +27,17 @@ import java.util.regex.Pattern;
 public final class ScheduledArticleTools {
     private static final Logger log = LoggerFactory.getLogger(ScheduledArticleTools.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    /**
+     * 定时链路渲染区段标记（{@code sched-rN}）的序号。与编辑器链路的 {@code rN} 前缀刻意不同：
+     * {@code ArticleAiService.renderIdOf} 拿标记值查「当前会话」的渲染缓存，撞号会让别的会话
+     * 把定时稿的区段错认成自己渲染的产物。
+     */
+    private static final java.util.concurrent.atomic.AtomicLong RENDER_ID_SEQUENCE =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    private static String nextRenderId() {
+        return "sched-r" + RENDER_ID_SEQUENCE.incrementAndGet();
+    }
 
     /** 文章标题最大字数（公众号标题栏限制）；超长截断并记可见警告，不抛异常（见 save）。 */
     public static final int TITLE_MAX_LENGTH = 64;
@@ -702,7 +713,12 @@ public final class ScheduledArticleTools {
                 throw new IllegalStateException("MARKFLOW 排版需要 MarkFlowRenderService，但当前上下文未提供");
             }
             MarkFlowRenderService.RenderResult result = renderService.render(contentMarkdown, saveAccent, saveDark);
-            contentHtml = result.html();
+            // 渲染区段标记（D53）：编辑器链路在渲染缓存写入时经 ArticleAiService.markRenderId 注入，
+            // 定时交付链路此前漏了——任务产出的 MARKFLOW 稿落库后没有任何渲染区段锚点，
+            // 编辑器往返虽能保留标记（PreservedRenderId），前提是落库时得有。
+            // id 前缀用 sched-r 与编辑器会话的 rN 区分：renderIdOf 按值查会话缓存，
+            // 撞号会让别的会话把定时稿的区段错认成自己渲染的产物。
+            contentHtml = ArticleAiService.markRenderId(result.html(), nextRenderId());
             digest = digest == null || digest.isBlank() ? result.summary() : digest;
             // 渲染器回填的摘要同样受摘要栏长度约束，而它**绕过了保存期的截断**（模型没给 digest 时才会走到这里）。
             // 不在这里再截一次，就会在落库/同步公众号时暴露一个保存期已经修掉的同类问题。

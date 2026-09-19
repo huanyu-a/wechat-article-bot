@@ -35,7 +35,25 @@ class ScheduledArticleToolsDraftTests {
         return state;
     }
 
+    /** 定时链路的渲染产物同样要带渲染区段标记（D53）：任务产出的 MARKFLOW 稿落库必须有区段锚点。 */
+    @Test
+    void renderBeforeDeliveryMarksTheRenderedRegion() {
+        MarkFlowRenderService renderService = mock(MarkFlowRenderService.class);
+        when(renderService.render(eq(MARKDOWN), eq(null), eq(null)))
+                .thenReturn(new MarkFlowRenderService.RenderResult("<section><p>渲染产物</p></section>", "标题",
+                        "摘要", null, null));
+        ScheduledArticleTools.DraftState state = markflowDraft(null, null);
+
+        state.renderBeforeDelivery(renderService);
+
+        // id 用 sched-r 前缀（不与编辑器链路的 rN 撞号）且落在 RENDER_ID_ATTR 的合法字符集内；
+        // 标记打在「第一个真正的开始标签」上，而不是把产物整个包进一层新 section
+        assertThat(state.snapshot().contentHtml())
+                .matches("<section data-render-id=\"sched-r\\d+\"><p>渲染产物</p></section>");
+    }
+
     /** 渲染服务回报的实际生效主题必须写进快照，而不是保留「请求里传了什么」。 */
+
     @Test
     void renderBeforeDeliveryStoresThemeReportedByRenderer() {
         MarkFlowRenderService renderService = mock(MarkFlowRenderService.class);
@@ -47,7 +65,8 @@ class ScheduledArticleToolsDraftTests {
         state.renderBeforeDelivery(renderService);
 
         ScheduledArticleTools.Draft draft = state.snapshot();
-        assertThat(draft.contentHtml()).isEqualTo("<section>渲染产物</section>");
+        // 交付渲染会注入渲染区段标记（D53），主题断言只看留存值本身
+        assertThat(draft.contentHtml()).matches("<section data-render-id=\"sched-r\\d+\">渲染产物</section>");
         assertThat(draft.themeAccent()).isEqualTo("#0984e3");
         assertThat(draft.themeDark()).isEqualTo("#0652dd");
     }
