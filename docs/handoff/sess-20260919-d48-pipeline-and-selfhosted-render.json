@@ -2,7 +2,7 @@
   "agent": "main",
   "timestamp": "2026-09-19T01:55:00",
   "status": "completed",
-  "summary": "第四十轮：①D48 修复并订正根因——span 拆分的真正触发是 textStyle 属性变化（上游 v3 mergeNestedSpanStyles 拼接父样式 + ProseMirror 序列化器公共前缀语义），不是 bold 边界（textStyle 包自带 priority:101，纯 bold 边界实测不拆）；修复 = MarkflowTextStyle(mergeNestedSpanStyles:false) + 新增 MarkflowInnerSpanStyle（规则 priority 104 先行消费嵌套样式 span、扩展 priority 100 排后渲染为嵌套 span）。②环境重建：本机无 JDK，全量闸门走 Docker maven（.m2repo 缓存，MSYS_NO_PATHCONV=1 防 -w 路径转换）；发现并修复 check-profile-chain-parity 破坏 Docker 构建（hermetic frontend 阶段无后端源码时跳过结构自检）。③模型通路：nexus.bx9y.com.cn 4 档案 + 7 智能体专属绑定 + 3 种模式任务（target/probe/setup_models.py 幂等）；IP 白名单解除后三模式端到端实跑全过（run#8-#12），故障切换链真实生效，MARKFLOW 稿件（#14）经自部署渲染服务产出。④渲染服务自部署：令牌是部署者自设环境变量，从 huanyu-a/MarkFlow 源码构建（pnpm install --no-frozen-lockfile + pnpm add -D esbuild + build.mjs），起在 8788，应用连接测试通过；paths.py 的 RENDER_URL 支持 MARKFLOW_RENDER_URL 环境变量覆盖（默认行为不变）。⑤79 样例回归：四批次 + 汇总 + 交叉验证全绿，与历史基线逐条一致（79:70/9/0、组合 8/8/1+17/17、替代 10/10、registry 76 not-rendered、crosscheck 18/18/0/0）；本机 gen 产物 warnings 4 条 vs 历史 1 条，全部属上游引擎新版属性校验告警一类，不判红。",
+  "summary": "第四十轮：①D48 修复并订正根因——span 拆分的真正触发是 textStyle 属性变化（上游 v3 mergeNestedSpanStyles 拼接父样式 + ProseMirror 序列化器公共前缀语义），不是 bold 边界（textStyle 包自带 priority:101，纯 bold 边界实测不拆）；修复 = MarkflowTextStyle(mergeNestedSpanStyles:false) + 新增 MarkflowInnerSpanStyle（规则 priority 104 先行消费嵌套样式 span、扩展 priority 100 排后渲染为嵌套 span）。②环境重建：本机无 JDK，全量闸门走 Docker maven（.m2repo 缓存，MSYS_NO_PATHCONV=1 防 -w 路径转换）；发现并修复 check-profile-chain-parity 破坏 Docker 构建（hermetic frontend 阶段无后端源码时跳过结构自检）。③模型通路：nexus.bx9y.com.cn 4 档案 + 7 智能体专属绑定 + 3 种模式任务（target/probe/setup_models.py 幂等）；IP 白名单解除后三模式端到端实跑全过（run#8-#12），故障切换链真实生效，MARKFLOW 稿件（#14）经自部署渲染服务产出。④渲染服务自部署：令牌是部署者自设环境变量，从 huanyu-a/MarkFlow 源码构建（pnpm install --no-frozen-lockfile + pnpm add -D esbuild + build.mjs），起在 8788，应用连接测试通过；paths.py 的 RENDER_URL 支持 MARKFLOW_RENDER_URL 环境变量覆盖（默认行为不变）。⑤79 样例回归：四批次 + 汇总 + 交叉验证全绿，与历史基线逐条一致（79:70/9/0、组合 8/8/1+17/17、替代 10/10、registry 76 not-rendered、crosscheck 18/18/0/0）；本机 gen 产物 warnings 4 条 vs 历史 1 条，全部属上游引擎新版属性校验告警一类，不判红。【追记 2026-09-19 晚】D52：主用档案 #2 密钥被界面编辑破坏（掩码 673e≠mro1）致每轮 401 故障切换，重设后 run#18 干净 SUCCESS 验证；D53：巡检发现定时链路 MARKFLOW 稿缺 data-render-id（markRenderId 只挂在编辑器链路），已在 renderBeforeDelivery 注入（sched-rN 前缀防撞号），红→绿 2 例反证 + 全量闸门 501 例全绿 + 活体验证（文章 #23 带 sched-r1）；cron 自然调度（09:30/10:00/10:30）已生效出稿；心跳改为定时任务巡检（轮转派发+内容检验+失败归因+台账入账）。",
   "artifacts": [
     "webui/src/editorExtensions.js（MarkflowTextStyle + MarkflowInnerSpanStyle，D48 修复）",
     "webui/src/views/ArticleEditorView.vue、tools/render-verify/browser/editor-setup.js（扩展集同步）",
@@ -15,11 +15,31 @@
   ],
   "quality": {
     "checks": [
-      { "name": "mvn 全量闸门", "result": "pass", "detail": "Docker maven 容器内 mvn test：Tests run 500 / Failures 0 / Errors 0 / BUILD SUCCESS（含 D48 修复与 DB 集成测试，测试库 wechat-article-test 已建在 compose MySQL）" },
-      { "name": "D48 红→绿", "result": "pass", "detail": "修复前嵌套带色样例实时/出口均 [3] 栏，修复后 [1] 栏且出口与渲染产物同形；badges 三连（D35 守门）仍 3 盒；r48 真实应用探针 4 形态 × 打开/保存往返全 [1]（稿件 6–9）" },
-      { "name": "79 样例套件", "result": "pass", "detail": "run-all/combos/alt/registry 四批次失败项 0；summarize-all 70 pass/9 na/0 fail 与历史一致；crosscheck groups=18 notRendered=18 doubtful=0 controlFP=0" },
-      { "name": "三模式通路", "result": "pass", "detail": "run#8/#10 SINGLE、run#9/#11 PIPELINE（四阶段）、run#12 COORDINATOR 全部 SUCCESS_WITH_WARNINGS 且 saved=true；switchedProfile=true 4 次；活体检验 verify-live-app 10/11/12/13/14 全过，#14 含 3 个真实渲染 SVG" },
-      { "name": "渲染服务", "result": "pass", "detail": "自部署实例 /api/settings/render 连接测试通过（语法指令 8010 字符）；MARKFLOW 稿 renderWarnings=0" }
+      {
+        "name": "mvn 全量闸门",
+        "result": "pass",
+        "detail": "Docker maven 容器内 mvn test：Tests run 500 / Failures 0 / Errors 0 / BUILD SUCCESS（含 D48 修复与 DB 集成测试，测试库 wechat-article-test 已建在 compose MySQL）"
+      },
+      {
+        "name": "D48 红→绿",
+        "result": "pass",
+        "detail": "修复前嵌套带色样例实时/出口均 [3] 栏，修复后 [1] 栏且出口与渲染产物同形；badges 三连（D35 守门）仍 3 盒；r48 真实应用探针 4 形态 × 打开/保存往返全 [1]（稿件 6–9）"
+      },
+      {
+        "name": "79 样例套件",
+        "result": "pass",
+        "detail": "run-all/combos/alt/registry 四批次失败项 0；summarize-all 70 pass/9 na/0 fail 与历史一致；crosscheck groups=18 notRendered=18 doubtful=0 controlFP=0"
+      },
+      {
+        "name": "三模式通路",
+        "result": "pass",
+        "detail": "run#8/#10 SINGLE、run#9/#11 PIPELINE（四阶段）、run#12 COORDINATOR 全部 SUCCESS_WITH_WARNINGS 且 saved=true；switchedProfile=true 4 次；活体检验 verify-live-app 10/11/12/13/14 全过，#14 含 3 个真实渲染 SVG"
+      },
+      {
+        "name": "渲染服务",
+        "result": "pass",
+        "detail": "自部署实例 /api/settings/render 连接测试通过（语法指令 8010 字符）；MARKFLOW 稿 renderWarnings=0"
+      }
     ],
     "gate_passed": true
   },
@@ -30,10 +50,11 @@
     "git": "本地 main 提交 50988c0（D48 修复）+ 台账收口提交，未 push（约束：未经允许不 push）"
   },
   "next": [
-    "遗留（D49 注明）：已按旧代码存成「拆分形态」的存量稿件不会自动愈合，需单独一轮做存量合并（本库当前无此形态稿件，仅历史库受影响）",
-    "图片模型未配置：generate_image 降级为 import_web_image（模型自主适配、可见警告）；需要生图时在系统设置配图片模型",
-    "run-article.mjs / round10_component_paths.mjs 锚定历史稿件 id（43/44 等），全新库天然不可跑；有真实稿件积累后可恢复这两步",
-    "心跳自动化（automation-6fe375ff）的全部检查项已完成，建议关闭"
+    "存量拆分形态稿件不会自动愈合（D49 注明，本库无此形态稿件）",
+    "图片模型未配置：generate_image 降级为 import_web_image（有可见警告）",
+    "编辑器 read 路径的渲染区段占位防护对定时稿维持原状（标记在会话缓存外）；跨会话防护需进程级注册表设计决策（D53 边界）",
+    "run-article.mjs / round10_component_paths.mjs 锚定历史稿件 id，全新库不可跑；有真实稿件积累后可恢复",
+    "自部署渲染服务是会话后台进程，会话结束需按 environment.render_server 重启"
   ],
   "read_files": [
     "docs/dev/known-issues-handoff.md",
