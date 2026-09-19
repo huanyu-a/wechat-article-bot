@@ -47,9 +47,11 @@ public class ImageGenerationService {
     public Asset generate(Long accountId, String prompt, String filename, Long userId, Long profileId) {
         LlmConfigService.ImageRuntime config = requiredConfig(profileId);
         try {
+            // 图片比例硬约束（2026-09-19，known-issues-handoff.md D55）：统一 4:3 横版。
+            // 之前硬编码 1024x1024，提示词里写「4:3」也压不住模型默认的 1:1（巡检 run#33 实测产物 1024x1024）。
             byte[] body = MAPPER.writeValueAsBytes(Map.of(
                     "model", config.modelName(), "prompt", prompt,
-                    "size", "1024x1024", "n", 1, "response_format", "b64_json"));
+                    "size", "1024x768", "n", 1, "response_format", "b64_json"));
             HttpRequest request = request(config, "/v1/images/generations")
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofByteArray(body)).build();
@@ -128,7 +130,7 @@ public class ImageGenerationService {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         field(output, boundary, "model", model);
         field(output, boundary, "prompt", prompt);
-        field(output, boundary, "size", "1024x1024");
+        field(output, boundary, "size", "1024x768");
         output.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"image\"; filename=\""
                 + safeFilename(source.getOriginalName()) + "\"\r\nContent-Type: " + source.getContentType()
                 + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
