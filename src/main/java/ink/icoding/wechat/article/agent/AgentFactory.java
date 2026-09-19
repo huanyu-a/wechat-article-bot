@@ -329,6 +329,9 @@ public class AgentFactory {
         //    tool_call_id（轮内钩子够不着，详见 ReplayWireNormalizer 的证据链）；
         // 2) 轮内归一化——在工具执行前修历史里的 arguments / content / tool_calls[].id。
         LLMModel model = ReplayWireNormalizer.attach(LLMModel.create(modelType, baseUrl, modelName, apiKey));
+        // 未知工具 NPE 兜底（D56）：模型幻觉出的工具名不再让 agent4j 抛 NPE 白烧 5 次重试，
+        // 而是执行「工具不存在 + 可用列表」的代答，模型下一轮自纠。
+        UnknownToolFallbackMap.attach(model);
         return ToolCallArgumentGuard.wrap(model);
     }
 }
