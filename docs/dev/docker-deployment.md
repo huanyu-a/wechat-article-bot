@@ -624,3 +624,99 @@ $ podman exec watb-app sh -c 'ls /app/data/uploads | wc -l'
 > 注：`webui/src/views/SettingsView.vue:65` 的提示语本轮**没有改**（本轮不改代码），它仍写着
 > 「用于把文章图片 /uploads/ 相对路径转为渲染服务可访问的绝对直链」。按上面的实测，这句话只在
 > 「上游改成真的抓图」或「站内素材不是 32 位 hex 命名」时才成立。
+
+---
+
+# 附录：生产服务器（腾讯云）的 Docker 部署
+
+> 本文正文讲的是**本机 podman 部署**。生产服务器是另一套形态，记在这里避免混淆。
+> 生成时间：2026-09-21（当天完成替换部署，全部命令均已实测）。
+
+## A.1 服务器与工程位置
+
+- SSH 别名 `tencent`（`~/.ssh/config`，root）；主机 `VM-8-13-opencloudos`，x86_64，4C3.6G，Docker 28.0.1 + Compose v2.39.1。
+  **这台机器上还跑着 new-api / WeKnora / favshub / qinglong 等一堆别的容器，操作前先 `docker ps` 核对名字。**
+- 工程目录：`/www/dk_project/dk_app/wechat-article-bot`，compose 工程名 `wechat-article-bot`。
+- 容器：`wechat-article-bot-app-1`（127.0.0.1:8081→8081，`USER 10001:10001`，`unless-stopped`）与
+  `wechat-article-bot-mysql-1`（mysql:8.4，127.0.0.1:13307→3306，带 healthcheck）。
+- 数据是 **bind mount**（不是命名卷）：`./data/uploads → /app/data/uploads`、`./data/mysql → /var/lib/mysql`。
+  **换机器/重建容器不会丢数据，但删目录会。**
+- compose 是 **`compose.yaml` + `compose.dev.yaml` 两份叠加**（dev 那份提供 app 的 build 段、
+  `depends_on: mysql:service_healthy`、mysql 服务定义），env 文件是 `deploy/env/dev.env`（600 权限，真实凭据在里面）。
+- ⚠️ 服务器上的 git 检出跟踪的是 `github.com/onlyGuo/wechat-article-bot`（旧上游，commit `78f560f`），
+  且 `compose.yaml` / `compose.dev.yaml` **有本地未提交改动**。**不要在服务器上 `git pull`** —— 会覆盖掉本地适配。
+
+## A.2 部署方式：在服务器上本地构建，不推镜像仓库
+
+本机没有 registry 凭据，所以不走「推 Docker Hub → 服务器 pull」，而是**源码上传 + 服务器本地 build**：
+
+```bash
+# 1) 本机生成干净源码（git archive，排除 target/node_modules）
+git archive HEAD | tar -x -C target/deploy-src
+tar -czf target/wab-src.tar.gz -C target/deploy-src .
+scp target/wab-src.tar.gz tencent:/www/dk_project/dk_app/wechat-article-bot/
+
+# 2) 服务器上构建（4 核约 6 分钟）
+ssh tencent 'cd /www/dk_project/dk_app/wechat-article-bot && mkdir -p /tmp/wab-build && \
+  tar -xzf wab-src.tar.gz -C /tmp/wab-build && \
+  cd /tmp/wab-build && DOCKER_BUILDKIT=1 docker build --target runtime \
+    --build-arg APP_VERSION=20260921 --build-arg VCS_REF=$(git rev-parse HEAD) \
+    -t wechat-article-bot:20260921 -t wechat-article-bot:latest .'
+
+# 3) 替换 app 容器（mysql 不动）
+ssh tencent 'cd /www/dk_project/dk_app/wechat-article-bot && \
+  IMAGE_REPOSITORY=wechat-article-bot IMAGE_TAG=20260921 \
+  docker compose --env-file deploy/env/dev.env -f compose.yaml -f compose.dev.yaml up -d --no-deps app'
+```
+
+**第 3 步之后必须改 `deploy/env/dev.env` 的 `IMAGE_REPOSITORY` / `IMAGE_TAG`**，让它们指向本次构建的镜像。
+否则下次任何人跑 `docker compose up -d`，compose 会按 dev.env 里的旧值（原为
+`docker.io/guoshengkai/wechat-article-bot:latest`）把容器**拉回 Docker Hub 的旧镜像**。
+
+`docker build` 默认产出 docker 格式镜像，所以 `Dockerfile` 里的 `HEALTHCHECK` 会生效
+（本机 podman 默认 OCI 格式反而会静默忽略它，见 §10.1）。
+
+## A.3 ⚠️ 升级前必须对比列长（schema 漂移会直接搞挂生产）
+
+生产库是旧版本代码建的，列长可能和当前实体声明不一致。2026-09-21 替换时实际撞到一次：
+
+| 项 | 生产实际 | 当前代码声明 |
+| --- | --- | --- |
+| `ASSET.DESCRIPTION` | `varchar(1000)`，3 行超 500 字符（最长 689） | `varchar(500)`（`Asset.DESCRIPTION_MAX_LENGTH`） |
+
+smart-mybatis 启动同步会执行 `MODIFY COLUMN ... VARCHAR(500)`，MySQL 拒绝收缩已有数据 →
+**应用启动失败、按 `unless-stopped` 反复重启**（症状：`docker ps` 显示 `Restarting (1)`，日志里
+`Data truncated for column 'DESCRIPTION' at row 2`）。
+
+处理顺序：**先备份 → 截断超长值 → 再启动**。
+
+```bash
+# 备份（整库 + 单独存档超长行）
+docker exec wechat-article-bot-mysql-1 sh -c 'MYSQL_PWD=$MYSQL_ROOT_PASSWORD mysqldump -uroot \
+  --single-transaction --quick wechat-article' > data/backup/pre-deploy.sql
+docker exec -i wechat-article-bot-mysql-1 sh -c 'MYSQL_PWD=$MYSQL_ROOT_PASSWORD mysql -uroot -D wechat-article' <<'SQL'
+UPDATE ASSET SET DESCRIPTION = LEFT(DESCRIPTION, 500) WHERE CHAR_LENGTH(DESCRIPTION) > 500;
+SQL
+```
+
+**下次升级涉及声明了 `@TableField(length=...)` 的实体时，先在生产执行 `show create table <表>` 对比列长。**
+顺带记一笔：`Asset.java` 的注释声称 smart-mybatis「不会改已有列的长度」，与实测不符（3.0.1 会 MODIFY），
+那条注释本身是错的，别信它做决策。
+
+## A.4 回滚
+
+| 层 | 料在哪 | 怎么退 |
+| --- | --- | --- |
+| 旧镜像 | 服务器本地 `guoshengkai/wechat-article-bot:latest`（2 周前那份仍在） | 把 `dev.env` 的 `IMAGE_REPOSITORY` 改回 `docker.io/guoshengkai/wechat-article-bot`、`IMAGE_TAG=latest`，再 `up -d --no-deps app` |
+| 数据库 | 服务器 `data/backup/wechat-article-pre-deploy-<日期>.sql`（含 md5） | `docker exec -i mysql ... mysql < dump` |
+| 被截断的描述 | `data/backup/asset-long-descriptions-<日期>.txt` | 按 ID 逐条恢复 |
+| 改过的 env | `data/backup/dev.env.before-<日期>` | 覆盖回 `deploy/env/dev.env` |
+
+## A.5 生产库现状与未配置项（2026-09-21 部署后）
+
+ARTICLE 19 / ASSET 41 / TASK_RUN 18（SUCCESS 17 + FAILED 1）/ SKILL 18 / LLM_PROFILE 13；
+定时任务只有一个 trigger（`task-trigger-1`，WAITING，下次 2026-09-22 09:00）。
+
+**`RENDER_CONFIG` 是 0 行** —— 表是本次 schema 同步新建的，生产从未配过渲染服务。
+如果要在服务器上用排版渲染，需要去设置页填 `base_url` 与令牌，或用 `MARKFLOW_RENDER_TOKEN` 环境变量注入
+（环境变量优先）。`site_base_url` 同理留空即可，理由见 §10.6。
