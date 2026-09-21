@@ -651,6 +651,12 @@ $ podman exec watb-app sh -c 'ls /app/data/uploads | wc -l'
 > （`wechat-article-final.sql`，918K，md5 `15fc87e78aedd309153abcf1a13132e6`，29 张表，另有 env 原件）。
 > **没有导入**——上传文件已随下线删除，导回来只会得到一堆图裂的旧文章。需要时再手动导入。
 >
+> 当晚又做了一次增量升级 `20260921-r2` → `20260921-r3`（commit `e969634`），动因是**登录页泄露默认凭据**：
+> 页面底部写着「首次启动默认账号 admin / Admin@123」并把表单预填成 admin/Admin@123，
+> 已从 `LoginView.vue` 删除（`style.css` 里配套的 `.login-hint` 规则一并清掉），重新构建部署。
+> **数据库与 bind mount 未动**，管理员账号沿用 `huanyu@2026`（见 A.7），旧密码已实测 401 拒绝。
+> 部署后实测：容器 healthy、公网 `/` 与 `/login` 均 200、bundle 里 `Admin@123` / `首次启动` / `login-hint` 命中数均为 0。
+>
 > 本附录真正要留的两条经验与服务器在不在无关：**schema 漂移会让应用直接起不来**（A.3）、
 > **换镜像后必须同步 env 文件里的 `IMAGE_REPOSITORY` / `IMAGE_TAG`**（A.2 末尾）。
 
@@ -697,6 +703,25 @@ ssh tencent 'cd /www/dk_project/dk_app/wechat-article-bot && \
 
 `docker build` 默认产出 docker 格式镜像，所以 `Dockerfile` 里的 `HEALTHCHECK` 会生效
 （本机 podman 默认 OCI 格式反而会静默忽略它，见 §10.1）。
+
+### A.2.1 换完镜像怎么确认真的生效了（四层，从里到外）
+
+只看到 `Started` 不算数——旧镜像的静态资源可能被 CDN/浏览器缓存继续服务。按这四层查：
+
+1. **镜像层**：`docker images wechat-article-bot` 看新 tag 的 `CreatedSince`，再
+   `docker run --rm --entrypoint sh <新tag> -c 'grep -ro "关键词" /app/ | wc -l'`
+   **在镜像里**数关键词命中数。这一步能提前发现「源码改了但没打进包」。
+2. **容器层**：`docker ps --filter name=wechat-article-bot` 看 `healthy`，
+   `docker logs wechat-article-bot-app-1 | tail` 看 `Started ... in N seconds` 无异常栈。
+3. **本机服务层**：`curl -s -o /dev/null http://127.0.0.1:8081/login -w '%{http_code}'` 应为 200。
+4. **公网层**：`curl -s https://<域名>/login` 拿 HTML，再把 HTML 里 `<script src=...>` 指向的
+   **JS bundle 也抓下来数关键词**——文案在 bundle 里，只查 HTML 会漏。
+
+**两个坑（本轮都踩了）**：
+- `grep -c` 在管道里会返回非零退出码，写 `grep -c x f && echo "有残留"` 会**恒真**误报；
+  要么用 `n=$(grep -c ... || echo 0)` 先取数再判断，要么 `grep -rl`。
+- 判断「字符串不在」要用**命中数**，不要用「命令是否成功」——`rg -o x f | head -2 && echo warn`
+  在零命中时也会打印 warn（`head` 成功退出）。
 
 ## A.3 ⚠️ 升级前必须对比列长（schema 漂移会直接搞挂生产）
 
