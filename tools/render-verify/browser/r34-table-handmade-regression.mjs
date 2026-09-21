@@ -26,18 +26,14 @@
 import { writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { launchBrowser, openPage } from './cdp.mjs'
-import { OUT, API } from '../paths.mjs'
+import { OUT, API, login } from '../paths.mjs'
 
 const R34 = resolve(OUT, 'r34')
 const PORT = 9374
 const ARTICLE_ID = 38
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
-const login = await (await fetch(API + '/api/auth/login', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username: 'admin', password: 'Admin@123' }),
-})).json()
 if (!login.success) throw new Error('登录失败：' + JSON.stringify(login))
-const token = login.data.token
+const token = await login()
 const readArticle = async () => (await (await fetch(`${API}/api/articles/${ARTICLE_ID}`,
   { headers: { Authorization: `Bearer ${token}` } })).json()).data
 const base = await readArticle()

@@ -14,7 +14,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from paths import OUT  # noqa: E402  （路径常量的唯一出处，见 tools/render-verify/README.md）
+from paths import OUT  # noqa: E402  （路径常量的唯一出处，见 tools/render-verify/README.md）, read_token
 
 R15 = os.path.join(OUT, 'r15')
 

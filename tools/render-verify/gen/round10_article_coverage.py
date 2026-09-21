@@ -16,7 +16,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from paths import OUT  # noqa: E402
+from paths import OUT  # noqa: E402, read_token
 
 # 组件的「规范写法」在真实稿件里长什么样（正则都带行首/词边界，避免子串误命中）。
 PATTERNS = {

@@ -20,12 +20,12 @@ import sys
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from paths import OUT, TOKEN_FILE, RENDER_URL  # noqa: E402
+from paths import OUT, TOKEN_FILE, RENDER_URL  # noqa: E402, read_token
 
 R16 = os.path.join(OUT, 'r16')
 os.makedirs(R16, exist_ok=True)
 
-TOKEN = open(TOKEN_FILE).read().strip()
+TOKEN = read_token()
 URL = RENDER_URL
 
 # 用户标注的 11 条，`markdown` 一律**原样照录**（含其中的空行与全角空格）。

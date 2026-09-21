@@ -325,7 +325,7 @@
 | enabled                              | BOOLEAN      | 关闭后 MARKFLOW 引擎不可用（相关任务保存草稿时报明确错误）               |
 | created_at / updated_at / updated_by |              | 惯例字段                                                                 |
 
-> 来源说明：本表是对本机技能 `~/.zcode/skills/markflow-typeset/` 的产品化改造——该技能把渲染令牌放在本地文件 `~/.zcode/secrets/markflow-render-token`，产品化后改为系统设置内加密存储，不依赖部署机的用户主目录。
+> 来源说明：本表是对本机技能 `~/.zcode/skills/markflow-typeset/` 的产品化改造——该技能把渲染令牌放在本地文件 `<渲染令牌文件，路径与值均不入库>`，产品化后改为系统设置内加密存储，不依赖部署机的用户主目录。
 >
 > 令牌注入路径（2026-09-08 审查补充）：同时支持环境变量 `MARKFLOW_RENDER_TOKEN`（优先级：环境变量 > 设置页存储），与 `APP_SECRET_KEY` 等 Docker 部署惯例一致——设置页留空而环境变量存在时以环境变量为准，GET 接口此时返回「已由环境变量注入」而非掩码。
 
@@ -625,7 +625,7 @@ public interface ScheduledExecutionStrategy {
 1. LLM 手写内联 HTML 的版式质量不稳定（样式漂移、结构走样），MarkFlow 由确定性渲染引擎产出，版式质量恒定且支持步骤卡/对比卡/提示框等复杂组件；
 2. 版式迭代成本高——换一套视觉主题在 PROMPT 引擎下要重写整段模板指令，MarkFlow 只需换 accent/dark 主题色。
 
-融合定位：**MarkFlow 是 LAYOUT 维度的第二种排版引擎**，与 PROMPT 引擎并存、由排版 Skill 的 `engine` 字段声明。产品化改造要点：渲染令牌从本机文件 `~/.zcode/secrets/markflow-render-token` 迁移为系统设置加密存储（`render_config` 表），不再依赖部署机用户主目录。
+融合定位：**MarkFlow 是 LAYOUT 维度的第二种排版引擎**，与 PROMPT 引擎并存、由排版 Skill 的 `engine` 字段声明。产品化改造要点：渲染令牌从本机文件 `<渲染令牌文件，路径与值均不入库>` 迁移为系统设置加密存储（`render_config` 表），不再依赖部署机用户主目录。
 
 **发布能力刻意不集成（边界说明）**：本机技能的 `__markflow_wechat_publish` 接口**不在融合范围**，仅集成渲染接口。原因：① 功能重叠——项目已有完整的微信交付链路（`WechatClient` 草稿/发布/素材 API、多账号加密凭据管理、SSE 进度、`wechat_status`/`wechat_publish_id` 发布状态追踪、版本快照、REVIEWER/OPERATOR/ADMIN 角色权限、操作审计），MarkFlow 发布接口只是这条链路的单发小子集；② 信任边界——该接口要求把公众号 AppID/AppSecret 提交给第三方服务（bx9y.com.cn），而本项目 AppSecret 经 APP_SECRET_KEY 加密、仅在本服务与微信官方 API 之间解密流转，README 明确承诺「数据和密钥掌握在自己手里」，密钥出第三方不可接受；③ 无功能损失——渲染接口返回的 `html` 正是发布接口的 `content` 入参，渲染产物入库后走现有链路交付（syncDraft/publish），端到端能力完整。实施时**不得**以任何形式把 AppSecret 发往渲染服务。
 
@@ -1136,7 +1136,7 @@ POST {base_url}/__markflow_render          → {markdown, accent, dark} → {ok,
   - **2026-09-10 十四轮深度自检（真实令牌端到端验收 + 渲染产物走查 + 版式持久化缺陷）**：
     本轮按「真实令牌走通渲染链路并人工走查渲染产物」执行，走查过程本身发现并修复了一处此前无人察觉的 P0 级数据缺陷。
     ① **真实渲染令牌端到端验收（补齐第②项长期只在「代码/桩」层验证的空白）**：令牌取自
-    `~/.zcode/secrets/markflow-render-token`（48 字符），经产品自身 API 写入渲染配置
+    `<渲染令牌文件，路径与值均不入库>`（48 字符），经产品自身 API 写入渲染配置
     （`PUT /api/settings/render` → `hasToken:true`、`tokenMasked:"••••••••299f"`、`enabled:true`），
     `POST /api/settings/render/test` 返回「连接正常，语法指令 6815 字符」。随后驱动完整定时智能体链路
     （任务「E2E 渲染式排版验收」，skill=MarkFlow 精排版式，SINGLE，LOCAL_DRAFT）对真实渲染服务产出文章：

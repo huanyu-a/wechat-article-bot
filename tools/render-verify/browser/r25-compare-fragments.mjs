@@ -11,18 +11,14 @@
  */
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { OUT, API } from '../paths.mjs'
+import { OUT, API, login } from '../paths.mjs'
 
 const ARGS = process.argv.slice(2)
 const ARTICLE_ID = Number(ARGS.find((item) => /^\d+$/.test(item)) || 38)
 const CASE = ARGS.find((item) => /^r16-/.test(item)) || 'r16-01-changelog'
 const ANCHOR = ARGS.find((item) => item !== String(ARTICLE_ID) && !/^r16-/.test(item)) || ''
 
-const login = await (await fetch(API + '/api/auth/login', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username: 'admin', password: 'Admin@123' }),
-})).json()
-const token = login.data.token
+const token = await login()
 const article = (await (await fetch(`${API}/api/articles/${ARTICLE_ID}`,
   { headers: { Authorization: `Bearer ${token}` } })).json()).data
 

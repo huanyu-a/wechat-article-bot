@@ -45,7 +45,7 @@
   },
   "environment": {
     "app": "compose 栈 wechat-article-bot-app-1（127.0.0.1:8081）+ mysql-1（3306），镜像 wechat-article-bot:local 含 D48 修复",
-    "render_server": "C:/project/MarkFlow 自部署，端口 8788，令牌在 ~/.zcode/secrets/markflow-render-token（后台任务 exec_80fb6d60，会话结束需重启：MARKFLOW_RENDER_TOKEN=$(cat ~/.zcode/secrets/markflow-render-token) MARKFLOW_RENDER_PORT=8788 node tools/render-server/render_server.mjs）",
+    "render_server": "C:/project/MarkFlow 自部署，端口 8788，令牌由部署者自设的 MARKFLOW_RENDER_TOKEN 环境变量提供，值不落文档/仓库（后台任务 exec_80fb6d60，会话结束需重启：MARKFLOW_RENDER_TOKEN=<自设令牌> MARKFLOW_RENDER_PORT=8788 node tools/render-server/render_server.mjs）",
     "model_gateway": "nexus.bx9y.com.cn（用户已加白本机出口 IP）；用户经界面调整过档案：#2 挂 hy4-preview 设默认、#3 设兜底，与 setup_models.py 初值不同属用户选择",
     "git": "本地 main 提交 50988c0（D48 修复）+ 台账收口提交，未 push（约束：未经允许不 push）"
   },

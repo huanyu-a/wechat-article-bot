@@ -36,7 +36,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { launchBrowser, openPage } from './cdp.mjs'
-import { OUT, BROWSER_OUT, RENDER_VERIFY, API } from '../paths.mjs'
+import { OUT, BROWSER_OUT, RENDER_VERIFY, API, login } from '../paths.mjs'
 
 const ARGS = process.argv.slice(2)
 /**
@@ -77,12 +77,8 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 // ---------------------------------------------------------------------------
 // 登录 & 取真实 payload（只读；`contentHtml` 后面会被逐条换掉）
 // ---------------------------------------------------------------------------
-const login = await (await fetch(API + '/api/auth/login', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username: 'admin', password: 'Admin@123' }),
-})).json()
 if (!login.success) throw new Error('登录失败：' + JSON.stringify(login))
-const token = login.data.token
+const token = await login()
 
 const readArticle = async () => {
   const response = await fetch(`${API}/api/articles/${ARTICLE_ID}`, { headers: { Authorization: `Bearer ${token}` } })

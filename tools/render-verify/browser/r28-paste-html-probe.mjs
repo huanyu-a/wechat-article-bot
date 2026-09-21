@@ -38,7 +38,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { launchBrowser, openPage } from './cdp.mjs'
-import { BROWSER_OUT, OUT, ROOT, API } from '../paths.mjs'
+import { BROWSER_OUT, OUT, ROOT, API, login } from '../paths.mjs'
 import { leadingRuns } from '../round27_leading_ws_scan.mjs'
 
 const ARGS = process.argv.slice(2)
@@ -197,12 +197,8 @@ const syntheticPaste = (html) => `(() => {
 })()`
 
 // ---------- 登录 + 基线 ----------
-const login = await (await fetch(API + '/api/auth/login', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username: 'admin', password: 'Admin@123' }),
-})).json()
 if (!login.success) throw new Error('登录失败：' + JSON.stringify(login))
-const token = login.data.token
+const token = await login()
 const readArticle = async () => (await (await fetch(`${API}/api/articles/${ARTICLE_ID}`,
   { headers: { Authorization: `Bearer ${token}` } })).json()).data
 const base = await readArticle()

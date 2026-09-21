@@ -47,7 +47,53 @@ export const PROBE_DIST = join(BROWSER_OUT, 'dist')
 /** 真实应用的编辑器产物。`run-article.mjs` / `verify-live-app.mjs` 用它起静态服务。 */
 export const WEBUI_DIST = join(ROOT, 'webui', 'dist')
 
-/** 渲染令牌文件：只读，不进产物。 */
-export const TOKEN_FILE = join(process.env.USERPROFILE || process.env.HOME || '', '.zcode', 'secrets', 'markflow-render-token')
+/**
+ * 渲染令牌文件：只读，不进产物。
+ *
+ * 路径由 `MARKFLOW_RENDER_TOKEN_FILE` 指定；未设时不再回退到某个「约定路径」——
+ * 那种把密钥位置写死在仓库里的做法本身就是泄露面。取不到就直接报错，让人显式提供。
+ */
+export const TOKEN_FILE = process.env.MARKFLOW_RENDER_TOKEN_FILE || ''
 
 export const API = 'http://127.0.0.1:8081'
+
+/**
+ * 登录本地应用拿 token。凭据**不写死在仓库里**，按优先级取：
+ *   ① 环境变量 `WAB_USERNAME` / `WAB_PASSWORD`
+ *   ② 仓库根 `.env` 的 `ADMIN_USERNAME` / `ADMIN_PASSWORD`（该文件本就被 gitignore）
+ *
+ * 历史：这些浏览器脚本原先把默认管理员账号口令硬编码在仓库里，既泄密、
+ * 又在口令改过一次之后全部失效。现在统一走本函数。
+ */
+export async function login(api = API) {
+  const { readFileSync } = await import('node:fs')
+  const username = process.env.WAB_USERNAME || envValue('ADMIN_USERNAME')
+  const password = process.env.WAB_PASSWORD || envValue('ADMIN_PASSWORD')
+  if (!username || !password) {
+    throw new Error('缺少登录凭据：请设置环境变量 WAB_USERNAME / WAB_PASSWORD，'
+      + '或在仓库根 .env 里提供 ADMIN_USERNAME / ADMIN_PASSWORD')
+  }
+  const response = await fetch(api + '/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  const payload = await response.json()
+  if (!payload || payload.success !== true) {
+    throw new Error('登录失败：' + JSON.stringify(payload).slice(0, 200))
+  }
+  return payload.data.token
+}
+
+function envValue(key) {
+  try {
+    const text = readFileSync(join(ROOT, '.env'), 'utf8')
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (trimmed.startsWith(key + '=')) return trimmed.slice(key.length + 1).trim()
+    }
+  } catch {
+    // .env 不存在就走环境变量，两种都没取到就由调用方报错
+  }
+  return ''
+}

@@ -18,7 +18,7 @@
 import { writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { launchBrowser, openPage } from './cdp.mjs'
-import { BROWSER_OUT, API } from '../paths.mjs'
+import { BROWSER_OUT, API, login } from '../paths.mjs'
 
 const ARTICLE_ID = 38
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
@@ -73,12 +73,8 @@ const READ = `(() => JSON.stringify(
   [...document.querySelector('.ProseMirror').children]
     .map((el) => ({ tag: el.tagName.toLowerCase(), text: JSON.stringify(el.textContent.slice(0, 40)) }))))()`
 
-const login = await (await fetch(API + '/api/auth/login', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username: 'admin', password: 'Admin@123' }),
-})).json()
 if (!login.success) throw new Error('登录失败：' + JSON.stringify(login))
-const token = login.data.token
+const token = await login()
 const base = (await (await fetch(`${API}/api/articles/${ARTICLE_ID}`,
   { headers: { Authorization: `Bearer ${token}` } })).json()).data
 const before = { revision: base.revision, updatedAt: base.updatedAt }

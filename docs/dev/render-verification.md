@@ -33,7 +33,7 @@
 
 | 缺什么 | 影响的套件 | 怎么补 |
 | --- | --- | --- |
-| **① 渲染令牌** `~/.zcode/secrets/markflow-render-token` | 一切要打渲染 API 的套件（M/C/A/R/X） | 向渲染服务方索取（**不入库**，永远不进提交） |
+| **① 渲染令牌** `<渲染令牌文件，路径与值均不入库>` | 一切要打渲染 API 的套件（M/C/A/R/X） | 向渲染服务方索取（**不入库**，永远不进提交） |
 | **② `webui/node_modules`** | W 构建、以及一切要编译探针 dist 的浏览器套件 | `(cd webui && npm ci)` |
 | **③ `.env`**（含 `ENV.MYSQL_TEST_URL`） | G 后端全量测试 | 按 `src/main/resources/application.yaml` 里的 `${ENV.*}` 占位符补齐（**不入库**） |
 | **④ 历史产物**（截图 196 张、样例 HTML、逐轮 JSON） | 只是「复查旧结论」时才需要 | 重跑第三节即可再产出；**不建议入库**（体积大且每次可重算） |
@@ -57,7 +57,7 @@
 | 3 | Chrome（本机 138.x） | 所有浏览器套件；`cdp.mjs` 自动在 4 个候选路径里找 | `ls "C:/Program Files/Google/Chrome/Application/chrome.exe"` | 文件存在 |
 | 4 | Node ≥ 24 | `cdp.mjs` 用 Node 24 自带的全局 `WebSocket` + `fetch` 直连 CDP，**不装 playwright/puppeteer** | `node -v` | `v24.x` |
 | 5 | Python 3（**建议**设 `PYTHONIOENCODING=utf-8`） | 终端是 GBK：探针脚本的 print 里带中文**值**时（如 `round11_crosscheck.py` 打印判定词）会输出乱码；`python -c` 内联打印中文可能直接 `UnicodeEncodeError`。**脚本本身不会崩，落盘文件始终是 UTF-8** | `python -V` | `Python 3.x` |
-| 6 | 渲染令牌文件 `~/.zcode/secrets/markflow-render-token` | 调 `POST https://www.bx9y.com.cn/__markflow_render`；**令牌只从文件读，不进任何产物** | `test -f ~/.zcode/secrets/markflow-render-token && echo OK` | `OK` |
+| 6 | 渲染令牌文件 `<渲染令牌文件，路径与值均不入库>` | 调 `POST https://www.bx9y.com.cn/__markflow_render`；**令牌只从文件读，不进任何产物** | `test -f <渲染令牌文件，路径与值均不入库> && echo OK` | `OK` |
 | 7 | `webui/node_modules` 已装 | 探针 dist 编译时要解析 `@tiptap/*`（clone 场景先 `npm ci`） | `ls -d webui/node_modules` | 目录存在 |
 | 8 | 仓库根目录下 `.env` 存在 | **只有 G（后端全量测试）需要**；缺它会 `Could not resolve placeholder 'ENV.MYSQL_TEST_URL'` | `test -f .env && echo OK` | `OK` |
 | 9 | `tools/render-verify/` 里有脚本（**第十四轮起随仓库分发，不用再自己补**） | 除 G/W 外的**全部**探针套件 | `ls tools/render-verify/spec/component_registry.json` | 文件存在 |
@@ -1227,7 +1227,7 @@ node tools/render-verify/round29_gate_audit.mjs --json   # 另落 target/probe/b
 | 顺序 | 要补什么 | 怎么补 | 不补的后果 |
 | --- | --- | --- | --- |
 | 1 | `webui/node_modules` | `(cd webui && npm ci)`（用仓库自带的 `package-lock.json`） | W 构建与所有浏览器套件跑不了 |
-| 2 | 渲染令牌文件 | 向渲染服务方索取，放 `~/.zcode/secrets/markflow-render-token`（**不要提交**） | 所有要打渲染 API 的套件跑不了 |
+| 2 | 渲染令牌文件 | 向渲染服务方索取，放 `<渲染令牌文件，路径与值均不入库>`（**不要提交**） | 所有要打渲染 API 的套件跑不了 |
 | 3 | `.env` | 按 `src/main/resources/application.yaml` 里的 `${ENV.*}` 占位符补齐（**不要提交**） | G 后端全量测试报 `Could not resolve placeholder`、大批 Error |
 | 4 | `target/probe/` 目录本身 | `mkdir -p target/probe` | 日志重定向会先失败（脚本自己会建子目录，但顶层要存在） |
 

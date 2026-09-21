@@ -16,7 +16,7 @@ import sys
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from paths import OUT, TOKEN_FILE, RENDER_URL  # noqa: E402
+from paths import OUT, TOKEN_FILE, RENDER_URL  # noqa: E402, read_token
 # `gen/` 自己没有 __init__.py（本目录的脚本历来是各自独立执行的），
 # 而脚本所在目录本来就在 sys.path[0]，所以直接按模块名导入同目录的兄弟文件。
 from passthrough import counts as passthrough_counts  # noqa: E402
@@ -24,7 +24,7 @@ from passthrough import counts as passthrough_counts  # noqa: E402
 OUT = os.path.join(OUT, 'combos')
 os.makedirs(OUT, exist_ok=True)
 
-TOKEN = open(TOKEN_FILE).read().strip()
+TOKEN = read_token()
 URL = RENDER_URL
 BANNER = 'https://robocopmao.github.io/r-markdown/banner4.webp'
 

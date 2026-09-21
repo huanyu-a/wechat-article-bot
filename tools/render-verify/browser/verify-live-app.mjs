@@ -20,7 +20,7 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { launchBrowser, openPage } from './cdp.mjs'
-import { BROWSER_OUT } from '../paths.mjs'
+import { BROWSER_OUT, login } from '../paths.mjs'
 import { 判据, 自检, 失败, 克隆 } from '../gates.mjs'
 
 const LIVE = 'http://127.0.0.1:8081'
@@ -134,10 +134,10 @@ async function fingerprintOf(origin) {
 
 const login = await (await fetch(LIVE + '/api/auth/login', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username: 'admin', password: 'Admin@123' }),
+  body: JSON.stringify({ username: process.env.WAB_USERNAME, password: process.env.WAB_PASSWORD }),
 })).json()
 if (!login.success) throw new Error('登录失败：' + JSON.stringify(login))
-const token = login.data.token
+const token = await login()
 
 const { client, version, close } = await launchBrowser({ port: 9341 })
 console.log('浏览器:', version.Browser, '· 目标:', LIVE)

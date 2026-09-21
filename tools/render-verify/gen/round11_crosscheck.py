@@ -40,9 +40,9 @@ import sys
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from paths import OUT, SPEC, TOKEN_FILE, RENDER_URL  # noqa: E402
+from paths import OUT, SPEC, TOKEN_FILE, RENDER_URL  # noqa: E402, read_token
 
-TOKEN = open(TOKEN_FILE).read().strip()
+TOKEN = read_token()
 URL = RENDER_URL
 #: 第五轮存档的引擎包（受版本控制，见 spec/engine/README.md）。通道 B1 的输入。
 BUNDLE = os.path.join(SPEC, 'engine', 'mf_app.js')

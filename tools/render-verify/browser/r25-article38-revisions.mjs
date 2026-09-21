@@ -18,17 +18,13 @@
  */
 import { writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { BROWSER_OUT, API } from '../paths.mjs'
+import { BROWSER_OUT, API, login } from '../paths.mjs'
 
 const ARGS = process.argv.slice(2)
 const ARTICLE_ID = Number(ARGS.find((item) => /^\d+$/.test(item)) || 38)
 
-const login = await (await fetch(API + '/api/auth/login', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username: 'admin', password: 'Admin@123' }),
-})).json()
 if (!login.success) throw new Error('登录失败：' + JSON.stringify(login))
-const token = login.data.token
+const token = await login()
 const get = async (path) => {
   const response = await fetch(API + path, { headers: { Authorization: `Bearer ${token}` } })
   const body = await response.json()

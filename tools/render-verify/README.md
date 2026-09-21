@@ -111,7 +111,7 @@ tiptap 应用层的 `draggable`、`tableWrapper`、行内 style 属性顺序）�
 
 ## 跑之前要有什么
 
-1. **渲染令牌** `~/.zcode/secrets/markflow-render-token`（只读，**不进任何产物、不提交**）；
+1. **渲染令牌** `<渲染令牌文件，路径与值均不入库>`（只读，**不进任何产物、不提交**）；
 2. `webui/node_modules`（`(cd webui && npm ci)`）；
 3. 跑真实稿件套件时，应用要在 `127.0.0.1:8081` 起着；
 4. Node ≥ 24（`cdp.mjs` 用 Node 自带的全局 `WebSocket` + `fetch` 直连 CDP）。

@@ -19,7 +19,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { launchBrowser, openPage } from './cdp.mjs'
-import { BROWSER_OUT, API } from '../paths.mjs'
+import { BROWSER_OUT, API, login } from '../paths.mjs'
 
 const DOT = '<span style="width:6px;height:6px;border-radius:50%;background-color:#27ae60;margin-right:12px"></span>'
 const flexRow = (label, text) => '<section style="display:flex;align-items:center">' + DOT
@@ -86,12 +86,8 @@ const MEASURE = `JSON.stringify((() => {
   }
 })())`
 
-const login = await (await fetch(API + '/api/auth/login', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username: process.env.ADMIN_USERNAME || 'admin', password: process.env.ADMIN_PASSWORD || 'Admin@123' }),
-})).json()
 if (!login.success) throw new Error('登录失败：' + JSON.stringify(login))
-const token = login.data.token
+const token = await login()
 const auth = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
 
 mkdirSync(resolve(BROWSER_OUT, 'shots'), { recursive: true })

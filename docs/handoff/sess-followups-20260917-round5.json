@@ -127,7 +127,7 @@
       {
         "name": "渲染令牌可用性（第 5 条阻塞的最终确认）",
         "result": "blocked",
-        "detail": "远端渲染服务可达且按 token 鉴权（GET/POST 均 401，假 token 亦 401）。令牌在本机**确实不存在**：MARKFLOW_RENDER_TOKEN 未设；~/.zcode 整个目录不存在（故 ~/.zcode/secrets/markflow-render-token 不存在）；C:\\Users\\WIN11 与 D:\\project 全盘搜 *markflow*token* 无任何文件。markflow-typeset 技能（本次新出现在技能目录中）也把凭据位置指向同一路径，无内嵌值。结论：令牌属**外部输入**，只能向渲染服务方索取，本机不可自行补出 ⇒ 第 5 条仍是等外部条件，但阻塞原因已订正为「缺令牌」而非「服务不通」。"
+        "detail": "远端渲染服务可达且按 token 鉴权（GET/POST 均 401，假 token 亦 401）。令牌在本机**确实不存在**：MARKFLOW_RENDER_TOKEN 未设；本地密钥目录不存在（故 <渲染令牌文件> 不存在）；C:\\Users\\WIN11 与 D:\\project 全盘搜 *markflow*token* 无任何文件。markflow-typeset 技能（本次新出现在技能目录中）也把凭据位置指向同一路径，无内嵌值。结论：令牌属**外部输入**，只能向渲染服务方索取，本机不可自行补出 ⇒ 第 5 条仍是等外部条件，但阻塞原因已订正为「缺令牌」而非「服务不通」。"
       },
       {
         "name": "保存侧语法自检的定位（第 14 条事实核对）",
@@ -185,7 +185,7 @@
       "severity": "MINOR",
       "issue": "交接记录里第 5 条（组合用例「剩下的」）的阻塞原因**把两个不同的东西混为一谈**：写成「本机渲染服务（127.0.0.1:8081）拒绝连接」。实际上 127.0.0.1:8081 是**本应用**（只有 run-article.mjs / verify-live-app.mjs 这类要真应用的套件才需要），而渲染服务是**远端的** RENDER_URL = https://www.bx9y.com.cn/__markflow_render（tools/render-verify/paths.py）。",
       "verified": true,
-      "fix": "fixed（第三十七轮）—— 实测远端渲染服务**活着且可达**：DNS 与 TCP 443 均通，GET/POST 都返回 401，且**带假 token 也是 401** ⇒ 它在按 token 正常鉴权，不是服务挂了。所以唯一真阻塞就是令牌（MARKFLOW_RENDER_TOKEN 未设、~/.zcode/secrets/markflow-render-token 不存在、生产库那份是 AES 加密且库不可达）。已订正 .zcode/handoff 与 known-issues-handoff.md 第 5 条，明确「接手方不必再查本机服务为什么起不来，拿到令牌即可直接跑 gen/round8_combos.py」。教训：**一个把 A 说成 B 的阻塞记录，会让下一个人去修一个根本没坏的东西。**"
+      "fix": "fixed（第三十七轮）—— 实测远端渲染服务**活着且可达**：DNS 与 TCP 443 均通，GET/POST 都返回 401，且**带假 token 也是 401** ⇒ 它在按 token 正常鉴权，不是服务挂了。所以唯一真阻塞就是令牌（MARKFLOW_RENDER_TOKEN 未设、<渲染令牌文件> 不存在、生产库那份是 AES 加密且库不可达）。已订正 .zcode/handoff 与 known-issues-handoff.md 第 5 条，明确「接手方不必再查本机服务为什么起不来，拿到令牌即可直接跑 gen/round8_combos.py」。教训：**一个把 A 说成 B 的阻塞记录，会让下一个人去修一个根本没坏的东西。**"
     }
   ],
   "next": [
@@ -193,7 +193,7 @@
     "第 14 条（保存侧语法自检只覆盖智能体 save_article_draft，编辑器 REST 保存路径没有）是 P2 产品决策，未动",
     "**方案 D 已做**（scripts/dev-start.sh）。它已加进 README.md / README_CN.md 的开发启动一节。若日后要重启方案 A（把 build-webui 的 phase 前移到 compile），前提是先把 frontend-maven-plugin 装进本地仓库——否则会打破项目自己的离线闸门",
     "第 9 条（31 个组件升 A 级证据）是内容侧工作量，需真实调度轮次产出成稿。**第 10 条已在第三十七轮收口**：原设想的「元素名白名单」经实测否决（552 份产物命中 44 份、其中 41 份是故意喂坏的 tag-layout-*，收益 0 噪声 +44），改用**形态判据**并落成 tools/render-verify/gen/passthrough.py（带 --selftest）；剩余不确定性是两条边界（自闭合⇒占位只有 slider 一个正例 n=1；包文本⇒透传零反例但同理可能误报），**无法靠现有语料消除**，需等上游出现新形态样本，归入第 3 条「继续采样」",
-    "第 5 条「剩下的」（三层嵌套 / :::table 嵌 :::timeline / 超长内容+嵌套 的组合用例）**仍未做，但阻塞原因已订正（第三十七轮实测）**。此前记的是「本机渲染服务（127.0.0.1:8081）拒绝连接，且 ~/.zcode/secrets/markflow-render-token 不存在 ⇒ 无法产生新的上游产物」——**这句话把两个不同的东西混为一谈了**：`127.0.0.1:8081` 是**本应用**（`run-article.mjs` / `verify-live-app.mjs` 要真应用时才需要），而渲染服务是**远端的** `RENDER_URL = https://www.bx9y.com.cn/__markflow_render`（tools/render-verify/paths.py）。实测：远端服务**活着且可达**（DNS+TCP443 通，GET/POST 都返回 **401**，带一个假 token 也是 401 ⇒ 它是在按 token 鉴权，不是挂了）。**所以唯一的真阻塞是那个令牌**：`MARKFLOW_RENDER_TOKEN` 环境变量未设，`~/.zcode/secrets/markflow-render-token` 不存在，生产库（存的是 AES 加密令牌）不可达。令牌按文档（render-verification.md 第 36/1230 行）**只能向渲染服务方索取**，属外部输入、不可自行补出，因此本条**仍是等外部条件**，而不是等本机环境修复——订正的意义在于：接手方不必再去查「本机服务为什么起不来」，只需拿到令牌即可直接跑 gen/round8_combos.py 补用例",
+    "第 5 条「剩下的」（三层嵌套 / :::table 嵌 :::timeline / 超长内容+嵌套 的组合用例）**仍未做，但阻塞原因已订正（第三十七轮实测）**。此前记的是「本机渲染服务（127.0.0.1:8081）拒绝连接，且 <渲染令牌文件> 不存在 ⇒ 无法产生新的上游产物」——**这句话把两个不同的东西混为一谈了**：`127.0.0.1:8081` 是**本应用**（`run-article.mjs` / `verify-live-app.mjs` 要真应用时才需要），而渲染服务是**远端的** `RENDER_URL = https://www.bx9y.com.cn/__markflow_render`（tools/render-verify/paths.py）。实测：远端服务**活着且可达**（DNS+TCP443 通，GET/POST 都返回 **401**，带一个假 token 也是 401 ⇒ 它是在按 token 鉴权，不是挂了）。**所以唯一的真阻塞是那个令牌**：`MARKFLOW_RENDER_TOKEN` 环境变量未设，`<渲染令牌文件>` 不存在，生产库（存的是 AES 加密令牌）不可达。令牌按文档（render-verification.md 第 36/1230 行）**只能向渲染服务方索取**，属外部输入、不可自行补出，因此本条**仍是等外部条件**，而不是等本机环境修复——订正的意义在于：接手方不必再去查「本机服务为什么起不来」，只需拿到令牌即可直接跑 gen/round8_combos.py 补用例",
     "编辑器链路的模型切换仍未做实机验证（需一次真实编辑器交互）",
     "**同类模式复核已完成（第三十七轮）**：新写了 target/scratch/audit_read_as_write.py 做全量扫描（Q1 找「回落到另一行」的方法 = 64 个，Q2 找「回落结果被当写目标」= **0 处**），并用 target/scratch/prove_audit_is_alive.py 做红/绿反证（7/7，从真实源码取方法体、判据直接 import）证明这个 0 是「真干净」而不是「判据死了」。人工复核过最像的两个候选：ScheduleTaskService.apply() 是改值器、LlmConfigService.required() 是单行表正确写法。**这一类缺陷在仓库里没有第二处。** 注意两个脚本都在 gitignore 的 target/scratch/ 下，是分析工具不是交付物。",
     "本轮代码改动**未 commit**：git status 有 22 改 + 未跟踪若干。推送远端需用户明确授权（remote 是 huanyu，不是 origin）"

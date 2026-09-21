@@ -26,7 +26,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { launchBrowser, openPage } from './cdp.mjs'
-import { OUT, BROWSER_OUT, ROOT, API } from '../paths.mjs'
+import { OUT, BROWSER_OUT, ROOT, API, login } from '../paths.mjs'
 import { PROBE_SRC as PROBE_SRC_SOURCE } from './r24-probes.mjs'
 
 const ARGS = process.argv.slice(2)
@@ -71,12 +71,8 @@ if (BUNDLE && !existsSync(join(BUNDLE, 'index.html'))) {
 // ---------------------------------------------------------------------------
 // 登录 & 取真实 payload（这一支**不换**内容，整篇照原样打开）
 // ---------------------------------------------------------------------------
-const login = await (await fetch(API + '/api/auth/login', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username: 'admin', password: 'Admin@123' }),
-})).json()
 if (!login.success) throw new Error('登录失败：' + JSON.stringify(login))
-const token = login.data.token
+const token = await login()
 
 const readArticle = async () => {
   const response = await fetch(`${API}/api/articles/${ARTICLE_ID}`, { headers: { Authorization: `Bearer ${token}` } })

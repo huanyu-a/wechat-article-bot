@@ -22,7 +22,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, createReadStream, s
 import { createServer, request as httpRequest } from 'node:http'
 import { resolve, join, extname, normalize } from 'node:path'
 import { launchBrowser, openPage } from './cdp.mjs'
-import { BROWSER_OUT, WEBUI_DIST } from '../paths.mjs'
+import { BROWSER_OUT, WEBUI_DIST, login } from '../paths.mjs'
 import { 判据, 自检, 失败, 克隆 } from '../gates.mjs'
 
 const ARGS = process.argv.slice(2)
@@ -214,12 +214,8 @@ async function apiStatus(id, token) {
   return { httpStatus: response.status, success: payload?.success ?? null, message: payload?.message ?? null }
 }
 
-const login = await (await fetch(API + '/api/auth/login', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username: 'admin', password: 'Admin@123' }),
-})).json()
 if (!login.success) throw new Error('登录失败：' + JSON.stringify(login))
-const token = login.data.token
+const token = await login()
 
 const { client, version, close } = await launchBrowser({ port: 9340 })
 console.log('浏览器:', version.Browser)

@@ -132,7 +132,7 @@
 | D55 | **图片来源无约束**：任务成稿的配图来自 search_web_images + import_web_image（网络搜图导入），与「数据和密钥掌握在自己手里」的产品边界不符，且无比例约束 | run#8/#10/#23 的执行日志与模型自述（「改用网络图片经 import_web_image 导入素材库后引用」） | ✅ 已修（2026-09-19，用户约定）：①**工具层移除**——MEDIA 组不再包含 search_web_images / import_web_image（ToolRegistry），网图从工具层面不存在；②图片模型已配置（step-image-edit-2，经 nexus 网关），generate_image 可用；③skill 与三个测试任务提示词写入硬约束：图片只允许 generate_image 或素材库、比例统一 4:3 横版；④巡检心跳增加图片来源合规检查（日志出现搜图/导图工具即违规）。**巡检追记（run#27→文章#27）**：qwen-image-3.0-pro 管道出图成功，但产物 1024x1024——`ImageGenerationService` 把 size **硬编码 1024x1024**（生成/改图两处），提示词写 4:3 压不住；已改 1024x768（4:3，网关实测按指定尺寸出图）。**追记（2026-09-20）：「MEDIA 组声明 = 工具暴露的唯一事实源」已下沉到注册表层**——`agent/ToolRegistry.filterByGroup(groupKey, tools)` 按组名单过滤工具实例，三个装配点一律走它（`ai/ArticleAiService.java:468` 编辑器链路、`:659` 定时链路、`ai/ScheduledAgentFactory.java:187`），未知组键 **fail-closed**（返回空列表，不退回全量清单）；同时 `agent/AgentProtocols` 的编辑器/定时两套提示改写成「只允许素材库既有图片 + `generate_image`、不得把公网图片地址写进正文」，提示栈与工具层同向。测试：`agent/ToolRegistryTest`（过滤后只剩 5 件且剔除两个网图工具、其它组不受影响、未知键/null/空入参 fail-closed、组声明与 D55 一致）、`WechatArticleBotApplicationTests`（`create()` 仍造 7 件、过滤后暴露 5 件 + 协议文案不再声称可导入外链图） | `agent/ToolRegistry`（MEDIA 组 + `filterByGroup`）、`ai/ArticleAiService`、`ai/ScheduledAgentFactory`、`agent/AgentProtocols`、`skill/SkillSeeder`、应用内 LLM_CONFIG/SCHEDULE_TASK 数据 |
 | D53 | **定时链路产出的 MARKFLOW 稿系统性缺失 `data-render-id`（渲染区段标记）**：该标记由 `ArticleAiService.markRenderId` 注入（最外层包 `<section data-render-id="rN">`），用途是 AI 回灌防护的渲染区段识别锚点；但它**只有一个调用点**（编辑器链路的渲染缓存写入），定时任务的交付前渲染（ScheduledArticleTools → MarkFlowRenderService）从不注入。实测（巡检 run#17，2026-09-19）：全库 4 篇任务产出的 MARKFLOW 稿 #14/#17/#18/#19 落库 HTML 里 `data-render-id` 均为 **0 处**（正则计数）；同一批稿的其它检验项全绿（标题/摘要合规、字面 ::: 残留 0、未声明元素 0、成对标签包文字 0、图片 4 张全为 /uploads/ 相对路径）。影响：对这些稿件后续使用 AI 协同编辑时，渲染区段与普通正文的区分锚点缺失，HTML 回灌防护静默降级（PreservedRenderId 扩展只能「保住已有标记」，无中生有不了）；公众号交付不受影响（纯样式层）。✅ 已修（巡检当日，红→绿反证通过）：`renderBeforeDelivery` 渲染成功后调 `ArticleAiService.markRenderId` 注入，id 前缀 **sched-rN**（与编辑器会话的 rN 刻意不同——`renderIdOf` 按值查「当前会话」的渲染缓存，撞号会让别的会话把定时稿的区段错认成自己渲染的产物）。红→绿：拆掉注入恰好 2 例失败（新增契约用例 renderBeforeDeliveryMarksTheRenderedRegion + 同步更新的主题用例），恢复后 ScheduledArticleToolsDraftTests 30 例全绿。**边界（诚实声明）**：编辑器 read_article/read_blocks 的「渲染区段占位摘要」防护要求标记值命中**当前会话**的渲染缓存，定时稿的标记在缓存外、该防护维持原状；要跨会话生效需引入进程级注册表，但那会带来「回显展开成过期 HTML」的取舍，需单独设计决策 | `ai/ScheduledArticleTools`（renderBeforeDelivery + RENDER_ID_SEQUENCE）、`ai/ScheduledArticleToolsDraftTests`（30 例） |
 | D52 | **主用档案密钥被界面编辑破坏，每轮触发故障切换警告**：「主用档案不可用或停滞，已自动换用备用档案继续」在 run#10~#16 每轮出现。归因不是停滞也不是上游抖动——执行日志里切换原因是 **HTTP 401 Invalid token**；时间线闭环：run#8/#9（00:50-00:53）主用档案 #2 直接成功无切换，~01:05 经界面编辑档案 #2 后，run#10 起（01:14+）每次首个候选都 401。证据：#2 的 keyMask=`…673e` 与其它档案 `…mro1` 不一致（编辑时把无关串粘进了密钥框），401 属 permanent 错误所以故障切换链每次都正确兜底（任务未失败，但每轮白试一次主用档案）。修复：PUT /api/llm-profiles/2 重设为 nexus key（掩码对齐 mro1）；验证：run#18 全程 **SUCCESS**（无警告）、20 次工具调用、profilesUsed 仅主用一条、switchedProfile=false、日志 0 次 401 | ✅ 已修复并实跑验证（2026-09-19） | 应用内 LLM_PROFILE #2 数据（配置事故，无代码改动） |
-| D51 | **MarkFlow 渲染服务令牌缺失**：提供的 nexus key 对 `https://www.bx9y.com.cn/__markflow_render` 一律 `X-Render-Token 无效`（X-Render-Token / Authorization 两种头、hao/bx9y 裸域均试过，同样无效）；旧令牌文件 `~/.zcode/secrets/markflow-render-token` 已不存在（目录整个没了），历史文档刻意不落令牌值，**令牌无处可取** | 后果：① 渲染式排版链路不可用；② `tools/render-verify/gen/*.py` 需要 `RENDER_URL` + 令牌重新生成 79 个组件产物（`target/probe/` 已被清空），**79 样例浏览器回归因此暂缓**——离线引擎存档 `spec/engine/mf_app.js` 是前端 bundle，没有可直接调用的渲染入口，替代不可行。等用户提供渲染令牌后：写入 `~/.zcode/secrets/markflow-render-token` → 重跑 gen → 重跑套件 | ✅ **已解决（2026-09-19，改走自部署）**：用户提供 huanyu-a/MarkFlow 源码仓库——渲染服务端就在其中（`tools/render-server/render_server.mjs`），**令牌本就是部署者自设的 `MARKFLOW_RENDER_TOKEN` 环境变量**，不存在「找回」一说。处置：clone 仓库到 `C:\project\MarkFlow` → `pnpm install --no-frozen-lockfile`（上游 package.json 与 lockfile 不同步）→ `pnpm add -D esbuild`（pnpm 隔离布局解析不到）→ `node tools/render-server/build.mjs` 生成 render-bundle.mjs → 自生成令牌写入 `~/.zcode/secrets/markflow-render-token`（重建该约定文件）→ `MARKFLOW_RENDER_TOKEN=… MARKFLOW_RENDER_PORT=8788 node tools/render-server/render_server.mjs` 起服务 → 应用 `PUT /api/settings/render`（注意路由是 `/api/settings/render` 不是 `/api/render-config`）指向 `http://host.docker.internal:8788` → 连接测试通过（语法指令 8010 字符）。`paths.py` 的 `RENDER_URL` 加 `MARKFLOW_RENDER_URL` 环境变量覆盖（默认行为不变），gen/套件全部改打本地服务 | `C:\project\MarkFlow`（仓库外）、`~/.zcode/secrets/markflow-render-token`、`tools/render-verify/paths.py` |
+| D51 | **MarkFlow 渲染服务令牌缺失**：提供的 nexus key 对 `https://www.bx9y.com.cn/__markflow_render` 一律 `X-Render-Token 无效`（X-Render-Token / Authorization 两种头、hao/bx9y 裸域均试过，同样无效）；旧令牌文件 `<渲染令牌文件，路径与值均不入库>` 已不存在（目录整个没了），历史文档刻意不落令牌值，**令牌无处可取** | 后果：① 渲染式排版链路不可用；② `tools/render-verify/gen/*.py` 需要 `RENDER_URL` + 令牌重新生成 79 个组件产物（`target/probe/` 已被清空），**79 样例浏览器回归因此暂缓**——离线引擎存档 `spec/engine/mf_app.js` 是前端 bundle，没有可直接调用的渲染入口，替代不可行。等用户提供渲染令牌后：写入 `<渲染令牌文件，路径与值均不入库>` → 重跑 gen → 重跑套件 | ✅ **已解决（2026-09-19，改走自部署）**：用户提供 huanyu-a/MarkFlow 源码仓库——渲染服务端就在其中（`tools/render-server/render_server.mjs`），**令牌本就是部署者自设的 `MARKFLOW_RENDER_TOKEN` 环境变量**，不存在「找回」一说。处置：clone 仓库到 `C:\project\MarkFlow` → `pnpm install --no-frozen-lockfile`（上游 package.json 与 lockfile 不同步）→ `pnpm add -D esbuild`（pnpm 隔离布局解析不到）→ `node tools/render-server/build.mjs` 生成 render-bundle.mjs → 自生成令牌写入 `<渲染令牌文件，路径与值均不入库>`（重建该约定文件）→ `MARKFLOW_RENDER_TOKEN=… MARKFLOW_RENDER_PORT=8788 node tools/render-server/render_server.mjs` 起服务 → 应用 `PUT /api/settings/render`（注意路由是 `/api/settings/render` 不是 `/api/render-config`）指向 `http://host.docker.internal:8788` → 连接测试通过（语法指令 8010 字符）。`paths.py` 的 `RENDER_URL` 加 `MARKFLOW_RENDER_URL` 环境变量覆盖（默认行为不变），gen/套件全部改打本地服务 | `C:\project\MarkFlow`（仓库外）、`<渲染令牌文件，路径与值均不入库>`、`tools/render-verify/paths.py` |
 
 **↑ D30–D39 是 2026-09-13 第五轮（组件渲染能力全量核查）的成果，逐条红→绿证据、77 项组件清单、
 两条路径对照表与未修项，见 §3.9。** 这一轮的改动**全在 `webui/`**，Java 侧一行未动。
@@ -5690,7 +5690,7 @@ export const PastedLeadingWhitespace = Extension.create({
 |---|---|---|---|
 | `%TEMP%\probe-chrome-*`（CDP 探针的 Chrome profile） | **63 个目录 / 约 1.1 GB** | 每次跑套件 `mkdtempSync` 新建、**没有任何脚本会去读旧的那一份**；`cdp.mjs` 的 `sweepLeftovers()` 只管进程不管目录（§3.34⑦ 已记录），属于纯泄漏 | 无需恢复（下次跑自动新建） |
 | `%TEMP%\r27c-*` | **10 个** | 同上（`round27_c_compare.mjs` 遗留） | 无需恢复 |
-| `target/probe/token.txt`（44 B）、`target/probe/run68_key.txt`（194 B） | **2 个** | 唯一引用它们的地方是**本文档自己的两处提及**，`tools/`、`src/` 里 **0 处引用**（`grep` 实测）；脚本统一读 `~/.zcode/secrets/markflow-render-token`（`paths.mjs:51`）；两者都在 `.gitignore:2` 覆盖下的 `target/` 里，`git ls-files target/probe` = **0** | 不需要（内容已失效）；**含密钥的临时文件不建议留**，这正是 §3.27③ C 表第 8 行要求的 |
+| `target/probe/token.txt`（44 B）、`target/probe/run68_key.txt`（194 B） | **2 个** | 唯一引用它们的地方是**本文档自己的两处提及**，`tools/`、`src/` 里 **0 处引用**（`grep` 实测）；脚本统一读 `<渲染令牌文件，路径与值均不入库>`（`paths.mjs:51`）；两者都在 `.gitignore:2` 覆盖下的 `target/` 里，`git ls-files target/probe` = **0** | 不需要（内容已失效）；**含密钥的临时文件不建议留**，这正是 §3.27③ C 表第 8 行要求的 |
 | `target/probe/browser/shots/r16-live/_superseded/`（第二十二轮那 22 张归属不明的旧图） | **1.1 MB** | `tools/` 里 **0 处引用**（`grep` 实测）；它们是被「移动、未删除」保留的第二十二轮旧图，不是任何判定所依据的产物 | `git` 里本就没有（gitignored）；如需回看，重跑 `r16-shot-zoom.mjs` 即可重新生成 |
 | `D:\project\wwwroot\wechat-article-bot-r15clone`（第十五轮的干净 clone） | **123 MB** | `tools/`、`src/` 里 **0 处引用**；文档里出现的只是**说明性文字**（记录第十五轮做过这次演练），不是可执行依赖 | `git clone` 重来一次（第十五轮的做法写在 `render-verification.md` §3.11） |
 | `D:\project\wwwroot\target\`（**游离目录，不属于本项目**） | 4 个目录 / 1 个文件 | 里面只有 `probe/r32/logs/C_run_suite_probe.log` 的**一份更早的副本**（15,238 B，12:45），项目内同路径的最新版 **99,110 B**（13:48）完好；它的存在是某个脚本在错误 cwd 下跑出来的，**不在 git 仓库内、不被任何脚本引用** | 不需要 |
@@ -5703,8 +5703,9 @@ export const PastedLeadingWhitespace = Extension.create({
 - **安全扫描（提交前，全量）**：`git diff` 无密钥类命中；41 个未跟踪文件的逐个值扫描（`sk-…` / `AKIA…` /
   `BEGIN … PRIVATE KEY` / 长随机串）**0 命中**；唯一两处提到密码的是
   `round25_stock_scan.mjs` / `round27_leading_ws_scan.mjs` **从 `.env` 读 `ENV.MYSQL_PASSWORD`（引用，不是值）**；
-  `Admin@123` 这个默认值**在 HEAD 里本来就有**（`application.yaml` 的 `${ADMIN_PASSWORD:Admin@123}` 等），
-  不是本次新引入。渲染令牌只有**路径引用**（`paths.mjs`、`paths.py`、README），**无值**。
+  `application.yaml` 里 `${ADMIN_PASSWORD:<默认值>}` 那个默认口令**在 HEAD 里本来就有**，不是本次新引入
+  （它同时是源码默认值与测试固定值，清理需单独一轮，见本文档遗留问题）。
+  渲染令牌只有**路径引用**（`paths.mjs`、`paths.py`、README），**无值**。
 - `.gitignore` 复核：`.env`、`data/`、`logs/`、`target/`（`target/` 是**裸模式**，命中任意深度）均在覆盖内；
   `git ls-files target/probe` = **0**。
 - 提交内容：**已跟踪 24 个文件（+5294 / −55）＋ 新增 42 个探针脚本**（全在 `tools/render-verify/` 下）。
@@ -6050,7 +6051,7 @@ docker exec momo-mysql-dev mysql -uroot -p"$PW" -D wechat-article -e "SELECT ...
     > 实测（第三十七轮）：远端渲染服务**活着且可达**——DNS 与 TCP 443 都通，`GET` / `POST` 均返回 **401**，
     > 且带一个**假 token 也是 401** ⇒ 它是在按 token 正常鉴权，**不是服务挂了**。
     >
-    > **所以这条的唯一真阻塞就是令牌**：`MARKFLOW_RENDER_TOKEN` 未设、`~/.zcode/secrets/markflow-render-token`
+    > **所以这条的唯一真阻塞就是令牌**：`MARKFLOW_RENDER_TOKEN` 未设、`<渲染令牌文件，路径与值均不入库>`
     > 不存在、生产库里那份是 AES 加密的且库不可达。令牌按 §「环境准备」**只能向渲染服务方索取**
     > （外部输入，不可自行补出）。
     >
@@ -6098,7 +6099,7 @@ docker exec momo-mysql-dev mysql -uroot -p"$PW" -D wechat-article -e "SELECT ...
    ```bash
    TOKEN=$(curl -s -X POST http://localhost:8081/api/auth/login \
      -H 'Content-Type: application/json' \
-     -d '{"username":"admin","password":"Admin@123"}' \
+     -d '{"username":"<本地管理员账号>","password":"<本地管理员密码>"}' \
      | python -c "import sys,json;print(json.load(sys.stdin)['data']['token'])")
 
    curl -s -X POST http://localhost:8081/api/skills/preview \
@@ -6345,7 +6346,7 @@ docker exec momo-mysql-dev mysql -uroot -p"$PW" -D wechat-article -e "SELECT ...
     **这是把两个不同的东西混为一谈了**——`127.0.0.1:8081` 是**本应用**，渲染服务是**远端的**
     `https://www.bx9y.com.cn/__markflow_render`。实测远端服务**活着且可达**（GET/POST 均 **401**，
     带假 token 也是 401 ⇒ 在按 token 正常鉴权，不是挂了）。唯一真阻塞是**令牌**：
-    `MARKFLOW_RENDER_TOKEN` 未设、`~/.zcode/secrets/markflow-render-token` 不存在
+    `MARKFLOW_RENDER_TOKEN` 未设、`<渲染令牌文件，路径与值均不入库>` 不存在
     （`~/.zcode` 整个目录都不存在）、全盘搜 `*markflow*token*` 无任何文件。
     令牌属**外部输入**，只能向渲染服务方索取。详见第 5 条下的订正块。
 
@@ -6379,7 +6380,8 @@ docker exec momo-mysql-dev mysql -uroot -p"$PW" -D wechat-article -e "SELECT ...
     > 这与第三十六轮 `leakedTag`、第三十七轮大小写 bug 是同一类病：**计数器坏了比没有计数器更糟**。
 
 18. **本地可跑环境已搭好（第三十八轮），供人工验证**（环境实测见下一条）：
-    Podman 容器 `watb-test-mysql` + 应用 `http://127.0.0.1:8081`，登录 `admin` / `Admin@123`。
+    Podman 容器 `watb-test-mysql` + 应用 `http://127.0.0.1:8081`，用本地管理员账号登录
+    （账号密码不写进文档；本机 `.env` 的 `ADMIN_USERNAME` / `ADMIN_PASSWORD`，或应用启动日志里的初始账号）。
     两个环境坑：
     - **Podman 只把 3306 绑在 IPv6 回环 `[::1]`**，`127.0.0.1:3306` 被拒（`netstat` 显示
       `TCP [::1]:3306`）。`.env` 里的 `ENV.MYSQL_URL` 因此要写 **`localhost`** 而不是 `127.0.0.1`
@@ -6470,7 +6472,7 @@ docker exec momo-mysql-dev mysql -uroot -p"$PW" -D wechat-article -e "SELECT ...
     > 口径提醒：令牌只在**本机**配好，换机器仍需索取（§八 16 关于「令牌属外部输入」的结论不受影响）。
     > 核验细节见 `docs/dev/handoff-unverified-claims-audit-20260921.md` 的 #46。原文保留作历史记录。
 
-    - `~/.zcode/secrets/markflow-render-token` **不存在**（该目录也不存在）、`MARKFLOW_RENDER_TOKEN`
+    - `<渲染令牌文件，路径与值均不入库>` **不存在**（该目录也不存在）、`MARKFLOW_RENDER_TOKEN`
       环境变量未设、设置页 `hasToken:false`。直连 `POST https://www.bx9y.com.cn/__markflow_render`
       实测 **HTTP 401 `{"ok":false,"error":"X-Render-Token 无效"}`**——服务本身活着（站点首页 200），
       只是没有有效令牌。

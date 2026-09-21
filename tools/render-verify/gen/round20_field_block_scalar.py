@@ -33,9 +33,9 @@ import sys
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from paths import OUT, TOKEN_FILE, RENDER_URL  # noqa: E402
+from paths import OUT, TOKEN_FILE, RENDER_URL  # noqa: E402, read_token
 
-TOKEN = open(TOKEN_FILE).read().strip()
+TOKEN = read_token()
 
 BODY_1 = '第一行内容甲乙丙'
 BODY_2 = '第二行内容丁戊己'

@@ -25,7 +25,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { launchBrowser, openPage } from './cdp.mjs'
-import { BROWSER_OUT } from '../paths.mjs'
+import { BROWSER_OUT, login } from '../paths.mjs'
 
 const LIVE = 'http://127.0.0.1:8081'
 const ARTICLE_ID = Number(process.argv.slice(2).find((item) => /^\d+$/.test(item)) || 8)
@@ -98,12 +98,7 @@ const MEASURE = `JSON.stringify((() => {
   }
 })())`
 
-const login = await (await fetch(LIVE + '/api/auth/login', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username: process.env.ADMIN_USERNAME || 'admin', password: process.env.ADMIN_PASSWORD || 'Admin@123' }),
-})).json()
-if (!login.success) throw new Error('登录失败：' + JSON.stringify(login))
-const token = login.data.token
+const token = await login()
 
 mkdirSync(BROWSER_OUT, { recursive: true })
 const { client, version, close } = await launchBrowser({ port: 9342 })

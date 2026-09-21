@@ -25,7 +25,9 @@ SPEC = os.path.join(RENDER_VERIFY, 'spec')
 OUT = os.path.join(ROOT, 'target', 'probe')
 
 #: 渲染服务的调用令牌：**只从文件读，绝不允许进任何产物或提交**。
-TOKEN_FILE = os.path.expanduser('~/.zcode/secrets/markflow-render-token')
+#: 路径由 `MARKFLOW_RENDER_TOKEN_FILE` 环境变量显式指定——不再回退到某个写死在仓库里的
+#: 「约定路径」，那种做法本身就是泄露面。取不到就报错，让人显式提供。
+TOKEN_FILE = os.environ.get('MARKFLOW_RENDER_TOKEN_FILE', '')
 
 #: 渲染端点。默认是公网服务；设 `MARKFLOW_RENDER_URL` 环境变量可指向**自部署**实例
 #: （2026-09-19 起：huanyu-a/MarkFlow 仓库 tools/render-server/render_server.mjs 可本地起，
@@ -39,3 +41,14 @@ def ensure_outdir(*parts):
     path = os.path.join(OUT, *parts)
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def read_token():
+    """读渲染令牌。路径必须由 `MARKFLOW_RENDER_TOKEN_FILE` 显式给出，取不到就大声报错。"""
+    if not TOKEN_FILE:
+        raise SystemExit(
+            '未设置 MARKFLOW_RENDER_TOKEN_FILE：渲染令牌的位置不再写死在仓库里，'
+            '请用环境变量显式指定令牌文件路径（值本身依旧不进任何产物）。'
+        )
+    with open(TOKEN_FILE, 'r', encoding='utf-8') as handle:
+        return handle.read().strip()

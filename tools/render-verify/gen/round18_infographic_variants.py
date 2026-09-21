@@ -18,9 +18,9 @@ import sys
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from paths import OUT, TOKEN_FILE, RENDER_URL  # noqa: E402
+from paths import OUT, TOKEN_FILE, RENDER_URL  # noqa: E402, read_token
 
-TOKEN = open(TOKEN_FILE).read().strip()
+TOKEN = read_token()
 
 # 用户原文那一种（基线）——与 round16_editor_reported.py 里的 CASES 逐字相同
 BASELINE = (

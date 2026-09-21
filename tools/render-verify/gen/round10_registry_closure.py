@@ -22,12 +22,12 @@ import sys
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from paths import OUT as OUTROOT, SPEC, TOKEN_FILE, RENDER_URL  # noqa: E402
+from paths import OUT as OUTROOT, SPEC, TOKEN_FILE, RENDER_URL  # noqa: E402, read_token
 
 OUT = os.path.join(OUTROOT, 'registry')
 os.makedirs(OUT, exist_ok=True)
 
-TOKEN = open(TOKEN_FILE).read().strip()
+TOKEN = read_token()
 URL = RENDER_URL
 
 # 非 layout-* 的注册 ID → 覆盖它的样例 id（79 个样例里的哪一个，第五轮已验、第七/九/十轮已上真浏览器）。
