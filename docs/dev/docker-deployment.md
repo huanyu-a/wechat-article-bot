@@ -627,23 +627,26 @@ $ podman exec watb-app sh -c 'ls /app/data/uploads | wc -l'
 
 ---
 
-# 附录：服务器部署（已于 2026-09-21 下线）
+# 附录：服务器部署（腾讯云，与本地并存）
 
-> **本文正文（§1–§10）讲的才是唯一在用的环境：本机 podman 部署。**
-> 2026-09-21 曾在腾讯云服务器（SSH 别名 `tencent`）上部署过一份，当天按用户决定**整体下线**：
-> 「全部以本地为主，线上的全部清除都可以，里边是测试数据」。容器、compose 网络、三个镜像、
-> 工程目录 `/www/dk_project/dk_app/wechat-article-bot` 已全部删除，8081 / 13307 端口已释放，
-> 机器上其他项目（new-api / WeKnora / favshub / qinglong 等 18 个容器）未受影响。
+> **两个环境现在同时在跑，别混淆**：
+> - **本机**：podman，`watb-app` + `watb-docker-mysql`（本文正文 §1–§10）。
+> - **服务器**：腾讯云（SSH 别名 `tencent`），Docker Compose，`wechat-article-bot-app-1` + `wechat-article-bot-mysql-1`。
 >
-> 保留本附录是因为里面两条经验与服务器还在不在无关：**schema 漂移会让应用直接起不来**（A.3）、
+> 2026-09-21 的经过：上午先在服务器上替换部署（`guoshengkai/wechat-article-bot:latest` → 本地构建的
+> `wechat-article-bot:20260921`）；当天稍晚按用户决定**整体下线**（「全部以本地为主，线上的全部清除都可以，
+> 里边是测试数据」），容器/网络/镜像/工程目录全删；**当天晚些时候又要求重新部署**，于是按本附录重建，
+> 镜像 tag 改为 `20260921-r2`（commit `ab50556`），**数据库是全新的空库**（29 张表由应用启动时自建，
+> SKILL 18 行内置技能，ARTICLE/ASSET/TASK_RUN/RENDER_CONFIG/LLM_PROFILE 均为 0）。
+>
+> 下线前的那份旧数据 dump 仍在服务器 `/www/dk_project/dk_app/backups/wechat-article-bot-final-20260921/`
+> （`wechat-article-final.sql`，918K，md5 `15fc87e78aedd309153abcf1a13132e6`，29 张表，另有 env 原件）。
+> **没有导入**——上传文件已随下线删除，导回来只会得到一堆图裂的旧文章。需要时再手动导入。
+>
+> 本附录真正要留的两条经验与服务器在不在无关：**schema 漂移会让应用直接起不来**（A.3）、
 > **换镜像后必须同步 env 文件里的 `IMAGE_REPOSITORY` / `IMAGE_TAG`**（A.2 末尾）。
-> 将来若要在任何服务器上重新部署，按 A.1–A.2 的形态与命令执行即可。
->
-> 下线时留下的唯一备份在服务器 `/www/dk_project/dk_app/backups/wechat-article-bot-final-20260921/`
-> （整库 dump `wechat-article-final.sql`，918K，md5 `15fc87e78aedd309153abcf1a13132e6`，29 张表；
-> 另有 `dev.env` 原件、被截断描述的存档、上传文件计数）。确认不再需要可整套删掉。
 
-## A.1 服务器与工程位置（历史形态）
+## A.1 服务器与工程位置
 
 - SSH 别名 `tencent`（`~/.ssh/config`，root）；主机 `VM-8-13-opencloudos`，x86_64，4C3.6G，Docker 28.0.1 + Compose v2.39.1。
   **这台机器上还跑着 new-api / WeKnora / favshub / qinglong 等一堆别的容器，操作前先 `docker ps` 核对名字。**
@@ -714,23 +717,28 @@ SQL
 顺带记一笔：`Asset.java` 的注释声称 smart-mybatis「不会改已有列的长度」，与实测不符（3.0.1 会 MODIFY），
 那条注释本身是错的，别信它做决策。
 
-## A.4 下线后的备份位置（已无常规回滚）
+## A.4 旧数据备份与回滚
 
-服务器部署已于 2026-09-21 整体删除，**没有"回滚到线上"这一说了**——本地（§1–§10）就是唯一环境。
-当时留下的备份在服务器 `/www/dk_project/dk_app/backups/wechat-article-bot-final-20260921/`：
+服务器 2026-09-21 重建时用的是**全新空库**，下线前那份旧数据留在
+`/www/dk_project/dk_app/backups/wechat-article-bot-final-20260921/`：
 
 | 文件 | 内容 |
 | --- | --- |
 | `wechat-article-final.sql` | 下线前的整库 dump（918K，md5 `15fc87e78aedd309153abcf1a13132e6`，29 张表） |
 | `dev.env` | 服务器那份 env 原件（含真实凭据，600 权限） |
 | `asset-long-descriptions-20260921.txt` | 因列长冲突被截断的 3 行图片描述原文 |
-| `uploads-count.txt` | 下线时上传文件数 |
+| `uploads-count.txt` | 下线时上传文件数（41） |
 
-要恢复只能"重新部署 + 导库"，按 A.1–A.2 走一遍；确认不再需要就整套删掉这个目录。
+**导入旧库前先想清楚**：上传文件已随下线删除，导回来会得到一堆图裂的旧文章。真要导：
+`docker exec -i wechat-article-bot-mysql-1 sh -c 'MYSQL_PWD=$MYSQL_ROOT_PASSWORD mysql -uroot' < dump.sql`。
+确认不再需要就整套删掉这个目录。
 
-## A.5 下线时的数据现状（仅作记录）
+## A.5 重建后的数据现状（2026-09-21 晚）
 
-ARTICLE 19 / ASSET 41 / TASK_RUN 18（SUCCESS 17 + FAILED 1）/ SKILL 18 / LLM_PROFILE 13；
-定时任务只有一个 trigger（`task-trigger-1`，WAITING，原下次触发 2026-09-22 09:00）。
-`RENDER_CONFIG` 是 0 行 —— 表是 schema 同步新建的，那份服务器从未配过渲染服务。
-这些数据已随下线删除，本地库与它无关（本地 ARTICLE/ASSET/TASK_RUN 各自独立，见 §1.1 现查）。
+**全新空库**：29 张表由应用启动时自建；SKILL 18 行（内置技能，随启动写入），
+ARTICLE / ASSET / TASK_RUN / LLM_PROFILE / RENDER_CONFIG **均为 0 行**；上传目录为空（uid 10001 可写，已实测）。
+即：服务器上是一个干净的起点，**渲染服务、LLM 配置、定时任务都还没配**——要真正用起来，
+需要登录后配 LLM、按需配渲染（`base_url` + 令牌；`site_base_url` 同理留空，理由见 §10.6）。
+
+旧环境（已删除）当时的数据：ARTICLE 19 / ASSET 41 / TASK_RUN 18（SUCCESS 17 + FAILED 1）/ LLM_PROFILE 13，
+一个 trigger（`task-trigger-1`，原下次触发 2026-09-22 09:00），`RENDER_CONFIG` 0 行。备份见 A.4。

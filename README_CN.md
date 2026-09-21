@@ -224,9 +224,10 @@ docker compose --env-file deploy/env/dev.env \
 
 生产环境建议使用独立 MySQL 8 实例，并在应用前配置 HTTPS 反向代理。
 
-> **现状（2026-09-21）**：本项目当前只有**本机 podman 部署**在跑，服务器上那份已于当天下线
-> （里边是测试数据）。本节是将来要上服务器时的操作路径；真实服务器部署的形态、踩过的坑
-> 与下线记录见 `docs/dev/docker-deployment.md` 附录 A。
+> **现状（2026-09-21）**：**两个环境同时在跑** —— 本机 podman（`watb-app` / `watb-docker-mysql`，
+> 主要开发环境）与腾讯云服务器上的 Docker Compose 部署（`wechat-article-bot-app-1` /
+> `wechat-article-bot-mysql-1`，数据库是全新空库）。服务器那边当天先上线、又下线、又重新部署过一次，
+> 形态、踩过的坑与重建步骤见 `docs/dev/docker-deployment.md` 附录 A。
 
 ```bash
 cp deploy/env/prod.env.example deploy/env/prod.env
