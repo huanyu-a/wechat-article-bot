@@ -6,8 +6,8 @@ import { ArrowRight, Sparkles, CheckCircle2 } from 'lucide-vue-next'
 
 const auth = useAuthStore()
 const router = useRouter()
-const username = ref('admin')
-const password = ref('Admin@123')
+const username = ref('')
+const password = ref('')
 const error = ref('')
 async function submit() {
   error.value = ''
@@ -43,7 +43,6 @@ async function submit() {
         <button class="primary-button login-button" :disabled="auth.loading">
           {{ auth.loading ? '登录中…' : '进入工作台' }}<ArrowRight :size="18" />
         </button>
-        <small class="login-hint">首次启动默认账号 admin / Admin@123</small>
       </form>
     </section>
   </main>
