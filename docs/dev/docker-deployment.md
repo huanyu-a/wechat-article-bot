@@ -830,17 +830,19 @@ ARTICLE / ASSET / TASK_RUN / LLM_PROFILE **均为 0 行**；上传目录为空�
 
 ## A.7 管理员凭据（2026-09-21 重置）
 
-用户名 `admin`，密码是 20 位随机字母数字，**不明文写在任何文档/仓库里**。
+用户名 **`huanyu@2026`**，密码是 20 位随机字母数字，**密码不明文写在任何文档/仓库里**。
 明文只落在服务器一个文件：`/www/dk_project/dk_app/backups/admin-credential-20260921.txt`
-（600，仅 root 可读，193 字节，含 username/password 两行）。抄走后可删。
+（600，仅 root 可读，含 username/password 两行）。抄走后可删。
 
-> **同日稍晚用户名也改了**（`admin` 是最容易被猜的那个）：改成 12 位随机小写字母，
-> 同样只记在上面那个凭据文件里，**这里不写具体值**。改法见下面「没有改用户名的接口」。
+> 用户名的经过：先是把默认的 `admin` 改成 12 位随机小写字母，随后用户指定为 `huanyu@2026`。
+> 每次改动都同步了 `deploy/env/dev.env` 的 `ADMIN_USERNAME`（备份 `.bak-before-rename2`），
+> 并实测「新用户名登得上、旧用户名登不上」。
 
 同步做了两件事，否则会留下「能登录但文件是旧值」的坑：
 
-- `deploy/env/dev.env` 的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 已改成新值
-  （原件备份 `dev.env.bak-20260921-pwreset`），并用文件里的凭据实测登录 200 闭环。
+- `deploy/env/dev.env` 的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 已改成当前值
+  （原件备份 `dev.env.bak-20260921-pwreset` / `dev.env.bak-before-rename2`），
+  并用文件里的凭据实测登录 200 闭环。
 - 应用侧走的是 `PUT /api/auth/password`（需要当前密码），**不是直接改库**。
   这个接口会顺手 `tokenMapper.deleteByUserId()` 把所有现存 token 作废 —— 改完自己重新登录即可。
 
@@ -853,7 +855,14 @@ ARTICLE / ASSET / TASK_RUN / LLM_PROFILE **均为 0 行**；上传目录为空�
 这么做是安全的，因为：① 只有 `SYS_USER.USERNAME` 存用户名，`AUTH_TOKEN` / `AUDIT_LOG`
 都只存 `USER_ID`；② `AuthService.authenticate()` 是按 token 里的 userId 查人再取 username，
 所以**改用户名不会让已登录的 token 失效**（实测改后仍有 12 个未过期 token 正常）。
+用户名**没有任何格式/长度校验**（只有 `@NotBlank`，列是 `varchar(255)`），
+所以 `huanyu@2026` 这种带 `@` 的值可以直接用，JSON 传参也安全。
 改完必须重新登录一次确认新用户名能登、旧用户名登不上。
+
+> ⚠️ **这台机器有文件可见性延迟**：刚写好的文件，紧接着在新进程里可能读不到
+> （`ls` / `stat` / `find` 都看得见，`cp` / Python `open()` 却报不存在），隔几秒恢复。
+> 改完凭据/env 文件**不要在同一进程里立刻读回校验**，分两步、中间留几秒。
+> 根因未明（不是权限、不是挂载，相关路径同在 `/dev/vda1`）。
 
 ## A.8 LLM 配置与模型档案（2026-09-21 从本机迁移）
 
