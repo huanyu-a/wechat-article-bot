@@ -745,15 +745,25 @@ SQL
 
 **全新空库**：29 张表由应用启动时自建；SKILL 18 行（内置技能，随启动写入），
 ARTICLE / ASSET / TASK_RUN / LLM_PROFILE **均为 0 行**；上传目录为空（uid 10001 可写，已实测）。
-即：服务器上是一个干净的起点，**渲染服务、LLM 配置、定时任务都还没配**——要真正用起来，
-需要登录后配 LLM、按需配渲染（`base_url` + 令牌）。
+即：服务器上是一个干净的起点，**LLM 配置、定时任务都还没配**——要真正用起来，
+需要登录后配 LLM。
 
-**2026-09-21 晚又动了一处**：`RENDER_CONFIG` 从 0 行变成 1 行（调用设置接口时由
-`RenderConfigService.required()` 自动建行），当前值
-`PROVIDER=MARKFLOW`、`BASE_URL=https://www.bx9y.com.cn`、`SITE_BASE_URL=https://mozhou.bx9y.com.cn`、
-`ENABLED=0`、`TOKEN_ENCRYPTED=NULL`、`SYNTAX_CACHE_TTL_SECONDS=21600`。
-**注意这不是「渲染服务已配好」**：`ENABLED=0` 且没有令牌，`MarkFlowRenderService.available()` 仍为 false，
-渲染走不通。改前整表备份在服务器 `/www/dk_project/dk_app/backups/render-config-pre-sitebaseurl-20260921.sql`。
+**2026-09-21 晚又动了两处**：
+
+1. `RENDER_CONFIG` 从 0 行变成 1 行（调用设置接口时由 `RenderConfigService.required()` 自动建行），
+   当前值 `PROVIDER=MARKFLOW`、`BASE_URL=https://www.bx9y.com.cn`、`SITE_BASE_URL=https://mozhou.bx9y.com.cn`、
+   `ENABLED=1`、`TOKEN_ENCRYPTED` 已存（104 字符）、`SYNTAX_CACHE_TTL_SECONDS=21600`。
+   **渲染服务至此是可用的**：令牌取自本机那份（本机 `RENDER_CONFIG` 里加密存的，用本机 `APP_SECRET_KEY`
+   解密取出明文，再经服务器的 `PUT /api/settings/render` 用**服务器自己的** `APP_SECRET_KEY` 重新加密落库 ——
+   密文不能跨实例拷贝，必须走明文重加密）。
+   验证做了三层：应用自带的 `POST /api/settings/render/test` 返回 `ok=true`（语法指令 8010 字符）；
+   从**服务器出口**用同一令牌 POST 真实渲染成功（`ok=true`，323 字节 HTML）；
+   对照组（错误令牌）被拒 401 `X-Render-Token 无效`。
+   注意渲染服务的 `GET /__markflow_render` 是**公开**的（不带/带错令牌都返回语法指令），
+   **只有 POST 才校验令牌** —— 所以「GET 通」不能当令牌有效的证据，必须 POST。
+2. 管理员密码已重置（详见 A.7）。
+
+**仍待配置**：LLM（`LLM_PROFILE` 0 行，文章生成需要）、定时任务（`TASK_RUN` 0 行）。
 
 旧环境（已删除）当时的数据：ARTICLE 19 / ASSET 41 / TASK_RUN 18（SUCCESS 17 + FAILED 1）/ LLM_PROFILE 13，
 一个 trigger（`task-trigger-1`，原下次触发 2026-09-22 09:00），`RENDER_CONFIG` 0 行。备份见 A.4。
@@ -817,3 +827,20 @@ ARTICLE / ASSET / TASK_RUN / LLM_PROFILE **均为 0 行**；上传目录为空�
 `/www/server/panel/vhost/nginx/*.conf`**。找反代规则必须三个地方都搜，
 `grep -rl "域名\|8081" /www/server/panel/vhost/nginx/` 一行就够，漏了它就会得出「没有域名」的错误结论。
 另外服务器上**没有装 `rg`**，`grep -r` 才是可靠选项。
+
+## A.7 管理员凭据（2026-09-21 重置）
+
+用户名 `admin`，密码是 20 位随机字母数字，**不明文写在任何文档/仓库里**。
+明文只落在服务器一个文件：`/www/dk_project/dk_app/backups/admin-credential-20260921.txt`
+（600，仅 root 可读，193 字节，含 username/password 两行）。抄走后可删。
+
+同步做了两件事，否则会留下「能登录但文件是旧值」的坑：
+
+- `deploy/env/dev.env` 的 `ADMIN_PASSWORD` 已改成新值（原件备份 `dev.env.bak-20260921-pwreset`），
+  并用文件里的凭据实测登录 200 闭环。
+- 应用侧走的是 `PUT /api/auth/password`（需要当前密码），**不是直接改库**。
+  这个接口会顺手 `tokenMapper.deleteByUserId()` 把所有现存 token 作废 —— 改完自己重新登录即可。
+
+**重置密码不会在下次重启后被环境变量覆盖**：`BootstrapAdminRunner.run()` 第一行是
+`if (userMapper.count() > 0) return;`，只在用户表为空时才建号。所以改过的密码是持久的，
+`ADMIN_PASSWORD` 只在**全新空库首次启动**时才起作用。
