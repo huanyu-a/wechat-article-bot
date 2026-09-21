@@ -230,8 +230,8 @@ docker compose --env-file deploy/env/dev.env \
 > 形态、踩过的坑与重建步骤见 `docs/dev/docker-deployment.md` 附录 A。
 >
 > 公网入口：**https://mozhou.bx9y.com.cn**（aaPanel 反代 → `127.0.0.1:8081`，证书 2026-12-06 到期，
-> 80 端口已强制跳转 https）。服务器上**渲染服务已配好可用**，还差 LLM 配置和定时任务，
-> 登录后需要先配 LLM 才能生成文章。管理员凭据见 `docs/dev/docker-deployment.md` 附录 A.7。
+> 80 端口已强制跳转 https）。服务器上**渲染服务与 LLM 均已配好可用**（12 个模型档案 +
+> 全局设置，从本机迁移），只差定时任务。管理员凭据见 `docs/dev/docker-deployment.md` 附录 A.7。
 
 ```bash
 cp deploy/env/prod.env.example deploy/env/prod.env

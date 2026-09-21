@@ -763,7 +763,7 @@ ARTICLE / ASSET / TASK_RUN / LLM_PROFILE **均为 0 行**；上传目录为空�
    **只有 POST 才校验令牌** —— 所以「GET 通」不能当令牌有效的证据，必须 POST。
 2. 管理员密码已重置（详见 A.7）。
 
-**仍待配置**：LLM（`LLM_PROFILE` 0 行，文章生成需要）、定时任务（`TASK_RUN` 0 行）。
+**仍待配置**：定时任务（`TASK_RUN` 0 行）。LLM 与渲染服务均已配好可用（LLM 见 A.8）。
 
 旧环境（已删除）当时的数据：ARTICLE 19 / ASSET 41 / TASK_RUN 18（SUCCESS 17 + FAILED 1）/ LLM_PROFILE 13，
 一个 trigger（`task-trigger-1`，原下次触发 2026-09-22 09:00），`RENDER_CONFIG` 0 行。备份见 A.4。
@@ -834,13 +834,45 @@ ARTICLE / ASSET / TASK_RUN / LLM_PROFILE **均为 0 行**；上传目录为空�
 明文只落在服务器一个文件：`/www/dk_project/dk_app/backups/admin-credential-20260921.txt`
 （600，仅 root 可读，193 字节，含 username/password 两行）。抄走后可删。
 
+> **同日稍晚用户名也改了**（`admin` 是最容易被猜的那个）：改成 12 位随机小写字母，
+> 同样只记在上面那个凭据文件里，**这里不写具体值**。改法见下面「没有改用户名的接口」。
+
 同步做了两件事，否则会留下「能登录但文件是旧值」的坑：
 
-- `deploy/env/dev.env` 的 `ADMIN_PASSWORD` 已改成新值（原件备份 `dev.env.bak-20260921-pwreset`），
-  并用文件里的凭据实测登录 200 闭环。
+- `deploy/env/dev.env` 的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 已改成新值
+  （原件备份 `dev.env.bak-20260921-pwreset`），并用文件里的凭据实测登录 200 闭环。
 - 应用侧走的是 `PUT /api/auth/password`（需要当前密码），**不是直接改库**。
   这个接口会顺手 `tokenMapper.deleteByUserId()` 把所有现存 token 作废 —— 改完自己重新登录即可。
 
 **重置密码不会在下次重启后被环境变量覆盖**：`BootstrapAdminRunner.run()` 第一行是
 `if (userMapper.count() > 0) return;`，只在用户表为空时才建号。所以改过的密码是持久的，
 `ADMIN_PASSWORD` 只在**全新空库首次启动**时才起作用。
+
+**没有改用户名的 HTTP 接口**（`AuthController` 只有 login / logout / changePassword），
+所以用户名是直接改库的：`UPDATE SYS_USER SET USERNAME='<新值>' WHERE ID=1;`。
+这么做是安全的，因为：① 只有 `SYS_USER.USERNAME` 存用户名，`AUTH_TOKEN` / `AUDIT_LOG`
+都只存 `USER_ID`；② `AuthService.authenticate()` 是按 token 里的 userId 查人再取 username，
+所以**改用户名不会让已登录的 token 失效**（实测改后仍有 12 个未过期 token 正常）。
+改完必须重新登录一次确认新用户名能登、旧用户名登不上。
+
+## A.8 LLM 配置与模型档案（2026-09-21 从本机迁移）
+
+服务器原本 `LLM_PROFILE` 0 行、`LLM_CONFIG` 是默认空值。按用户要求把本机那份搬了过去，
+**全部走应用自己的 API，没有直接写库**：
+
+- 12 条模型档案经 `POST /api/llm-profiles` 逐条创建，然后
+  `POST /{id}/set-default`（`deepseek-flash`）与 `POST /{id}/set-fallback`（`hy4-preview`）。
+- 全局设置经 `PUT /api/settings/llm` 写入（provider / baseUrl / modelName / apiKey /
+  temperature / maxTokens / enabled + 图片三件套 imageBaseUrl / imageModelName / imageApiKey）。
+  注意全局的图片模型是 `sensenova-u1.5-fast`，而默认档案的图片模型是 `sensenova-u1.5-lite`，
+  **两者不同，都按原样搬了** —— 前者管「没指定档案时」的配图，后者是默认档案自己声明的。
+
+**密钥为什么必须走 API 而不是拷密文**：`CryptoService` 是 AES-256-GCM，
+key = `SHA256(APP_SECRET_KEY)`，两台机器的 `APP_SECRET_KEY` 不同，密文搬过去解不开。
+正确路径：本机库 `*_ENCRYPTED` → 用**本机** key 解密出明文 → 明文经 API 传给服务器 →
+服务端用**服务器自己的** key 重新加密落库。（渲染令牌那次是同样的路子。）
+
+**验证做了真调用，不是看字段**：用新凭据登录后 `POST /api/articles/{id}/ai/chat`
+发一条「不要调用工具、直接回复指定六个字」的指令，SSE 流式逐字返回了预期内容
+（7 个事件、0 错误）。自检文章已删除，`ARTICLE` 回到 0 行。
+另外复核了 12 条档案 `hasApiKey` 全部为真、默认/兜底标记正确。
