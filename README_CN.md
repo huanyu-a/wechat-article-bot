@@ -224,6 +224,10 @@ docker compose --env-file deploy/env/dev.env \
 
 生产环境建议使用独立 MySQL 8 实例，并在应用前配置 HTTPS 反向代理。
 
+> **现状（2026-09-21）**：本项目当前只有**本机 podman 部署**在跑，服务器上那份已于当天下线
+> （里边是测试数据）。本节是将来要上服务器时的操作路径；真实服务器部署的形态、踩过的坑
+> 与下线记录见 `docs/dev/docker-deployment.md` 附录 A。
+
 ```bash
 cp deploy/env/prod.env.example deploy/env/prod.env
 # 修改数据库地址、密码、APP_SECRET_KEY 和 IMAGE_TAG
