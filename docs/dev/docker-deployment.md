@@ -610,9 +610,14 @@ $ podman exec watb-app sh -c 'ls /app/data/uploads | wc -l'
 - **当时（2026-09-21 上午）仓库与配置里确实找不到公网地址**：`README_CN.md` 只说「生产建议前置 HTTPS 反向代理」，
   `deploy/env/*.env.example` 只有 `APP_BIND_ADDRESS`，所以没有可填的真值 —— 留空胜过填一个假的/回环的地址。
   **这个判断当天晚上就被推翻了**：服务器上一直有一条 aaPanel 反代规则指向 8081，域名是
-  `https://mozhou.bx9y.com.cn`（详见附录 A.6）。也就是说真值是有的，只是当时没找到 ——
-  `site_base_url` **目前仍是 NULL，属于「已知该填但还没填」的状态，不是「没有值可填」**。
-- **怎么设（已知真值，只是还没填）**：系统设置 → 排版渲染服务 →「本站公网地址（Site Base URL）」
+  `https://mozhou.bx9y.com.cn`（详见附录 A.6）。也就是说真值是有的，只是当时没找到。
+- **已于 2026-09-21 当晚填上**：`PUT /api/settings/render` 把 `siteBaseUrl` 设为
+  `https://mozhou.bx9y.com.cn`（服务器容器，经 `probe_api.py` 走应用自己的接口，凭据未打印）。
+  库里现在是 `SITE_BASE_URL=https://mozhou.bx9y.com.cn`、`BASE_URL=https://www.bx9y.com.cn`、
+  `ENABLED=0`、`TOKEN_ENCRYPTED=NULL` —— **渲染服务本身仍未启用**（没有令牌，启用会被拒），
+  `site_base_url` 只是先把真值备好，等配了令牌一起生效。
+  **只改了服务器那份**：本机 podman 没有公网地址，继续留 NULL，填域名反而会让本机文章的图片指向服务器。
+- **怎么设**：系统设置 → 排版渲染服务 →「本站公网地址（Site Base URL）」
   （`webui/src/views/SettingsView.vue:65`），填本应用对公网可访问的**根地址**，形如 `https://article.example.com` ——
   只填 scheme + host，**不带结尾斜杠、不带 `/uploads/`、不带任何路径**（代码自己拼 `{该值}/uploads/…`；
   见 `MarkFlowRenderService.absoluteImageUrls`）。等价的接口写法是 `PUT /api/settings/render` 的 `siteBaseUrl`，
@@ -739,9 +744,16 @@ SQL
 ## A.5 重建后的数据现状（2026-09-21 晚）
 
 **全新空库**：29 张表由应用启动时自建；SKILL 18 行（内置技能，随启动写入），
-ARTICLE / ASSET / TASK_RUN / LLM_PROFILE / RENDER_CONFIG **均为 0 行**；上传目录为空（uid 10001 可写，已实测）。
+ARTICLE / ASSET / TASK_RUN / LLM_PROFILE **均为 0 行**；上传目录为空（uid 10001 可写，已实测）。
 即：服务器上是一个干净的起点，**渲染服务、LLM 配置、定时任务都还没配**——要真正用起来，
-需要登录后配 LLM、按需配渲染（`base_url` + 令牌；`site_base_url` 同理留空，理由见 §10.6）。
+需要登录后配 LLM、按需配渲染（`base_url` + 令牌）。
+
+**2026-09-21 晚又动了一处**：`RENDER_CONFIG` 从 0 行变成 1 行（调用设置接口时由
+`RenderConfigService.required()` 自动建行），当前值
+`PROVIDER=MARKFLOW`、`BASE_URL=https://www.bx9y.com.cn`、`SITE_BASE_URL=https://mozhou.bx9y.com.cn`、
+`ENABLED=0`、`TOKEN_ENCRYPTED=NULL`、`SYNTAX_CACHE_TTL_SECONDS=21600`。
+**注意这不是「渲染服务已配好」**：`ENABLED=0` 且没有令牌，`MarkFlowRenderService.available()` 仍为 false，
+渲染走不通。改前整表备份在服务器 `/www/dk_project/dk_app/backups/render-config-pre-sitebaseurl-20260921.sql`。
 
 旧环境（已删除）当时的数据：ARTICLE 19 / ASSET 41 / TASK_RUN 18（SUCCESS 17 + FAILED 1）/ LLM_PROFILE 13，
 一个 trigger（`task-trigger-1`，原下次触发 2026-09-22 09:00），`RENDER_CONFIG` 0 行。备份见 A.4。
@@ -768,6 +780,22 @@ ARTICLE / ASSET / TASK_RUN / LLM_PROFILE / RENDER_CONFIG **均为 0 行**；上�
 **证书**：CN=`mozhou.bx9y.com.cn`，SAN 只有这一个 DNS，2026-09-07 签发、**2026-12-06 到期**，
 路径 `/www/server/panel/vhost/cert/mozhou.bx9y.com.cn/`。到期要在 aaPanel 里续，别等它自己红。
 
+**续期是 acme.sh + HTTP-01 webroot 验证，不是 DNS 验证**（`/root/.acme.sh/mozhou.bx9y.com.cn_ecc/mozhou.bx9y.com.cn.conf`
+里 `Le_Webroot=/www/wwwroot/mozhou.bx9y.com.cn`），下次自动续期 **2026-11-06**，crontab 每天 0/6/12/18 点跑
+`acme.sh --cron`。**这意味着 80 端口的 `/.well-known/acme-challenge/` 必须保持明文可达** ——
+谁要是图省事写一个「80 全站 301 到 https」，续期会在 11 月静默失败，然后在 12 月证书过期时才发现。
+下面的强制跳转就是为这条开的例外。
+
+**强制跳转（2026-09-21 加）**：原来 80 和 443 在同一个 server 块里，`http://` 直接就是 200。
+现在拆成两个 server 块，80 只做 `return 301 https://$host$request_uri;`，
+**例外是 `location ^~ /.well-known/acme-challenge/`**（照旧从 webroot 供文件，保续期）。
+改动只新增了 80 块并从原块里删掉 `listen 80;` 一行，**443 块逐行未动**（改前改后各 96 行、逐行相等，脚本比对过）。
+原件备份在 `/www/server/panel/vhost/nginx/mozhou.bx9y.com.cn.conf.bak-20260921`。
+
+> 注意这个文件在 aaPanel 里注册过，**在面板上再点一次这个站点的 SSL/反代设置可能覆盖手改**。
+> 真要改，优先用面板自带的「强制 HTTPS」开关（它生成的形态和这里一致，只是**不开** acme 例外，
+> 开了之后要自己把例外补回去）。
+
 **实测（2026-09-21，全部经公网域名）**：
 
 | 探测 | 结果 |
@@ -778,7 +806,8 @@ ARTICLE / ASSET / TASK_RUN / LLM_PROFILE / RENDER_CONFIG **均为 0 行**；上�
 | `GET /assets/index-Bf2z4UXT.css` | 200，58 KB |
 | `GET /favicon.svg` | 200，9.5 KB |
 | `GET /api/articles`（无 token） | 401（鉴权按设计拦截） |
-| 80 端口 | 同为 200，**没有强制跳转 https**（两个 listen 在同一个 server 块里） |
+| `http://`（80 端口） | **301 → 同址 https**（2026-09-21 加的强制跳转，例外见上） |
+| `http:///.well-known/acme-challenge/<file>` | 200，**不跳转**，原样返回 challenge 文件内容（保 acme.sh 续期） |
 
 `/favicon.ico`、`/assets`（当目录列）、`/uploads/` 会返回 500 —— 这三个路径本来就不存在
 （图标是 `/favicon.svg`，`/assets` 不是文件），容器内直连 8081 同样行为，与反代无关。

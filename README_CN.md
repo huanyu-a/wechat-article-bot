@@ -229,8 +229,8 @@ docker compose --env-file deploy/env/dev.env \
 > `wechat-article-bot-mysql-1`，数据库是全新空库）。服务器那边当天先上线、又下线、又重新部署过一次，
 > 形态、踩过的坑与重建步骤见 `docs/dev/docker-deployment.md` 附录 A。
 >
-> 公网入口：**https://mozhou.bx9y.com.cn**（aaPanel 反代 → `127.0.0.1:8081`，证书 2026-12-06 到期）。
-> 服务器上还没配 LLM / 渲染服务 / 定时任务，登录后需要先配这些。
+> 公网入口：**https://mozhou.bx9y.com.cn**（aaPanel 反代 → `127.0.0.1:8081`，证书 2026-12-06 到期，
+> 80 端口已强制跳转 https）。服务器上还没配 LLM / 渲染服务 / 定时任务，登录后需要先配这些。
 
 ```bash
 cp deploy/env/prod.env.example deploy/env/prod.env
