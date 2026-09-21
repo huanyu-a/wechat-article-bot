@@ -50,14 +50,35 @@ class WechatArticleBotApplicationTests {
         assertTrue(descriptors.stream().allMatch(descriptor -> descriptor.toLLMContent(ModelType.Anthropic) != null));
     }
 
+    /**
+     * MEDIA 组声明的名单成为工具暴露的唯一事实源（D55 图片来源硬约束，2026-09-19）：
+     * create() 仍会造出 7 件工具（兜底映射/预算还按名索引它们），但 assemble/filterByGroup 之后
+     * 暴露给模型的只剩组内 5 件——网络搜图与外链导入从工具层面就不存在。
+     * 这条断言从「create() 原样返回 7 件」改成「按组过滤后 5 件，且不含两个网络图工具」。
+     */
     @Test
     void articleAgentExposesMediaAndWebToolsForBothProtocols() {
-        var descriptors = mediaTools.create(null, 1L).stream().map(ToolDescriptor::fromTool).toList();
+        var registry = new ink.icoding.wechat.article.agent.ToolRegistry();
+        var exposed = registry.filterByGroup(ink.icoding.wechat.article.agent.ToolRegistry.MEDIA,
+                mediaTools.create(null, 1L));
+        var descriptors = exposed.stream().map(ToolDescriptor::fromTool).toList();
         Set<String> names = descriptors.stream().map(ToolDescriptor::getName).collect(Collectors.toSet());
-        assertEquals(Set.of("search_web", "browse_webpage", "search_web_images", "list_image_assets",
-                "import_web_image", "generate_image", "edit_image"), names);
+        assertEquals(Set.of("search_web", "browse_webpage", "list_image_assets",
+                "generate_image", "edit_image"), names);
         assertTrue(descriptors.stream().allMatch(descriptor -> descriptor.toLLMContent(ModelType.OpenAIResponse) != null));
         assertTrue(descriptors.stream().allMatch(descriptor -> descriptor.toLLMContent(ModelType.Anthropic) != null));
+    }
+
+    /**
+     * 组过滤是「收窄暴露」而非「改变产物」：create() 自身仍返回 7 件（含两个网络图工具），
+     * 被剔除只发生在 filterByGroup 这一层——保证按名索引 create() 产物的逻辑不受影响。
+     */
+    @Test
+    void mediaToolsCreateStillBuildsAllSevenToolsBeforeGroupFiltering() {
+        var names = mediaTools.create(null, 1L).stream()
+                .map(ToolDescriptor::fromTool).map(ToolDescriptor::getName).collect(Collectors.toSet());
+        assertEquals(Set.of("search_web", "browse_webpage", "search_web_images", "list_image_assets",
+                "import_web_image", "generate_image", "edit_image"), names);
     }
 
     @Test

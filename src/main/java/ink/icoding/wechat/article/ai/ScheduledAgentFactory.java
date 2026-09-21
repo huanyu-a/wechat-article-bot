@@ -27,14 +27,16 @@ public class ScheduledAgentFactory {
     private final AgentFactory agentFactory;
     private final AgentDefinitionMapper agentDefinitionMapper;
     private final ArticleMediaTools mediaTools;
+    private final ToolRegistry toolRegistry;
     private final WechatAccountService wechatAccountService;
 
     public ScheduledAgentFactory(AgentFactory agentFactory, AgentDefinitionMapper agentDefinitionMapper,
-                                 ArticleMediaTools mediaTools,
+                                 ArticleMediaTools mediaTools, ToolRegistry toolRegistry,
                                  WechatAccountService wechatAccountService) {
         this.agentFactory = agentFactory;
         this.agentDefinitionMapper = agentDefinitionMapper;
         this.mediaTools = mediaTools;
+        this.toolRegistry = toolRegistry;
         this.wechatAccountService = wechatAccountService;
     }
 
@@ -181,9 +183,11 @@ public class ScheduledAgentFactory {
         }
         if (groups.contains(ToolRegistry.MEDIA)) {
             // 与编辑器链路一致：同参数重复调用复用首次结果，避免重复生图/计费
-            tools.addAll(mediaTools.create(accountId, userId,
-                    (mediaMutations == null ? new ToolMutationDeduplicator() : mediaMutations)::execute,
-                    readExecutor(governor), imageProfileId));
+            // 再按 ToolRegistry 的 MEDIA 名单过滤：网络搜图/外链导入在工具层就不存在（D55 图片来源硬约束）
+            tools.addAll(toolRegistry.filterByGroup(ToolRegistry.MEDIA,
+                    mediaTools.create(accountId, userId,
+                            (mediaMutations == null ? new ToolMutationDeduplicator() : mediaMutations)::execute,
+                            readExecutor(governor), imageProfileId)));
         }
         if (groups.contains(ToolRegistry.DELEGATE) && delegateTools != null) {
             tools.addAll(delegateTools.apply(workspace));

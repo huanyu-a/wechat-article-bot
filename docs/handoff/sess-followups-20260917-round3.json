@@ -70,7 +70,7 @@
     "方案 D（dev-start 兜底脚本）未做",
     "编辑器链路的模型切换仍未做实机验证（需一次真实编辑器交互）",
     "temperature/maxTokens 仍是死字段（agent4j 2.3.3 的 LLMModel.create 只收 4 个参数，需上游改）",
-    "known-issues-handoff.md §八 items 1-6 仍未动（U1/U3 上游请求、I7 COORDINATOR 实机跑、I1-I10 真环境重验、卡死样本采样、`:::` 三层嵌套、31 篇文章图片链清理——最后一项需产品定调）",
+    "known-issues-handoff.md §八 items 1-6 仍未动（U1/U3 上游请求、I1-I10 真环境重验、卡死样本采样、`:::` 三层嵌套、31 篇文章图片链清理——最后一项需产品定调）；**其中「I7 COORDINATOR 实机跑」已于 2026-09-13 闭合，本记录（写于 2026-09-17）未随之同步**：run#74 首证（78 次工具、degradations:0、saved:true，见 known-issues-handoff.md §3.2 :245），run#76/#77/#78 连续三轮复证（§3.8① :887-894）。注意该批实跑是历史存档证据、现场不可复核（本机库 2026-09-17 重建，ARTICLE 最大 ID=13、TASK_RUN 最大 ID=24），推进 §八 时按余下 5 项计、勿再给 I7 排期",
     "本轮代码改动**未 commit**：git status 有 12 改 + 8 未跟踪（含上轮遗留）。推送远端需用户明确授权（remote 是 huanyu，不是 origin）"
   ],
   "read_files": [

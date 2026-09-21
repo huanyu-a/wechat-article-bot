@@ -41,6 +41,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>跨实例（I1）：Spring 注入 {@link LlmLeaseMapper} 时改为**数据库租约**模式——固定槽位表
  * （{@link LlmLease}）保证多实例合计不超过上限；租约带 TTL 心跳，实例崩溃后其它实例可回收名额。
+ * 回收不只发生在申请开始时：等待期间还会周期性回收，使心跳在本次等待内跨过 TTL 的崩溃名额
+ * 能在同一轮申请里归还，而不是让这次申请白等满超时。
  * 无 Mapper（单测直接构造）时退回进程内信号量，行为与旧实现完全一致。
  */
 @Component
@@ -55,6 +57,20 @@ public class InFlightGate {
     public static final long DEFAULT_LEASE_TTL_SECONDS = 120L;
     /** DB 租约模式的排队轮询间隔（毫秒）。 */
     private static final long POLL_MILLIS = 250L;
+    /**
+     * DB 租约模式下，请求等待期间再次回收过期租约的最长间隔（毫秒）。
+     *
+     * <p>为什么需要：只在申请开始时回收一次存在一个窗口——崩溃实例刚死时它的心跳还新鲜
+     * （早于 TTL），首次回收扫不出任何东西，于是这次申请只能在轮询里反复 {@code tryOccupy}
+     * 直到等满 {@link #acquireTimeoutSeconds} 秒并明确失败。而崩溃租约的心跳会在**本次等待
+     * 期间**跨过 TTL 阈值，名额本来有资格在同一轮申请内归还，而不是拖到下一次申请。
+     *
+     * <p>为什么取 5 秒：既要远小于默认等待上限 60 秒，让「跨过阈值 → 发现 → 占回槽位」留足
+     * 余量；又不能小到每次轮询（250 毫秒）都打一条 DELETE——等待中的每个线程都在跑这条路径，
+     * 一次 LLM 高峰会有多个实例多个线程同时轮询。5 秒与心跳的最小间隔
+     * （{@code Math.max(5, ttl/3)}）同量级，属本类已认定为「可承受的周期性 DB tick」。
+     */
+    private static final long RECLAIM_INTERVAL_MILLIS = 5_000L;
 
     private final int limit;
     private final long acquireTimeoutSeconds;
@@ -145,13 +161,28 @@ public class InFlightGate {
         return new Lease(what, null, null);
     }
 
-    /** 数据库租约：跨实例共享上限；实例失联后由 TTL 心跳回收。 */
+    /**
+     * 数据库租约：跨实例共享上限；实例失联后由 TTL 心跳回收（等待期间还会周期性回收，
+     * 间隔见 {@code RECLAIM_INTERVAL_MILLIS}），等满 {@link #acquireTimeoutSeconds} 仍拿不到
+     * 名额则明确失败。
+     */
     private Lease acquireShared(String what) {
         String token = UUID.randomUUID().toString();
         long startedAt = System.nanoTime();
         reclaimExpiredQuietly();
         long deadline = startedAt + TimeUnit.SECONDS.toNanos(acquireTimeoutSeconds);
+        long reclaimIntervalNanos = TimeUnit.MILLISECONDS.toNanos(RECLAIM_INTERVAL_MILLIS);
+        long lastReclaimAt = System.nanoTime();
         while (true) {
+            long nowNanos = System.nanoTime();
+            // 等待期间周期性回收（含到达 deadline 前的最后一次）：崩溃租约的心跳可能在本次
+            // 等待内跨过 TTL 阈值，只在申请开始时回收一次的话，这段窗口里只能反复 tryOccupy
+            // 然后等满超时失败。等满超时仍返回 null 的语义不变——这里只是给同一轮申请
+            // 多一次就地回收名额的机会，绝不因此延长等待。
+            if (nowNanos - lastReclaimAt >= reclaimIntervalNanos || nowNanos >= deadline) {
+                reclaimExpiredQuietly();
+                lastReclaimAt = nowNanos;
+            }
             for (long slot = 1; slot <= limit; slot++) {
                 boolean occupied;
                 try {

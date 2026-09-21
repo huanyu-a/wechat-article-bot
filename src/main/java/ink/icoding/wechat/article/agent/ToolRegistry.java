@@ -1,9 +1,13 @@
 package ink.icoding.wechat.article.agent;
 
+import ink.icoding.llm.core.tool.Tool;
+import ink.icoding.llm.core.tool.ToolDescriptor;
 import ink.icoding.wechat.article.common.BusinessException;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -81,6 +85,32 @@ public class ToolRegistry {
             if (group != null) names.addAll(group.tools());
         }
         return names;
+    }
+
+    /**
+     * 按工具组声明过滤工具实例（D55 图片来源硬约束，2026-09-19）：组声明是工具暴露的唯一事实源，
+     * 装配点拿到的清单里凡不在这份名单内的实例一律剔除。MEDIA 组的
+     * {@code search_web_images} / {@code import_web_image} 正是在这一步从智能体视野里消失的。
+     *
+     * <p>为什么在注册表这一层过滤，而不是让 {@code ArticleMediaTools.create()} 直接少返回两个：
+     * create() 的产物还被按名索引的兜底映射与预算统计引用，整体收缩会牵连它们；过滤只收窄
+     * 「暴露给模型」的集合，语义单一，且能让三个装配点共用同一份判定而不各写一遍。
+     *
+     * <p>未知组键返回空列表（fail-closed）：宁可一个工具都不暴露，也不在约束失效时退回全量清单。
+     * 保持入参顺序；缺 {@code @ToolInfo} 注解的工具按其类简单名判定（agent4j 的
+     * {@link ToolDescriptor#fromTool} 行为），同理不在名单内即被剔除。
+     */
+    public List<Tool> filterByGroup(String groupKey, List<Tool> tools) {
+        Group group = groupKey == null ? null : GROUPS.get(groupKey);
+        if (group == null || tools == null || tools.isEmpty()) return List.of();
+        Set<String> allowed = new LinkedHashSet<>(group.tools());
+        List<Tool> kept = new ArrayList<>(tools.size());
+        for (Tool tool : tools) {
+            if (tool != null && allowed.contains(ToolDescriptor.fromTool(tool).getName())) {
+                kept.add(tool);
+            }
+        }
+        return List.copyOf(kept);
     }
 
     public record Group(String key, String name, boolean browserSide, String description, List<String> tools) {

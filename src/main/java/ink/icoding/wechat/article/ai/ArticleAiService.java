@@ -104,6 +104,7 @@ public class ArticleAiService {
     private final CurrentUserService currentUserService;
     private final LlmConfigService llmConfigService;
     private final ArticleMediaTools mediaTools;
+    private final ink.icoding.wechat.article.agent.ToolRegistry toolRegistry;
     private final AssetService assetService;
     private final SkillPromptAssembler skillPromptAssembler;
     private final MarkFlowRenderService markFlowRenderService;
@@ -144,7 +145,9 @@ public class ArticleAiService {
     public ArticleAiService(AiMessageMapper messageMapper, ArticleAgentSessionMapper agentSessionMapper,
                             ArticleService articleService,
                             CurrentUserService currentUserService, LlmConfigService llmConfigService,
-                            ArticleMediaTools mediaTools, AssetService assetService,
+                            ArticleMediaTools mediaTools,
+                            ink.icoding.wechat.article.agent.ToolRegistry toolRegistry,
+                            AssetService assetService,
                             SkillPromptAssembler skillPromptAssembler, MarkFlowRenderService markFlowRenderService,
                             WechatAccountService wechatAccountService,
                             ink.icoding.wechat.article.agent.AgentFactory agentFactory,
@@ -163,6 +166,7 @@ public class ArticleAiService {
         this.currentUserService = currentUserService;
         this.llmConfigService = llmConfigService;
         this.mediaTools = mediaTools;
+        this.toolRegistry = toolRegistry;
         this.assetService = assetService;
         this.skillPromptAssembler = skillPromptAssembler;
         this.markFlowRenderService = markFlowRenderService;
@@ -460,10 +464,12 @@ public class ArticleAiService {
                         editorSession.requestTool(toolName, paramJson, null), engine));
             }
             if (groups.contains(ink.icoding.wechat.article.agent.ToolRegistry.MEDIA)) {
-                tools.addAll(mediaTools.create(editorSession.article.getAccountId(), editorSession.user.id(),
-                        editorSession.mediaMutations::execute,
-                        (toolName, paramJson, action) -> action.get(),
-                        imageProfileId(AgentFactory.CODE_EDITOR)));
+                // 按 ToolRegistry 的 MEDIA 名单过滤：网络搜图/外链导入在工具层就不存在（D55 图片来源硬约束）
+                tools.addAll(toolRegistry.filterByGroup(ink.icoding.wechat.article.agent.ToolRegistry.MEDIA,
+                        mediaTools.create(editorSession.article.getAccountId(), editorSession.user.id(),
+                                editorSession.mediaMutations::execute,
+                                (toolName, paramJson, action) -> action.get(),
+                                imageProfileId(AgentFactory.CODE_EDITOR))));
             }
             if (groups.contains(ink.icoding.wechat.article.agent.ToolRegistry.RENDER)
                     && engine == LayoutEngine.MARKFLOW) {
@@ -649,10 +655,12 @@ public class ArticleAiService {
                 new ink.icoding.wechat.article.schedule.ToolCallGovernor();
         // 第②期：装配改走 AgentFactory（内置 builtin_scheduled_creator 定义，方案 7 第②期第 4 项）
         List<ink.icoding.llm.core.tool.Tool> draftTools = new ArrayList<>(ScheduledArticleTools.all(draftState));
-        List<ink.icoding.llm.core.tool.Tool> mediaToolList = mediaTools.create(request.accountId(),
-                request.userId(), mediaMutations::execute,
-                ink.icoding.wechat.article.ai.ScheduledAgentFactory.readExecutor(governor),
-                imageProfileId(AgentFactory.CODE_SCHEDULED_CREATOR));
+        // 按 ToolRegistry 的 MEDIA 名单过滤：网络搜图/外链导入在工具层就不存在（D55 图片来源硬约束）
+        List<ink.icoding.llm.core.tool.Tool> mediaToolList = toolRegistry.filterByGroup(
+                ink.icoding.wechat.article.agent.ToolRegistry.MEDIA,
+                mediaTools.create(request.accountId(), request.userId(), mediaMutations::execute,
+                        ink.icoding.wechat.article.ai.ScheduledAgentFactory.readExecutor(governor),
+                        imageProfileId(AgentFactory.CODE_SCHEDULED_CREATOR)));
         AgentFactory.ToolResolver resolver = groups -> {
             List<ink.icoding.llm.core.tool.Tool> tools = new ArrayList<>();
             if (groups.contains(ink.icoding.wechat.article.agent.ToolRegistry.DRAFT_READ)

@@ -4,6 +4,8 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -172,6 +174,70 @@ class InFlightGateTest {
             assertThat(lease).isNotNull();
             assertThat(gate.acquire("降级后仍应被拒")).isNull();
             lease.close();
+        } finally {
+            gate.shutdownHeartbeats();
+        }
+    }
+
+    /**
+     * 上一轮已实证的窗口：实例崩溃占满槽位时租约的心跳还新鲜（早于 TTL），申请开始时的首次回收
+     * 扫不出东西；旧实现于是在轮询里反复 {@code tryOccupy} 直到等满超时并明确失败，名额要等
+     * 「TTL 已过之后的下一次申请」才归还。修好后等待期间周期性回收，心跳在本次等待内跨过
+     * TTL 的崩溃租约被就地回收，**同一轮申请**就能拿到槽位。
+     *
+     * <p>TTL 取 5 秒、等待上限取 10 秒：崩溃心跳写于申请前 1 秒，正好在第 5 秒前后跨过 TTL，
+     * 因而首次回收（申请开始）必然无功而返，只有等满 5 秒间隔后的那次在环内回收才起效。
+     */
+    @Test
+    void crashedLeaseCrossingTtlDuringTheWaitIsReclaimedWithinTheSameAcquire() {
+        // 按 LlmLeaseMapper 的真实语义复刻租约表：槽位被占用时 tryOccupy 返回 false；
+        // reclaimExpired(before) 删除 HEARTBEAT_AT 早于 before 的行，之后槽位可被重新占用。
+        AtomicReference<LocalDateTime> heartbeatAt = new AtomicReference<>();
+        List<String> reclaimResults = new ArrayList<>();
+        LlmLeaseMapper mapper = mock(LlmLeaseMapper.class);
+        when(mapper.tryOccupy(anyLong(), anyString(), any(), any(LocalDateTime.class))).thenAnswer(call -> {
+            if (heartbeatAt.get() != null) return false;
+            heartbeatAt.set(call.getArgument(3));
+            return true;
+        });
+        when(mapper.releaseByToken(anyString())).thenAnswer(call -> {
+            heartbeatAt.set(null);
+            return 1;
+        });
+        when(mapper.reclaimExpired(any(LocalDateTime.class))).thenAnswer(call -> {
+            LocalDateTime before = call.getArgument(0);
+            LocalDateTime current = heartbeatAt.get();
+            if (current != null && current.isBefore(before)) {
+                heartbeatAt.set(null);
+                reclaimResults.add("reclaimed");
+                return 1;
+            }
+            reclaimResults.add("kept");
+            return 0;
+        });
+        when(mapper.heartbeat(anyString(), any(LocalDateTime.class))).thenAnswer(call -> {
+            heartbeatAt.set(call.getArgument(1));
+            return 1;
+        });
+
+        long ttlSeconds = 5L;
+        int acquireTimeoutSeconds = 10;
+        InFlightGate gate = new InFlightGate(1, acquireTimeoutSeconds, mapper, ttlSeconds);
+        try {
+            // 崩溃实例在申请开始前一瞬留下的心跳：此刻尚未过期（晚于 now - TTL，躲过首次回收）
+            heartbeatAt.set(LocalDateTime.now().minusSeconds(1));
+
+            long startedAt = System.nanoTime();
+            InFlightGate.Lease lease = gate.acquire("崩溃后重试");
+            long waited = Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
+
+            // 名额在同一轮申请内归还并取得，而不是等满超时后明确失败（旧行为）
+            assertThat(lease).isNotNull();
+            assertThat(waited).isLessThan(TimeUnit.SECONDS.toMillis(acquireTimeoutSeconds));
+            // 证据链：申请开始时的首次回收无功而返，名额是等待期间的周期性回收释放的
+            assertThat(reclaimResults).containsExactly("kept", "reclaimed");
+            lease.close();
+            assertThat(gate.inFlight()).isZero();
         } finally {
             gate.shutdownHeartbeats();
         }
