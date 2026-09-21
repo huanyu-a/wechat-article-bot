@@ -559,6 +559,9 @@ public class AgentInvoker extends AgentRunner {
                         + advertisedToolNames(agent));
             }
             // 失败必须**返回**给调用循环（而不是就地抛出），否则 run() 里的有界重试永远不会生效
+            // 这次尝试的产出会被丢弃（重试或整段失败），它的工具失败数必须实时上报——否则
+            // 「重试成功」会被记成「本轮没有工具失败过」（实测 toolFailures=0 而日志里有「工具失败：…」）
+            reportToolFailures(progress, toolFailures.get());
             return new Attempt(null, toolCalls.get(), paidSideEffect.get(),
                     fail(exception, logPrefix, lastActivity, lastActivityAt, toolCalls.get(), toolFailures.get()));
         }
@@ -569,6 +572,7 @@ public class AgentInvoker extends AgentRunner {
         // 与预算不同，这里**不放行收尾工具**——循环中的收尾调用只会重复同一份内容
         // （save_research_notes 是追加语义，重复提交会刷满工作区），直接中止更干净。
         if (loopAbort.get() != null) {
+            reportToolFailures(progress, toolFailures.get());
             return new Attempt(null, toolCalls.get(), paidSideEffect.get(),
                     new IllegalStateException(loopAbort.get()));
         }
@@ -581,6 +585,8 @@ public class AgentInvoker extends AgentRunner {
                         + " 次，但收尾工具已提交成果，本次按已交付处理");
             } else {
                 // 同上：交给调用循环决定（此时是否可重试由「有没有副作用」决定，见 paidSideEffect）
+                // 产出同样会被丢弃（本阶段确定白干），工具失败数实时上报后再交给调用循环
+                reportToolFailures(progress, toolFailures.get());
                 return new Attempt(null, toolCalls.get(), paidSideEffect.get(),
                         new IllegalStateException(budgetExceededMessage(maxToolCalls, null)));
             }
@@ -683,6 +689,16 @@ public class AgentInvoker extends AgentRunner {
      */
     private static void reportProgressOnly(ProgressListener progress, String line) {
         if (progress != null) progress.logLine(line);
+    }
+
+    /**
+     * 实时上报「本次尝试将被丢弃」时已发生的工具失败数（见 {@code ProgressListener#toolFailuresCounted}）。
+     *
+     * <p>只在**产出被丢弃**的三条路径（会话异常 / 无进展中止 / 预算超限且未交出成果）调用：
+     * 成功路径的计数由 {@link Outcome#toolFailures()} 带回、由调用方汇总，两条路径都报会重复计数。
+     */
+    private static void reportToolFailures(ProgressListener progress, int failures) {
+        if (progress != null && failures > 0) progress.toolFailuresCounted(failures);
     }
 
     /** 实时上报一个实际用过的模型档案（失败路径靠它留下归因依据，见 ProgressListener#profileUsed）。 */

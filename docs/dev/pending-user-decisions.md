@@ -73,6 +73,7 @@ MARKFLOW 引擎的定时交付链路在交付前渲染，并在产物上打渲�
 - `target/render_config_before.txt`：回滚前**行元数据**，tab 分隔，内容为
   `1	MARKFLOW	https://www.bx9y.com.cn	104	dFdOZDJHYWda	http://127.0.0.1:8081	3600	1	1	2026-09-18 10:38:31.529388`
   逐列对应（对照 `RenderConfig.java:21-40`）：id=1、provider=MARKFLOW、baseUrl=`https://www.bx9y.com.cn`、令牌密文字节数=104（该密文 140 字符 base64 解码得 104 字节，已用 python 核验）、密文前 12 字符指纹 `dFdOZDJHYWda`、siteBaseUrl=`http://127.0.0.1:8081`、syntaxCacheTtlSeconds=3600、enabled=1、updatedBy=1、updatedAt 时间戳。用途：回滚时与当前库中行逐列比对，**仅改 baseUrl 一列**，其余列全部保持原样。
+  **（2026-09-21 追记：本行是当时的「改动前快照」，别再当现状 —— ①`baseUrl` 已于 2026-09-20 回滚到生产，现查 `RENDER_CONFIG.BASE_URL=https://www.bx9y.com.cn`；②`siteBaseUrl` 已于 2026-09-21 定案**清空**（库中为 NULL）。定案理由与「将来拿到公网地址后怎么设」见 `docs/dev/docker-deployment.md` §10.6。）**
 - **这两份文件含令牌密文/指纹，属敏感物**：复制、贴日志、写 issue 时不得带明文密文，只引用路径。
 
 ### 选项

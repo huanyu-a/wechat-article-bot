@@ -137,6 +137,16 @@ public class TaskWorkspace {
                 addToolCalls(delta);
             }
 
+            /**
+             * 被丢弃的那次尝试里的工具失败也要留下：成功路径的计数由
+             * {@code addToolFailures(outcome.toolFailures())} 汇总，这条只覆盖
+             * 「产出被重试/换档案丢弃、计数否则就没了」的那部分（见 ProgressListener#toolFailuresCounted）。
+             */
+            @Override
+            public void toolFailuresCounted(int delta) {
+                addToolFailures(delta);
+            }
+
             @Override
             public void logLine(String line) {
                 addExecutionLog(line);

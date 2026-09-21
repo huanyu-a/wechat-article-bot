@@ -167,6 +167,22 @@ D43–D45 是从「9 条 `na` 逐条核对」里查出来的，见 §3.12。**
 ### 3.1 上游依赖：本仓库改不动，需要对外提诉求
 
 #### U1（P0）agent4j 2.3.3 既无读超时也无取消接口
+
+> **订正（2026-09-21）：标题与下面「根因」那句措辞过宽 —— 照字面提诉求，会要一个已经存在的功能。**
+> 直接扫 jar（`~/.m2/repository/ink/icoding/llm/agent4j/2.3.3/agent4j-2.3.3.jar`，81 个 class，
+> 用 `python` 提取常量池字符串做标识符扫描，**先跑 sanity 探针**确认探测器活着）实测：
+> ① **模型层已经有超时与流取消** —— `readTimeout` / `connectTimeout` / `writeTimeout` 位于
+> `ink/icoding/llm/core/model/impl/OpenAIChatModel.class`、`OpenAIResponseModel.class`、`AnthropicModel.class`；
+> `cancel` / `cancelRequested` / `isClientCancelledStream` 位于 `…/impl/OpenAIChatModel$1.class`、
+> `AnthropicModel$1.class`、`OpenAIResponseModel$1.class`。
+> ② **真正缺的是 agent 会话层**：`ink/icoding/llm/agent/` 包（11 个 class，即应用真正驱动的
+> `AgentClientSession` 那一层）内 `cancel` / `timeout` / `close` / `shutdown` / `interrupt` / `abort`
+> **全部 0 命中**。
+> 准确的对外诉求应是：**给 `AgentClientSession` 这一层加读超时与 `cancel()`/`close()`**，
+> 而不是「agent4j 没有读超时」。项目侧注释与这个窄版本一致
+> （`ai/ArticleAiService.java:353`「`StageTimeout` 只能放弃工作线程（agent4j 无 cancel）」）。
+> 证据见 `docs/dev/handoff-unverified-claims-audit-20260921.md` 的 #54。
+
 - **症状**：阶段超时（300 秒）到点后，工作线程只能中断并放弃等待；底层 `OkHttpClient` 是 `OpenAIChatModel` 内 `final` 自建的，HTTP 连接与服务端 SSE 流仍然开着。若流随后恢复，它可能与**下一次**运行（可能是重试后的新会话）同时产出。
 - **影响**：停滞后仍占网关名额（正是 D2 级联的来源之一）；重试后若两个流都恢复，可能重复执行付费副作用（生图、图片编辑）。
 - **根因**：`LLMModel.create` 仅 4/5 参且无超时项；`AgentSessionResult` / `AgentClientSession` 无 `cancel()`/`close()`；全项目不存在 readTimeout。
@@ -6447,6 +6463,13 @@ docker exec momo-mysql-dev mysql -uroot -p"$PW" -D wechat-article -e "SELECT ...
 
 23. **⚠️ 当前唯一阻塞本地端到端验收的因素：MarkFlow 渲染令牌**（非缺陷，环境缺失）：
 
+    > **订正（2026-09-21）：本条已过期，不要再按它去索取令牌。** 实测令牌早已配好 ——
+    > `GET /api/settings/render` → `hasToken:true`、`enabled:true`（`updatedAt 2026-09-20T17:35:40`），
+    > 库侧 `RENDER_CONFIG.ENABLED=1`、`TOKEN_ENCRYPTED` 非空；此后绑 SKILL id=4 的任务**已正常产出 MARKFLOW 成稿**
+    > （`TASK_RUN` ID=29/30/31 分别产出 `ARTICLE` ID=18/20/21，`LAYOUT_ENGINE='MARKFLOW'`，均 SUCCESS/SUCCESS_WITH_WARNINGS）。
+    > 口径提醒：令牌只在**本机**配好，换机器仍需索取（§八 16 关于「令牌属外部输入」的结论不受影响）。
+    > 核验细节见 `docs/dev/handoff-unverified-claims-audit-20260921.md` 的 #46。原文保留作历史记录。
+
     - `~/.zcode/secrets/markflow-render-token` **不存在**（该目录也不存在）、`MARKFLOW_RENDER_TOKEN`
       环境变量未设、设置页 `hasToken:false`。直连 `POST https://www.bx9y.com.cn/__markflow_render`
       实测 **HTTP 401 `{"ok":false,"error":"X-Render-Token 无效"}`**——服务本身活着（站点首页 200），
@@ -6474,3 +6497,32 @@ docker exec momo-mysql-dev mysql -uroot -p"$PW" -D wechat-article -e "SELECT ...
     仍声明 `0.0.0.0:3306` 映射，将来被启动会和 `watb-docker-mysql` 抢 3306；容器化后新上传落命名卷，
     与宿主机 `data/uploads`（313 个文件的旧快照）**不再自动同步**；旧容器 `watb-dev-mysql` 有意保留作
     回滚路径、未清理。
+
+    > **订正（2026-09-21）：上面「已知边界」里的三条已被本轮加固消掉**（原文保留作历史记录）——
+    > ①两个容器**都补了健康检查**，且 `scripts/watb-start.sh` 用健康检查轮询实现了「db 先于 app 就绪」，
+    > 不必再人工 `podman restart watb-app`；②`watb-test-mysql` 已 **`podman rm`（只删容器）**，端口冲突隐患解除
+    > （定义留在 `docs/dev/podman-containers-inspect.md` §3）；③上传目录重新定案为**宿主 `data/uploads` bind mount**
+    > （卷里多出的 9 个活文件已按内容比对补齐后再切，现查宿主 323 / 容器内 323 为同一份目录），
+    > 不再有「新上传落卷、宿主退化为旧快照」的分叉。另：`site_base_url` 已清空（原为回环地址），
+    > 数据库回滚路径已用临时容器做 dump 恢复演练验证（58/58 表行数一致）。
+    > 细节见 `docs/dev/docker-deployment.md` §10 与 §8.1。
+
+---
+
+## 附：本文档断言核验索引（2026-09-21）
+
+- **核验记录**：`docs/dev/handoff-unverified-claims-audit-20260921.md`（只读核验记录，核验期间未改本文档、
+  不跑构建/测试、不写库、不重启容器）。
+- **核验对象与口径**：本文档里**断言性最强、最影响后续决策**的结论。原任务假设的「未核验 / 待核验」离散清单
+  **实测不存在** —— 全文 `未核验` / `待核验` / `未经复核` 命中数均为 **0**（只有 §R10 一条「未确认」与
+  「未实测」1 条），所以改用「高影响断言」口径。
+- **结论分布**：逐条核验 **59 条** —— **成立 47 / 不成立 6 / 无法核验 5 / 部分成立 1**
+  （#10 与 #28 是同一条断言，未重复计数）。
+- **「不成立」的 6 条没有一条是当时写错**，逐条成因：`#23` **时点值过期**（技能文案长度/时间戳此后又变过，核心结论仍成立）、
+  `#42` **后续档案重建**把智能体绑定改回「按默认档案」（不是修复被回退）、`#46` **已被解决但文档没更新**
+  （渲染令牌早已配好，已在本文件 §八 23 就地订正）、`#48`/`#49` **分母已不存在**（描述的是迁移前那份 44 篇旧库，
+  当前活动库对不上）、`#54` **措辞过宽**（agent4j 模型层有超时/流取消，缺的是 agent 会话层，已在本文件 U1 就地订正）。
+- **「无法核验」的 5 条**：缺外部输入（公众号侧平台行为、版本控制之外的巡检心跳 automation）或产物已不存在
+  （`target/scratch/` 下的一次性脚本、`EXECUTION_LOG` 被覆盖式写回吃掉的中间态、`--apply` 的原始 stdout）。
+- **接手方注意**：本文件里的**计数、行数、测试例数、时间戳**都是**各轮时点值**，不要当现状用；
+  需要现状请现查（容器与库的现查命令见 `docs/dev/docker-deployment.md` §1.1）。

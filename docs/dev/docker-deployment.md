@@ -2,6 +2,8 @@
 
 > 面向「下一个接手的人」：照着本文可以从零把应用跑起来、看清数据在哪、以及出问题时怎么退回旧形态。
 > 生成时间：2026-09-20（容器化改造当天，全部命令均已在本机实测通过）。
+> **2026-09-21 更新**：新增本轮运维加固与两项定案（§10、§8.1），并把易过期的数字改成「现查为准」（§1.1）。
+> 本文所有 IP / 行数 / 状态都是**时点值**，重建容器或跑一轮任务就会变 —— 以 §1.1 的现查命令为准。
 
 ---
 
@@ -12,10 +14,10 @@
 | 应用镜像 | `localhost/wechat-article-bot:local` | 由仓库根 `Dockerfile` 多阶段构建，ID `55c505534ffd`，309 MB |
 | 应用容器 | `watb-app` | 重启策略 `unless-stopped`，当前 Up |
 | 数据库容器 | `watb-docker-mysql` | `docker.io/library/mysql:8.0`，MySQL 8.0.46，已由上一环节迁入 |
-| 专用网络 | `watb-net`（bridge） | app 落在 `10.89.0.4`，db 落在 `10.89.0.2` |
+| 专用网络 | `watb-net`（bridge） | app 落在 `10.89.0.7`，db 落在 `10.89.0.6`（**2026-09-21 现查**；容器 IP 由 Podman 每次分配，重建容器就会变 —— 现查命令见 §1.1） |
 | 数据库卷 | `watb-mysql-data` | **新库**数据，`watb-docker-mysql:/var/lib/mysql` |
-| 上传卷 | `watb-uploads` | 命名卷，容器内 `/app/data/uploads` |
-| 旧库回滚卷 | `050c8ebd91877df65f48305b6fc095390dfa0463d06b19d365855badbe55d802` | 已停止的 `watb-dev-mysql` / `watb-test-mysql` 用的是同一个卷 |
+| 上传目录 | 宿主 `data\uploads`（bind mount） | 容器内 `/app/data/uploads`；命名卷 `watb-uploads` 已不再被任何容器挂载（**未删**，留作对照，见 §10.3） |
+| 旧库回滚卷 | `050c8ebd91877df65f48305b6fc095390dfa0463d06b19d365855badbe55d802` | 已停止的 `watb-dev-mysql` 用的是它（`watb-test-mysql` 已于 2026-09-21 **只删容器**，卷保留，见 §10.4） |
 | 宿主机端口 | `127.0.0.1:8081` → 容器 `8081` | 只绑 loopback，局域网不可达 |
 | 访问地址 | <http://127.0.0.1:8081/> | 前端 SPA；`/api/health` 是公开探活 |
 
@@ -25,6 +27,39 @@ Podman 可执行文件：`C:\Program Files\RedHat\Podman\podman.exe`（下文命
 
 Podman 版本：client 5.8.3 / server 5.8.6，后端是 WSL2 虚拟机 `podman-machine-default`（Running）。
 **宿主机没有 compose**，所以本文所有编排都是裸 `podman run`（见 §7）。
+
+### 1.1 这些值会变，怎么自己现查一遍
+
+本文里凡是「容器 IP / 行数 / 状态」这类数字都是**时点值**，容器重建、任务跑一轮就会变。
+**以现查为准**，命令如下（`podman` 的定位见本节开头的 `PATH` 与 `MSYS_NO_PATHCONV`）：
+
+```bash
+export PATH="/c/Program Files/RedHat/Podman:$PATH"
+export MSYS_NO_PATHCONV=1
+
+# 容器状态与健康（括号里的 (healthy) 就是 healthcheck 的结果）
+podman ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}'
+
+# 容器 IP（app / db 各查一次；重建容器后这两个值会变）
+podman inspect watb-app          --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}={{$v.IPAddress}}{{end}}'
+podman inspect watb-docker-mysql --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}={{$v.IPAddress}}{{end}}'
+
+# 关键表的行数（口令从容器自身 env 取，命令行里不出现明文）
+podman exec watb-docker-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -D wechat-article -N -B -e \
+  "select (select count(*) from ARTICLE) ARTICLE, (select count(*) from ASSET) ASSET, \
+          (select count(*) from SKILL) SKILL, (select count(*) from TASK_RUN) TASK_RUN, \
+          (select count(*) from LLM_PROFILE) LLM_PROFILE;"'
+```
+
+2026-09-21 本机现查结果（本文 §1 表格与 §6.3 的数字就是从这里来的）：
+
+```text
+watb-docker-mysql|docker.io/library/mysql:8.0|Up 22 minutes (healthy)|127.0.0.1:3306->3306/tcp, 33060/tcp
+watb-app|localhost/wechat-article-bot:local|Up 22 minutes (healthy)|127.0.0.1:8081->8081/tcp
+app: watb-net=10.89.0.7   health=healthy
+db : watb-net=10.89.0.6   health=healthy
+ARTICLE 24 | ASSET 68 | SKILL 18 | TASK_RUN 32 | LLM_PROFILE 12
+```
 
 ---
 
@@ -88,15 +123,19 @@ SPRING_APPLICATION_JSON={"spring":{"datasource":{"url":"jdbc:mysql://watb-docker
 ```bash
 # 1) 应用容器里能解析到数据库容器名
 podman exec watb-app getent hosts watb-docker-mysql
-# 10.89.0.2       watb-docker-mysql.dns.podman
+# 10.89.0.6       watb-docker-mysql.dns.podman      ← 2026-09-21 现查
 
 # 2) MySQL 侧看到的连接来自应用容器的 IP，且库名正确
 podman exec watb-docker-mysql mysql -uroot -p"$DB_PW" -e \
   "select id,user,host,db,command from information_schema.processlist order by id;"
-# root  10.89.0.4:58642  wechat-article  Sleep   ← 10.89.0.4 就是 watb-app
+# root  10.89.0.7:53626  wechat-article  Sleep      ← 10.89.0.7 就是 watb-app（2026-09-21 现查）
 ```
 
-如果第 1 条解析不到、或第 2 条里看不到 `10.89.0.4` 的连接，说明绕回了 `localhost` 或网络没接上。
+> **IP 是现查值，不是固定值**：上面两个 `10.89.0.x` 由 Podman 在容器创建时分配，
+> `podman rm` + 重新 `run` 之后就会变（本文 2026-09-20 那次是 app `10.89.0.4` / db `10.89.0.2`，
+> 2026-09-21 现查已是 app `10.89.0.7` / db `10.89.0.6`）。现查命令见 §1.1。
+
+如果第 1 条解析不到、或第 2 条里看不到 §1.1 现查到的那个 app IP 的连接，说明绕回了 `localhost` 或网络没接上。
 
 ---
 
@@ -132,6 +171,10 @@ podman stats watb-app --no-stream
 > 它**不保证宿主机重启后 watb-app 一定排在 watb-docker-mysql 之后起来** ——
 > 本机 compose 不可用，没有 `depends_on` + healthcheck 这一层。真出现「app 反复重启、
 > 日志里 Hikari 连接失败」，`podman restart watb-app` 一次即可。
+>
+> **（2026-09-21 追记：这一层现在有了 —— 两个容器都带健康检查，宿主重启后直接跑
+> `sh scripts/watb-start.sh` 就会「起 db → 等 db healthy → 起/重启 app → 等 app healthy」，
+> 不必再人工判断顺序；见 §10.1、§10.2。）**
 
 ---
 
@@ -213,6 +256,9 @@ Podman 的 buildkit 后端**支持** `Dockerfile:10` 的 `RUN --mount=type=cache
 
 ### 6.1 上传文件（`watb-uploads`）
 
+> **（2026-09-21 变更：上传目录已改为宿主 `data\uploads` 的 bind mount，卷 `watb-uploads` 不再被任何容器挂载。
+> 本节是 2026-09-20 的迁移记录，原文保留；现状与「为什么这样选」见 §10.3。）**
+
 | 项 | 值 |
 | --- | --- |
 | 源目录 | `D:\project\wwwroot\wechat-article-bot\data\uploads` |
@@ -274,13 +320,21 @@ podman run --rm -v "D:/project/wwwroot/wechat-article-bot/.verify:/v" \
    **这是应用的既有引导逻辑，不是迁移错漏**；它幂等 —— 已重启过一次容器，行数仍为 12，未继续追加。
    `ARTICLE 17`、`ASSET 58`、`SKILL 18`、`TASK_RUN 28` 未被改动。
 
+   > **⚠️ 上面这四个数是 2026-09-20 迁移当天的时点值，别当现状用。**
+   > **2026-09-21 现查**：`ARTICLE 24`（其中 `DELETED=1` 的 3 篇是验收探针稿）、`ASSET 68`、
+   > `SKILL 18`、`TASK_RUN 32`（同一时刻 `LLM_PROFILE 12`）。
+   > 增长来自其后正常运行的定时任务与本轮验收探针，不是迁移错漏；取值命令见 §1.1。
+
 ---
 
 ## 7. 已知限制
 
 1. **本机没有 compose**（podman/docker compose 均不可用），所有编排都是 §2.1 那样的裸
    `podman run`。没有 `compose.yaml`，也没有 `depends_on`；镜像和容器关系靠上文命令保存。
-2. **没有健康检查编排**：`watb-docker-mysql` 当初 `podman run` 时没挂 HEALTHCHECK，
+   **（2026-09-21 追记：起停顺序已由 `scripts/watb-start.sh` 用健康检查轮询兜住，见 §10.2、§10.5；
+   容器定义仍然只存在于命令与还原料里，`podman rm` 掉就没有东西能把它变回来。）**
+2. ~~**没有健康检查编排**~~ **已于 2026-09-21 补齐（两个容器都有 healthcheck，见 §10.1）**。
+   原文保留作历史记录：`watb-docker-mysql` 当初 `podman run` 时没挂 HEALTHCHECK，
    `watb-app` 也没有 `--health-cmd`。所以「宿主机重启后 app 可能先于 db 起来」这一种
    失败模式没有自动兜底，需要人工 `podman restart watb-app`（见 §3 末尾）。
 3. **端口只绑 loopback**：`127.0.0.1:8081`。要给别人访问得改 `-p 0.0.0.0:8081:8081`
@@ -326,8 +380,67 @@ podman start watb-dev-mysql     # 旧容器仍在，其卷 050c8ebd… 完整保
 **上传文件侧**（回到宿主机目录）：`podman stop watb-app` 后删掉
 `-v watb-uploads:/app/data/uploads` 这条挂载即可，源文件没动过。
 
-⚠️ 回滚是**有损方向**：容器跑起来之后新写入 `watb-uploads` 卷 / `watb-mysql-data` 卷的内容
-不会自动回到旧卷。要保留就先按 §6.1 的方式反向同步、并按 §6.2 的方式再 dump 一份。
+⚠️ 回滚是**有损方向**：容器跑起来之后新写入 `watb-mysql-data` 卷的内容不会自动回到旧卷。
+要保留就先按 §6.2 的方式再 dump 一份。（上传目录自 2026-09-21 起已改为宿主 `data\uploads`
+bind mount，见 §10.3 —— 这一侧不再存在「卷 vs 宿主目录」的分叉。）
+
+### 8.1 回滚路径已验证：dump 恢复演练（2026-09-21）
+
+在这之前，「旧容器 + 旧卷 + 一份 dump」只是**声称**能回滚 —— 没有人证明那份 dump 真的能恢复出一个可用的库。
+2026-09-21 用**临时容器 + 临时卷**做了一次**完全非破坏性**的恢复演练，把它从「声称」变成「已验证」：
+
+- dump 校验：`data/migration/watb-migration-20260920-152438.sql`，`wc -c` = 2,069,682 字节，
+  `certutil -hashfile … MD5` = `17c4d94515e8955de1db16f64085501f`，`grep -c '^CREATE TABLE'` = 58，
+  尾部 `-- Dump completed on 2026-09-20 15:24:39` 完整。
+- 演练用的临时卷 `watb-drill-20260921` + 临时容器 `watb-drill-mysql-20260921`，镜像与生产库同源
+  （`podman inspect watb-docker-mysql` → `docker.io/library/mysql:8.0`），端口发布 `127.0.0.1:13306`
+  （**没有用 3306**，全程未连生产库做对比，只与基线文件比对）。
+- 导入：`cat data/migration/watb-migration-20260920-152438.sql | podman exec -i watb-drill-mysql-20260921 mysql -uroot -p***`
+  → `EXIT=0`，耗时 **4 秒**；恢复出 2 个库、58 张表；`SELECT VERSION()` = 8.0.46。
+- **逐表行数一致**：演练库 58 张表逐表 `COUNT(*)` 与 `data/migration/.counts-post-exact.txt` 排序后 `diff`
+  → **无输出**（58 = 58 张表，总行数 318 = 318）；不一致清单：**无**。
+- 内容抽查：`RENDER_CONFIG` 1 行（内容是 dump 当时的快照）、`ARTICLE` 17 行 / `SUM(DELETED)=0` /
+  `SUM(CHAR_LENGTH(CONTENT_HTML))` = 536794（正文不是空壳）；中文以 HEX 解码验证，字节层面完好。
+- **演练残留已清理**：临时容器与临时卷都已删除，`podman volume ls` 恢复为演练前的 7 个卷；
+  生产容器与旧库容器全程未被触碰。
+
+**将来真要清理回滚路径时**（本轮【未执行】，等用户确认；顺序不能乱）：
+
+```bash
+# --- 第 0 步：删除前必须确认（这几项全过才动手）---
+podman exec watb-docker-mysql mysqladmin -uroot -p$ENV_MYSQL_PASSWORD ping    # 期望 mysqld is alive
+# 0.2 生产库逐表行数仍与基线一致（58 表 / 318 行）：现查后与基线排序比对
+diff <(sort data/migration/.counts-post-exact.txt) <(sort /tmp/counts-now.txt) # 期望无输出
+md5sum data/migration/watb-migration-20260920-152438.sql                       # 期望 17c4d945…501f
+# 0.4 确认没有别的容器还引用旧卷（应为空）
+podman ps -a --filter volume=050c8ebd91877df65f48305b6fc095390dfa0463d06b19d365855badbe55d802
+podman volume ls > /tmp/volumes-before-cleanup.txt && podman ps -a > /tmp/ps-before-cleanup.txt
+
+# --- 第 1 步：先容器后卷（旧卷 LINKS=1，容器不删则卷删不掉）---
+podman stop watb-dev-mysql
+podman rm   watb-dev-mysql
+podman volume rm 050c8ebd91877df65f48305b6fc095390dfa0463d06b19d365855badbe55d802
+
+# --- 第 2 步：只有在确认 dump 已另有异地副本后，才删本机 dump 与计数文件 ---
+# rm data/migration/watb-migration-20260920-152438.sql
+# rm data/migration/.counts-post-exact.txt data/migration/.counts-pre-exact.txt \
+#    data/migration/.last-dump-path data/migration/MIGRATION-REPORT.md
+
+# --- 第 3 步：校验 ---
+podman ps -a         # 期望只剩 nostalgic_mcnulty / watb-docker-mysql / watb-app
+podman volume ls     # 期望只剩原有卷（watb-mysql-data / watb-uploads / be07… / 67cb… / 3784… / c069…）
+
+# --- 严禁使用 ---
+# podman volume prune / podman system prune --volumes   ← watb-uploads 当前 LINKS=0，会被一起删掉
+# podman volume rm <简写或通配>                          ← 必须写全名，绝不要用 050c* 之类
+```
+
+旧卷占用（2026-09-21 现查）：**303.8 MB**（= 303,815,503 字节）——两个口径一致
+（`podman system df -v` 与虚拟机内 `sudo -n du -sb <_data>`）。卷路径（虚拟机内）：
+`/home/user/.local/share/containers/storage/volumes/050c8ebd91877df65f48305b6fc095390dfa0463d06b19d365855badbe55d802/_data`；
+宿主机的实际落盘在 podman machine 的 `ext4.vhdx`
+（`C:\Users\WIN11\.local\share\containers\podman\machine\wsl\wsldist\podman-machine-default\ext4.vhdx`，
+当前 9,277,800,448 字节 —— 删卷后该 vhdx **不会自动收缩**）。
 
 ---
 
@@ -402,3 +515,112 @@ $ podman exec watb-app sh -c 'ls /app/data/uploads | wc -l'
 
 > 说明：以上所有命令均在 2026-09-20 本次改造中实际执行，输出为原样摘录。
 > 文档里的 `<token>` / `<ADMIN_USERNAME>` 等占位是刻意的脱敏，没有把任何口令写进文档。
+> **本节是 2026-09-20 的存档，里面的数字（`Network=10.89.0.4`、`ls … | wc -l` = 313、
+> `[volume] watb-uploads…` 这条挂载）此后都已变** —— 现查见 §1.1、上传目录现状见 §10.3。
+
+---
+
+## 10. 本轮运维加固（2026-09-21）
+
+> 本节记录 2026-09-21 这一轮对容器形态的加固与验证，**全部为本机实测**。
+> 数字同样会过期 —— 现查命令见 §1.1；容器定义的完整还原料见 `docs/dev/podman-containers-inspect.md`。
+
+### 10.1 健康检查：两个容器都有了
+
+| 容器 | 探针（`Config.Healthcheck.Test`） | 参数 |
+| --- | --- | --- |
+| `watb-app` | `bash -c "exec 3<>/dev/tcp/127.0.0.1/8081 && printf \"GET /api/health HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n\" >&3 && grep -q \" 200 \" <&3"` | start-period 90s / interval 15s / timeout 5s / retries 5 |
+| `watb-docker-mysql` | `mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" >/dev/null 2>&1`（凭据取容器自身 env，命令行里不出现明文） | start-period 60s / interval 10s / timeout 5s / retries 10 |
+
+- app 的探针为什么不用 curl/wget：基础镜像 `eclipse-temurin:17-jre-noble` 里没有它们，但有 bash 5.2，
+  `/dev/tcp` 是 bash 内建重定向，不需要任何额外二进制（注意是斜杠形式 `/dev/tcp/HOST/PORT`）。
+- **这两个 healthcheck 是加在容器层的**（`podman run --health-cmd …`），与镜像无关。
+- 镜像里也已经写了 `HEALTHCHECK`（`Dockerfile` 末尾），但**必须用 `podman build --format docker` 构建**才会生效 ——
+  `podman build` 默认输出 OCI 格式，而 HEALTHCHECK 不是 OCI 规范的一部分，会被**静默忽略**（只打一句 warning）。
+  实测对比见 `docs/dev/podman-containers-inspect.md` §A.3。
+- 查看方式：
+
+  ```bash
+  podman ps --format '{{.Names}} {{.Status}}'                     # 括号里的 (healthy) 就是它
+  podman inspect watb-app --format '{{.State.Health.Status}}'     # healthy / starting / unhealthy
+  podman inspect watb-app --format '{{json .Config.Healthcheck}}' # 探针定义
+  podman inspect watb-app --format '{{json .State.Health}}'       # 含最近几次探测的退出码与输出
+  ```
+
+  2026-09-21 现查：`watb-docker-mysql|Up 22 minutes (healthy)`、`watb-app|Up 22 minutes (healthy)`。
+
+### 10.2 启停脚本：宿主重启后的标准恢复路径
+
+本机没有 compose provider（见 §10.5），所以「谁先起来」这件事靠脚本兜：
+
+- `scripts/watb-start.sh` —— **宿主重启后跑这一条**：起 db → 轮询到 db healthy → 起（或重启）app →
+  轮询到 app healthy → 打印最终状态。
+  - 幂等：全绿时再跑**不会**无谓重启；app 在跑但不 healthy（典型的「先于 db 起来、连不上库」）才 `restart`。
+  - 只 `start` / `restart`，**从不 `rm`**。退出码：`0` 全部 healthy / `1` 超时未达 healthy 或容器没有 healthcheck /
+    `69` 找不到 podman 或容器不存在（提示照还原料重建）。
+  - 可选 `--timeout <秒>`（默认 240，可用 `WATB_TIMEOUT_S` 覆盖）。
+- `scripts/watb-stop.sh` —— 停两个容器，**先 app 后 db**（让应用先把在途请求收干净），只 `stop` 不 `rm`、不删卷。
+  停之前会查「在途采集任务」条数（`TASK_RUN` 里 `STATUS not in ('SUCCESS','SUCCESS_WITH_WARNINGS','FAILED')`），
+  非 0 就拒绝停止，`--force` 才强停。
+- 以前宿主重启后要人工判断顺序并 `podman restart watb-app`（见 §3 末尾），现在一条命令。
+
+### 10.3 上传目录：宿主 `data\uploads` 是唯一事实来源
+
+`watb-app` 的 `/app/data/uploads` 现在是**宿主目录 bind mount**
+（`-v D:/project/wwwroot/wechat-article-bot/data/uploads:/app/data/uploads`），不再是命名卷 `watb-uploads`。
+
+为什么这样选（实测依据见 `docs/dev/podman-containers-inspect.md` §A.2）：切之前两边已经**分叉** ——
+卷里 322 个文件、宿主 313 个，宿主是严格子集、共有文件内容 **0 处不同**；而卷里多出的 9 个是**活的**
+（9 个在 `ASSET` 表都有行，其中 3 篇 `ARTICLE.CONTENT_HTML` 引用了它们），直接切会让 9 个 URL 404。
+按内容比对补齐 9 个（宿主 313 → 322）之后再切，`diff -rq` 两侧完全一致。
+于是「看宿主即看全部」，不用再反向同步（§6.1 那套反向拷贝因此只对历史快照有意义）。
+
+现查（2026-09-21）：宿主 `data\uploads` **323** 个文件、容器内 `/app/data/uploads` **323** 个 —— 同一份目录。
+卷 `watb-uploads` **未删**，留作对照/回退。
+
+### 10.4 `watb-test-mysql` 已移除（只删容器，卷保留）
+
+- **原因**：它声明着 `0.0.0.0:3306` 端口映射，一旦被启动就会和 `watb-docker-mysql`（`127.0.0.1:3306`）
+  抢 3306 —— 是隐患而不是现状（它当时处于 `Exited`）。
+- **处置**：`podman rm watb-test-mysql`，**只删容器**。它挂的卷是 `050c8ebd…`，
+  **与 `watb-dev-mysql` 是同一个卷**（回滚路径），所以卷保留未动。
+- 2026-09-21 现查：`podman ps -a` 里已无 `watb-test-mysql`。
+- 它的**原始容器定义**（字段表 + `CreateCommand`）保存在 `docs/dev/podman-containers-inspect.md` §3，
+  要复原照那份还原料抄。
+
+### 10.5 为什么用脚本而不是 compose
+
+本机 **没有任何 compose provider**：`docker compose` / `podman compose` 都不可用。容器是手写 `podman run`
+起的，没有 `compose.yaml`、没有 `depends_on`、没有编排器帮我们排顺序。所以：
+
+- 「db 先于 app 就绪」由 `scripts/watb-start.sh` 用健康检查轮询实现（等价于 `depends_on: condition: service_healthy`）；
+- 容器定义本身仍然只存在于命令与还原料里（`docs/dev/podman-containers-inspect.md`），
+  `podman rm` 掉就没有东西能把它变回来 —— 这也是两个脚本坚持「只 stop，从不 rm」的原因。
+
+### 10.6 定案：`site_base_url`（本站公网地址）留空
+
+`RENDER_CONFIG.site_base_url` 原为 `http://127.0.0.1:8081`（回环地址）。2026-09-21 定案**清空**（库中为 `NULL`）：
+
+- **实测上游对图片 URL 是纯透传**：不可达主机（`https://probe.invalid.test/uploads/…`）与可达公网图
+  （`https://www.baidu.com/img/flexible/logo/pc/result.png`）都在渲染产物里**逐字原样保留** ——
+  没有 CDN 转存、没有 `data:` base64。所以「绝对化」对「渲染能否成功」没有任何作用。
+- **回环值是假的「已配置」信号**：它恰好压掉了 `MarkFlowRenderService.java:237` 那条有意的告警
+  （「未配置站点公网地址 site_base_url」），而且当站内素材名不是 32 位 hex 时，`127.0.0.1` 会真的被烧进正文 ——
+  实测复现：`ARTICLE` id=24 的 `CONTENT_HTML` 里 `LOCATE('127.0.0.1')=828`，清空后同一篇为 0。
+- **仓库里不存在本应用的公网地址证据**（`README_CN.md` 只说「生产建议前置 HTTPS 反向代理」，
+  `deploy/env/*.env.example` 只有 `APP_BIND_ADDRESS`），所以没有可填的真值 —— 留空胜过填一个假的/回环的地址。
+- **将来拿到公网地址后怎么设**：系统设置 → 排版渲染服务 →「本站公网地址（Site Base URL）」
+  （`webui/src/views/SettingsView.vue:65`），填本应用对公网可访问的**根地址**，形如 `https://article.example.com` ——
+  只填 scheme + host，**不带结尾斜杠、不带 `/uploads/`、不带任何路径**（代码自己拼 `{该值}/uploads/…`；
+  见 `MarkFlowRenderService.absoluteImageUrls`）。等价的接口写法是 `PUT /api/settings/render` 的 `siteBaseUrl`，
+  传空串即清空（不会触碰令牌密文）。
+- 复验（2026-09-21 实跑）：清空后 `POST /api/articles/23/rerender` → HTTP 200 `success=true`，
+  产物两张站内图都是 `<img src="/uploads/…">`；落库正文仍是相对路径；告警按设计出现。
+  令牌与 `base_url` 未动（密文长度与哈希指纹改动前后一致），21 篇历史文章一行未改。
+- 回滚材料：`target/probe-site-base-url/render-config-before.json`（只记结构化字段、密文长度与哈希指纹，
+  **不含明文令牌与密文**）；一键恢复 `python target/probe-site-base-url/probe_api.py put 'http://127.0.0.1:8081'`
+  （已实跑验证；该命令只回传 baseUrl/siteBaseUrl/TTL/enabled，token 传空串即不修改令牌）。
+
+> 注：`webui/src/views/SettingsView.vue:65` 的提示语本轮**没有改**（本轮不改代码），它仍写着
+> 「用于把文章图片 /uploads/ 相对路径转为渲染服务可访问的绝对直链」。按上面的实测，这句话只在
+> 「上游改成真的抓图」或「站内素材不是 32 位 hex 命名」时才成立。

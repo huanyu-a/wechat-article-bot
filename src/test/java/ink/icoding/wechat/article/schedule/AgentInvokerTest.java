@@ -6,6 +6,7 @@ import ink.icoding.llm.agent.AgentResultHandler;
 import ink.icoding.llm.agent.AgentSessionResult;
 import ink.icoding.llm.core.tool.ToolDescriptor;
 import ink.icoding.llm.core.tool.ToolStatus;
+import ink.icoding.wechat.article.skill.LayoutEngine;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -391,6 +392,60 @@ class AgentInvokerTest {
         assertThat(outcome.hasToolFailures()).isTrue();
         assertThat(outcome.executionLog())
                 .contains("【配图】工具失败：generate_image - Data too long for column 'DESCRIPTION'");
+    }
+
+    /**
+     * 工具失败发生在**被重试丢弃的那次尝试**里时，计数不能跟着那次尝试一起丢掉。
+     *
+     * <p>定性的现象：某轮报告的 {@code toolFailures} 为 0，而同一轮的执行日志里明明有
+     * 「工具失败：…」——日志是**实时**上报的（失败路径留得住），失败计数却只随 {@code Outcome} 回来，
+     * 而被重试/换档案丢弃的那次尝试根本不产生 Outcome。于是「重试成功」被记成了「本轮没有工具失败过」。
+     *
+     * <p>断言按生产调用方的形状走：工作区监听器 + 成功路径的
+     * {@code addToolFailures(outcome.toolFailures())}（见 {@code PipelineExecutor} 第 208 行），
+     * 而不是只看 {@code outcome.toolFailures()}——后者本来就只带得回最后一次尝试的计数。
+     */
+    @Test
+    void keepsToolFailuresFromADiscardedAttempt() throws Exception {
+        Fixture fixture = new Fixture(30);
+        when(fixture.session.command(anyString())).thenReturn(
+                readOnlyToolErrorThenFails("search_web", "HTTP 429 concurrent limit exceeded: running=7 max=6"),
+                completes("已生成"));
+        TaskWorkspace workspace = TaskWorkspace.create(null, LayoutEngine.PROMPT);
+
+        AgentRunner.Outcome outcome = fixture.invoker.runWithLimit(fixture.agent, "指令", null, "【调研】", 0,
+                workspace.progressListener());
+        // 生产调用方的形状：成功返回后把产出里的失败数汇入工作区
+        workspace.addToolFailures(outcome.toolFailures());
+
+        assertThat(outcome.reply()).isEqualTo("已生成");
+        assertThat(workspace.executionLogText())
+                .as("失败那一行的日志是实时上报的，失败路径也留得住")
+                .contains("【调研】工具失败：search_web - 工具自身报错");
+        assertThat(workspace.toolFailureCount())
+                .as("被重试丢弃的那次尝试里的工具失败，必须计入运行级失败数")
+                .isEqualTo(1);
+    }
+
+    /**
+     * 成功路径仍只记**一次**：失败发生在最后一次尝试里时，计数只由产出（Outcome）带回，
+     * 实时通道不得再报一遍。这是新增实时通道最直接的风险——两条路径都报会把同一次失败记两遍，
+     * 那样「有 N 次工具调用失败」的终态说明就会虚高。
+     */
+    @Test
+    void countsSuccessPathToolFailuresExactlyOnce() throws Exception {
+        Fixture fixture = new Fixture(30);
+        when(fixture.session.command(anyString())).thenReturn(
+                toolErrorThenCompletes("generate_image", "Data too long for column 'DESCRIPTION'", "完成"));
+        TaskWorkspace workspace = TaskWorkspace.create(null, LayoutEngine.PROMPT);
+
+        AgentRunner.Outcome outcome = fixture.invoker.runWithLimit(fixture.agent, "指令", null, "【配图】", 0,
+                workspace.progressListener());
+        workspace.addToolFailures(outcome.toolFailures());
+
+        assertThat(workspace.toolFailureCount())
+                .as("成功路径的失败数只经 Outcome 汇总一次，实时通道不得重复上报")
+                .isEqualTo(1);
     }
 
     @Test
@@ -971,6 +1026,19 @@ class AgentInvokerTest {
         return new AgentSessionResult(self -> {
             self.getHandler().onTool(tool(toolName, "call-1"), ToolStatus.CALLING);
             self.getHandler().onTool(tool(toolName, "call-1"), ToolStatus.COMPLETED);
+            self.completeExceptionally(new IllegalStateException(message));
+        });
+    }
+
+    /**
+     * 只读工具**自己失败**（{@code onToolError}）之后会话才失败：这次尝试既可重试
+     * （只读工具无付费副作用），又已经留下过一次工具失败——正是「0/失败并存」的形状。
+     */
+    private static AgentSessionResult readOnlyToolErrorThenFails(String toolName, String message) {
+        return new AgentSessionResult(self -> {
+            AgentResultHandler handler = self.getHandler();
+            handler.onTool(tool(toolName, "call-1"), ToolStatus.CALLING);
+            handler.onToolError(tool(toolName, "call-1"), new IllegalStateException("工具自身报错"));
             self.completeExceptionally(new IllegalStateException(message));
         });
     }

@@ -128,6 +128,24 @@ public abstract class AgentRunner {
         /** 每计入一次工具调用回调一次（{@code delta} 通常为 1）。 */
         void toolCallCounted(int delta);
 
+        /**
+         * 本次尝试**将被丢弃**时，上报它已发生的工具失败数（默认忽略，仅工作区监听器关心）。
+         *
+         * <p>为什么需要它：与 {@link #toolCallCounted} 同一理由，而工具失败此前漏掉了这条通道——
+         * 失败计数原先只随 {@link Outcome#toolFailures()} 回来，可**被重试/换档案丢弃的那次尝试
+         * 不产生 Outcome**，它的工具失败就整批丢掉。实测形状：某轮报告的 {@code toolFailures} 为 0，
+         * 而同一轮的执行日志里明明有「工具失败：…」（日志是实时上报的，所以留得住），
+         * 于是「重试成功」被记成了「本轮没有工具失败过」。
+         *
+         * <p>**只在产出被丢弃的那几次尝试上报**：成功路径的计数仍由 {@code Outcome} 带回、
+         * 由调用方汇总（PipelineExecutor / CoordinatorExecutor / ArticleAiService），
+         * 两条路径都报会把同一次失败记两遍。
+         *
+         * @param delta 本次尝试已发生的工具失败数（&le;0 表示没有，调用方可直接跳过）
+         */
+        default void toolFailuresCounted(int delta) {
+        }
+
         /** 每产生一行执行日志回调一次（已含阶段前缀）。 */
         void logLine(String line);
 
