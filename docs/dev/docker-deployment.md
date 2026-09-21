@@ -607,9 +607,12 @@ $ podman exec watb-app sh -c 'ls /app/data/uploads | wc -l'
 - **回环值是假的「已配置」信号**：它恰好压掉了 `MarkFlowRenderService.java:237` 那条有意的告警
   （「未配置站点公网地址 site_base_url」），而且当站内素材名不是 32 位 hex 时，`127.0.0.1` 会真的被烧进正文 ——
   实测复现：`ARTICLE` id=24 的 `CONTENT_HTML` 里 `LOCATE('127.0.0.1')=828`，清空后同一篇为 0。
-- **仓库里不存在本应用的公网地址证据**（`README_CN.md` 只说「生产建议前置 HTTPS 反向代理」，
-  `deploy/env/*.env.example` 只有 `APP_BIND_ADDRESS`），所以没有可填的真值 —— 留空胜过填一个假的/回环的地址。
-- **将来拿到公网地址后怎么设**：系统设置 → 排版渲染服务 →「本站公网地址（Site Base URL）」
+- **当时（2026-09-21 上午）仓库与配置里确实找不到公网地址**：`README_CN.md` 只说「生产建议前置 HTTPS 反向代理」，
+  `deploy/env/*.env.example` 只有 `APP_BIND_ADDRESS`，所以没有可填的真值 —— 留空胜过填一个假的/回环的地址。
+  **这个判断当天晚上就被推翻了**：服务器上一直有一条 aaPanel 反代规则指向 8081，域名是
+  `https://mozhou.bx9y.com.cn`（详见附录 A.6）。也就是说真值是有的，只是当时没找到 ——
+  `site_base_url` **目前仍是 NULL，属于「已知该填但还没填」的状态，不是「没有值可填」**。
+- **怎么设（已知真值，只是还没填）**：系统设置 → 排版渲染服务 →「本站公网地址（Site Base URL）」
   （`webui/src/views/SettingsView.vue:65`），填本应用对公网可访问的**根地址**，形如 `https://article.example.com` ——
   只填 scheme + host，**不带结尾斜杠、不带 `/uploads/`、不带任何路径**（代码自己拼 `{该值}/uploads/…`；
   见 `MarkFlowRenderService.absoluteImageUrls`）。等价的接口写法是 `PUT /api/settings/render` 的 `siteBaseUrl`，
@@ -742,3 +745,46 @@ ARTICLE / ASSET / TASK_RUN / LLM_PROFILE / RENDER_CONFIG **均为 0 行**；上�
 
 旧环境（已删除）当时的数据：ARTICLE 19 / ASSET 41 / TASK_RUN 18（SUCCESS 17 + FAILED 1）/ LLM_PROFILE 13，
 一个 trigger（`task-trigger-1`，原下次触发 2026-09-22 09:00），`RENDER_CONFIG` 0 行。备份见 A.4。
+
+## A.6 公网域名与反代（aaPanel / 宝塔）
+
+**域名 `https://mozhou.bx9y.com.cn` 一直存在**，反代规则在 **aaPanel（宝塔）的 vhost** 里，不在 `/etc/nginx`：
+
+```
+/www/server/panel/vhost/nginx/mozhou.bx9y.com.cn.conf      # 生效的规则（注意有 .conf 后缀）
+/www/server/panel/vhost/cert/mozhou.bx9y.com.cn/            # fullchain.pem + privkey.pem
+/www/wwwlogs/mozhou.bx9y.com.cn.log                         # 访问日志
+```
+
+规则本体：`listen 80` + `listen 443 ssl http2`，`server_name mozhou.bx9y.com.cn`，
+`location ^~ /` 整站 `proxy_pass http://127.0.0.1:8081`，即**所有路径都透传给 app 容器**
+（`/api/*`、`/assets/*`、`/uploads/*` 一视同仁，没有按路径拆分到别处）。
+两个值得记住的点：
+
+- `proxy_set_header Origin "";` —— 上游 `SecurityConfig` 的 CORS 白名单只放了 localhost，
+  同域部署下浏览器发的 ES module 请求带 `Origin` 会被 403，所以反代主动抹掉它。
+- `proxy_buffering off` + 读写超时 600s —— 长文章渲染/生成接口需要。
+
+**证书**：CN=`mozhou.bx9y.com.cn`，SAN 只有这一个 DNS，2026-09-07 签发、**2026-12-06 到期**，
+路径 `/www/server/panel/vhost/cert/mozhou.bx9y.com.cn/`。到期要在 aaPanel 里续，别等它自己红。
+
+**实测（2026-09-21，全部经公网域名）**：
+
+| 探测 | 结果 |
+| --- | --- |
+| `GET /api/health` | 200，`{"status":"UP"}`，71 ms |
+| `GET /` | 200，SPA `index.html`（Vite 产物，引用 `/assets/index-*.js`） |
+| `GET /assets/index-Dwrpkxos.js` | 200，121 KB（前端是真的在镜像里，见 `Dockerfile:18`） |
+| `GET /assets/index-Bf2z4UXT.css` | 200，58 KB |
+| `GET /favicon.svg` | 200，9.5 KB |
+| `GET /api/articles`（无 token） | 401（鉴权按设计拦截） |
+| 80 端口 | 同为 200，**没有强制跳转 https**（两个 listen 在同一个 server 块里） |
+
+`/favicon.ico`、`/assets`（当目录列）、`/uploads/` 会返回 500 —— 这三个路径本来就不存在
+（图标是 `/favicon.svg`，`/assets` 不是文件），容器内直连 8081 同样行为，与反代无关。
+
+**教训（我在这上面错过两次）**：这台机器的 nginx 配置分散在三处 —— `/etc/nginx/`（几乎没有业务站点）、
+`/www/dk_project/dk_app/*/nginx.conf`（各个 Docker 项目自带的）、以及 **aaPanel 的
+`/www/server/panel/vhost/nginx/*.conf`**。找反代规则必须三个地方都搜，
+`grep -rl "域名\|8081" /www/server/panel/vhost/nginx/` 一行就够，漏了它就会得出「没有域名」的错误结论。
+另外服务器上**没有装 `rg`**，`grep -r` 才是可靠选项。
