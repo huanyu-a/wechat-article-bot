@@ -1,3 +1,37 @@
 /mvnw text eol=lf
 /scripts/*.sh text eol=lf
 *.cmd text eol=crlf
+
+# 行尾统一（2026-11-10）：仓库里长期混着 CRLF 与 LF，导致 210 个文件在 git status
+# 里显示改动、其中 176 个是纯行尾差异（真实改动仅 34 个）。这类噪音有两个实际危害：
+#   1) 代码审查时真正的改动被埋在几百个「整文件重写」里；
+#   2) `--ignore-cr-at-eol` 只影响 --stat/--numstat，**不影响 --name-only**，
+#      按名字筛改动会全部误判为真改动。
+# 统一为：文本文件一律 LF 入库；Windows 专用脚本保留 CRLF。
+* text=auto eol=lf
+*.java   text eol=lf
+*.yaml   text eol=lf
+*.yml    text eol=lf
+*.xml    text eol=lf
+*.md     text eol=lf
+*.js     text eol=lf
+*.mjs    text eol=lf
+*.vue    text eol=lf
+*.css    text eol=lf
+*.json   text eol=lf
+*.sh     text eol=lf
+*.sql    text eol=lf
+*.properties text eol=lf
+# 二进制：不参与行尾转换
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.svg    text eol=lf
+*.ttf    binary
+*.woff   binary
+*.woff2  binary
+*.jar    binary
+*.gz     binary
+*.zip    binary
