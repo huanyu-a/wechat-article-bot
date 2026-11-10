@@ -105,9 +105,14 @@ public class LlmProfileSeeder implements ApplicationRunner {
                 log.debug("尚无默认模型档案，跳过标准档案种子");
                 return;
             }
+            // 兜底档案在应用层是**全局唯一**的（见 LlmProfileMapper#findFallback）。
+            // 先算一次「现在有没有」，再传给每一条种子：否则种子清单里声明 fallback=true 的那条
+            // 会在老库已经设过兜底的情况下**再插一个**，把唯一性破坏掉
+            // （2026-11-10 生产升级实测：老库兜底为 qwen3.8-flash，种子又给 hy4-preview 打了标）。
+            boolean fallbackTaken = mapper.findFallback() != null;
             for (Seed seed : seeds()) {
                 try {
-                    createIfAbsent(seed, source);
+                    createIfAbsent(seed, source, fallbackTaken);
                 } catch (Exception exception) {
                     log.warn("标准模型档案 {} 创建失败（跳过，不影响启动）", seed.name(), exception);
                 }
@@ -153,7 +158,7 @@ public class LlmProfileSeeder implements ApplicationRunner {
      * 来源没有供应商（{@code providerId} 为空，例如回填还没跑）时留空——这些档案走档案自身旧列的
      * 回退口径，与改造前逐字一致，不会因为「没有供应商」而变得不可用。
      */
-    private void createIfAbsent(Seed seed, LlmProfile source) {
+    private void createIfAbsent(Seed seed, LlmProfile source, boolean fallbackTaken) {
         if (mapper.findByName(seed.name()) != null) return;
         LlmProfile profile = new LlmProfile();
         profile.setName(seed.name());
@@ -166,7 +171,9 @@ public class LlmProfileSeeder implements ApplicationRunner {
         profile.setMaxTokens(source.getMaxTokens());
         profile.setEnabled(true);
         profile.setIsDefault(false);
-        profile.setIsFallback(seed.fallback());
+        // 只有「库里还没有兜底档案」时才允许这条种子去当兜底；已有则一律不设，
+        // 由 markFallbackIfUnset 保证「没有就补一个」的语义，两处不会互相打架。
+        profile.setIsFallback(seed.fallback() && !fallbackTaken);
         profile.setCreatedBy(source.getCreatedBy());
         LocalDateTime now = LocalDateTime.now();
         profile.setCreatedAt(now);
