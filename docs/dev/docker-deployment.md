@@ -639,7 +639,13 @@ $ podman exec watb-app sh -c 'ls /app/data/uploads | wc -l'
 
 > **两个环境现在同时在跑，别混淆**：
 > - **本机**：podman，`watb-app` + `watb-docker-mysql`（本文正文 §1–§10）。
-> - **服务器**：腾讯云（SSH 别名 `tencent`），Docker Compose，`wechat-article-bot-app-1` + `wechat-article-bot-mysql-1`。
+> - **服务器**：腾讯云（SSH 别名 **`tencent82`**，用户 `ubuntu`，**需 `sudo`**），Docker Compose，
+>   `wechat-article-bot-app-1` + `wechat-article-bot-mysql-1`。
+>
+> ⚠️ **2026-11-10 更正**：本附录此前写的 SSH 别名 `tencent`（`152.136.49.237`，`VM-8-13-opencloudos`）
+> **不是**跑着本项目的机器——那台上既没有本项目容器、也没有工程目录。真正在跑的是
+> **`tencent82`（`82.157.164.119`，`VM-8-11-ubuntu`）**。下文所有 `tencent` 已按此更正为 `tencent82`，
+> 并补上了 `sudo`（该机 `ubuntu` 用户对 `deploy/env/dev.env` 无读权限，文件属 root 600）。
 >
 > 2026-09-21 的经过：上午先在服务器上替换部署（`guoshengkai/wechat-article-bot:latest` → 本地构建的
 > `wechat-article-bot:20260921`）；当天稍晚按用户决定**整体下线**（「全部以本地为主，线上的全部清除都可以，
@@ -662,13 +668,18 @@ $ podman exec watb-app sh -c 'ls /app/data/uploads | wc -l'
 
 ## A.1 服务器与工程位置
 
-- SSH 别名 `tencent`（`~/.ssh/config`，root）；主机 `VM-8-13-opencloudos`，x86_64，4C3.6G，Docker 28.0.1 + Compose v2.39.1。
-  **这台机器上还跑着 new-api / WeKnora / favshub / qinglong 等一堆别的容器，操作前先 `docker ps` 核对名字。**
+- SSH 别名 **`tencent82`**（`~/.ssh/config`，用户 `ubuntu`，**命令前加 `sudo`**）；
+  主机 `VM-8-11-ubuntu`，x86_64，**4C3.6G**，Docker **29.9.2** + Compose **v5.6.1**。
+  **这台机器上还跑着 new-api / qinglong / favshub / wx-auth 等一堆别的容器，操作前先 `docker ps` 核对名字。**
+- root 直连（`tencent82-root`）会被 `Permission denied (publickey)` 拒绝，**走 `ubuntu` + `sudo`**。
 - 工程目录：`/www/dk_project/dk_app/wechat-article-bot`，compose 工程名 `wechat-article-bot`。
 - 容器：`wechat-article-bot-app-1`（127.0.0.1:8081→8081，`USER 10001:10001`，`unless-stopped`）与
   `wechat-article-bot-mysql-1`（mysql:8.4，127.0.0.1:13307→3306，带 healthcheck）。
-- 数据是 **bind mount**（不是命名卷）：`./data/uploads → /app/data/uploads`、`./data/mysql → /var/lib/mysql`。
-  **换机器/重建容器不会丢数据，但删目录会。**
+- 数据是 **Docker 命名卷**（**不是** bind mount，2026-11-10 实测更正）：
+  `wechat-article-bot_uploads_data → /app/data/uploads`、`wechat-article-bot_mysql_data → /var/lib/mysql`。
+  所以工程目录下**没有** `data/` 子目录；数据在 `/var/lib/docker/volumes/` 下。
+  **重建容器/换镜像不会丢数据**；`docker compose down -v` 才会（它会删命名卷）。
+  核对命令：`sudo docker inspect wechat-article-bot-app-1 --format '{{range .Mounts}}{{.Type}} {{.Source}} -> {{.Destination}}{{println}}{{end}}'`
 - compose 是 **`compose.yaml` + `compose.dev.yaml` 两份叠加**（dev 那份提供 app 的 build 段、
   `depends_on: mysql:service_healthy`、mysql 服务定义），env 文件是 `deploy/env/dev.env`（600 权限，真实凭据在里面）。
 - ⚠️ 服务器上的 git 检出跟踪的是 `github.com/onlyGuo/wechat-article-bot`（旧上游，commit `78f560f`），
@@ -676,23 +687,50 @@ $ podman exec watb-app sh -c 'ls /app/data/uploads | wc -l'
 
 ## A.2 部署方式：在服务器上本地构建，不推镜像仓库
 
+> **2026-11-10 实测版本（照这个走，含 `sudo`）**：
+> ```bash
+> # 0) 本机打源码包（用 git archive，确保只含已提交内容；不要用 tar 整个工作区）
+> git archive HEAD | tar -x -C target/deploy-src-$$
+> tar -czf target/wab-src.tar.gz -C target/deploy-src-$$ .
+> scp target/wab-src.tar.gz tencent82:/tmp/wab-src-<日期>.tar.gz
+>
+> # 1) 备份（升级前必做；数据在具名卷里，重建容器不丢，但升级失败要能回退数据）
+> sudo docker exec wechat-article-bot-mysql-1 sh -c \
+>   'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --triggers wechat-article' \
+>   > /www/dk_project/dk_app/backups/wechat-article-bot-pre-<日期>/wechat-article-<时间戳>.sql
+> sudo cp deploy/env/dev.env <同一备份目录>/dev.env-<时间戳>
+>
+> # 2) 解压 + 构建（4 核约 6~10 分钟，首次要拉三个基础镜像）
+> ssh tencent82 'mkdir -p /tmp/wab-build-<日期> && tar -xzf /tmp/wab-src-<日期>.tar.gz -C /tmp/wab-build-<日期>'
+> ssh tencent82 'cd /tmp/wab-build-<日期> && sudo DOCKER_BUILDKIT=1 docker build --target runtime \
+>   --build-arg APP_VERSION=<日期> --build-arg VCS_REF=$(git rev-parse --short HEAD) \
+>   -t wechat-article-bot:<日期> -t wechat-article-bot:latest .'
+>
+> # 3) 只替换 app（mysql 不动），并同步 env 里的 IMAGE_TAG
+> ssh tencent82 'cd /www/dk_project/dk_app/wechat-article-bot && \
+>   sudo IMAGE_REPOSITORY=wechat-article-bot IMAGE_TAG=<日期> \
+>   docker compose --env-file deploy/env/dev.env -f compose.yaml -f compose.dev.yaml up -d --no-deps app'
+> ```
+> 注意源码包解压出来**没有 `.git`**（`git archive` 的正常产物），所以 `VCS_REF` 要在
+> 构建命令里从**本机**传入，不能在服务器上 `git rev-parse`。
+
 本机没有 registry 凭据，所以不走「推 Docker Hub → 服务器 pull」，而是**源码上传 + 服务器本地 build**：
 
 ```bash
 # 1) 本机生成干净源码（git archive，排除 target/node_modules）
 git archive HEAD | tar -x -C target/deploy-src
 tar -czf target/wab-src.tar.gz -C target/deploy-src .
-scp target/wab-src.tar.gz tencent:/www/dk_project/dk_app/wechat-article-bot/
+scp target/wab-src.tar.gz tencent82:/www/dk_project/dk_app/wechat-article-bot/
 
 # 2) 服务器上构建（4 核约 6 分钟）
-ssh tencent 'cd /www/dk_project/dk_app/wechat-article-bot && mkdir -p /tmp/wab-build && \
+ssh tencent82 'cd /www/dk_project/dk_app/wechat-article-bot && mkdir -p /tmp/wab-build && \
   tar -xzf wab-src.tar.gz -C /tmp/wab-build && \
   cd /tmp/wab-build && DOCKER_BUILDKIT=1 docker build --target runtime \
     --build-arg APP_VERSION=20260921 --build-arg VCS_REF=$(git rev-parse HEAD) \
     -t wechat-article-bot:20260921 -t wechat-article-bot:latest .'
 
 # 3) 替换 app 容器（mysql 不动）
-ssh tencent 'cd /www/dk_project/dk_app/wechat-article-bot && \
+ssh tencent82 'cd /www/dk_project/dk_app/wechat-article-bot && \
   IMAGE_REPOSITORY=wechat-article-bot IMAGE_TAG=20260921 \
   docker compose --env-file deploy/env/dev.env -f compose.yaml -f compose.dev.yaml up -d --no-deps app'
 ```
@@ -722,6 +760,67 @@ ssh tencent 'cd /www/dk_project/dk_app/wechat-article-bot && \
   要么用 `n=$(grep -c ... || echo 0)` 先取数再判断，要么 `grep -rl`。
 - 判断「字符串不在」要用**命中数**，不要用「命令是否成功」——`rg -o x f | head -2 && echo warn`
   在零命中时也会打印 warn（`head` 成功退出）。
+
+### A.2.2 2026-11-10 记录：`20260921-r3` → `20261110-r2` 跨版本升级实测
+
+**结论先说**：升级成功，零宕机（替换容器前旧容器一直在跑），线上 12 条档案经回填归入 1 个供应商、
+24 篇文章与全部具名卷数据完整。本次踩到的四个坑按重要性排列：
+
+**坑 1（最费时间）：服务器拉基础镜像极慢，代理也救不了。**
+`docker build` 要拉 `node:22-bookworm-slim` / `maven:3.9.16-eclipse-temurin-17-noble` /
+`eclipse-temurin:17-jre-noble` 三个。实测 `maven` 那层 145MB 卡在 33MB→51MB 用了 9 分钟，
+最后两层 `Download complete` 后**再也不结束**（挂死，不是慢）。
+本想按「上代理」的思路救，但服务器上 mihomo（127.0.0.1:7890）的**全部订阅节点都是死的**：
+用它的 API `GET /proxies/<name>/delay` 逐个测，9 个节点全返 `An error occurred in the delay test`，
+只有 `DIRECT` 通（59ms）。**别再把「拉不动镜像」归因于没配代理**——先测节点是不是活的：
+
+```bash
+S=$(sudo awk '/^secret:/{print $2}' /etc/mihomo/config.yaml)
+curl -s -H "Authorization: Bearer $S" \
+  "http://127.0.0.1:9090/proxies/DIRECT/delay?timeout=8000&url=http%3A%2F%2Fwww.gstatic.com%2Fgenerate_204"
+```
+
+**坑 2（本次采用的路子）：改成「本机打 jar → 只传 jar → 服务器用 JRE 镜像打包」。**
+绕开 node/maven 两个大镜像，只要 `eclipse-temurin:17-jre-noble`（能拉）。步骤：
+1. 本机 `cd webui && npm run build -- --outDir ../src/main/resources/static --emptyOutDir`
+   （**注意**：`src/main/resources/static` 不被 gitignore，用完必须删，否则会误提交构建产物）；
+2. 本机 `mvn -DskipTests -Dskip.installnodenpm -Dskip.npm package`
+   —— **必须联网**：`frontend-maven-plugin` 不在离线仓库里，`-o` 会直接失败（见 review M-1）；
+3. 删掉临时 `src/main/resources/static`，`md5sum` 记下 jar 指纹；
+4. `scp` jar 到服务器 `/tmp/wab-img/app.jar`，用只含 `FROM eclipse-temurin:17-jre-noble` 的
+   Dockerfile（**逐行复刻**原 `runtime` 阶段：WORKDIR /app、两个 LABEL、三个 ENV、
+   `chown -R 10001:10001`、`USER 10001:10001`、`EXPOSE 8081`、`VOLUME`、`HEALTHCHECK`、`ENTRYPOINT`）构建；
+5. **验证**：`docker run --rm --entrypoint sh <tag> -c 'md5sum /app/app.jar'` 必须与本机一致。
+
+> ⚠️ 第 4 步的 `COPY` 源路径必须在构建上下文内。`-f /tmp/Dockerfile` + `COPY /tmp/app.jar` 会报
+> `failed to calculate checksum ... "/tmp/app.jar": not found`——把 jar 和 Dockerfile 放进同一目录再 `docker build .`。
+
+**坑 3：跨版本升级会补建「标准模型档案」，这是设计行为，但会带来一个真缺陷。**
+升级后 `LLM_PROFILE` 从 12 条变 18 条，多出的 6 条（`hy4-preview` 等）由 `LlmProfileSeeder` 按
+标准清单补建，日志会写明「已创建标准模型档案「X」」。它们 `enabled=true`，因此**会加入故障切换链**
+（`failoverChain` 最后一段就是全部启用档案）——这是版本设计，不是脏数据。
+
+但它暴露出一个 bug：种子清单里 `hy4-preview` 声明了 `fallback=true`，而 `createIfAbsent` 只判重名称、
+**不检查库里是否已有兜底**，于是老库（兜底本是 `qwen3.8-flash`，id=7）升级后出现**两个** `is_fallback=1`。
+已修（commit `274f371`，`run()` 先算 `fallbackTaken` 再传给每条种子），并补了 3 条单测钉住；
+线上把 id=25 的那个多余标志清回 0，恢复到升级前的兜底集合。
+**副作用说明**：`findFallback()` 按 id 升序取第一条，所以当时**实际生效的兜底没变**，切换行为未受影响。
+
+**坑 4：`grep -c` 查压缩包等于白查。**
+`docker run ... grep -c isImageModel /app/app.jar` 恒为 0——jar 是 zip，文本是压缩的。
+要用**校验和比对**（`md5sum /app/app.jar` 与本机比）判断「源码是否真打进镜像」，
+或用 Python `zipfile.namelist()` 按路径判断。同理，前端主入口是懒加载，
+`isImageModel` / `model-combobox` 这类字符串**不在 `index-*.js` 而在对应视图 chunk**
+（如 `ModelProfilesView-*.js`）——在主 bundle 里 grep 不到不代表没打进去。
+
+**本次最终结果**：
+| 项 | 值 |
+| --- | --- |
+| 镜像 | `wechat-article-bot:20261110-r2`（commit `274f371`），`IMAGE_TAG` 已同步 |
+| 容器 | `Up (healthy)`，restarts=0，启动 5.6s |
+| 数据 | 供应商 1 / 档案 18（回填 12 入 1 组，失败 0）/ 文章 24 完整 |
+| 接口 | 本机 `/api/health` 200、`/login` 200；公网 `https://mozhou.bx9y.com.cn/login` 401 是 aaPanel basic auth（`WWW-Authenticate: Basic realm="Restricted"`），非应用故障 |
+| 前置备份 | `/www/dk_project/dk_app/backups/wechat-article-bot-pre-20261110/`（SQL 3.6MB + dev.env 原件） |
 
 ## A.3 ⚠️ 升级前必须对比列长（schema 漂移会直接搞挂生产）
 
