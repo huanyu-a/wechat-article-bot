@@ -31,6 +31,18 @@
         <frontend-maven-plugin.version>2.0.2</frontend-maven-plugin.version>
         <node.version>v22.14.0</node.version>
         <npm.version>10.9.2</npm.version>
+        <!--
+          前端构建开关。默认 false：正常 mvn package 会把 webui 一起装依赖、构建、并入 static。
+          需要「只打后端」时传 -Dskip.frontend=true，一次跳过下面三个 execution。
+
+          为什么要有这个开关（2026-11-10 实测踩到）：Dockerfile 一直传
+          -Dskip.installnodenpm -Dskip.npm，但 pom 里**从未定义过这两个属性**，
+          frontend-maven-plugin 也不认这两个名字，所以那两个参数从来没生效。
+          仓库没有网络或没有 node 时，`mvn -o package` 会因为插件本身无法解析而直接失败
+          （离线仓库里没有 frontend-maven-plugin），排查半天才发现是参数名写错了。
+          现在用 plugin 自带的 skip 配置项串起来，名字只有一个，传错也不会静默通过。
+        -->
+        <skip.frontend>false</skip.frontend>
     </properties>
     <dependencies>
         <dependency>
@@ -113,6 +125,8 @@
                 <configuration>
                     <workingDirectory>webui</workingDirectory>
                     <installDirectory>${project.build.directory}/frontend</installDirectory>
+                    <!-- 一次控制三个 execution；install-node-and-npm/npm 都认这个 skip 配置项 -->
+                    <skip>${skip.frontend}</skip>
                 </configuration>
                 <executions>
                     <execution>

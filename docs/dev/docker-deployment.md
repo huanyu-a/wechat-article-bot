@@ -784,8 +784,11 @@ curl -s -H "Authorization: Bearer $S" \
 绕开 node/maven 两个大镜像，只要 `eclipse-temurin:17-jre-noble`（能拉）。步骤：
 1. 本机 `cd webui && npm run build -- --outDir ../src/main/resources/static --emptyOutDir`
    （**注意**：`src/main/resources/static` 不被 gitignore，用完必须删，否则会误提交构建产物）；
-2. 本机 `mvn -DskipTests -Dskip.installnodenpm -Dskip.npm package`
-   —— **必须联网**：`frontend-maven-plugin` 不在离线仓库里，`-o` 会直接失败（见 review M-1）；
+2. 本机 `mvn -DskipTests -Dskip.frontend=true package`
+   —— 用 `-Dskip.frontend=true` 跳过前端（前端已在第 1 步单独构建好，放进 `src/main/resources/static`）。
+   原先这里写的是 `-Dskip.installnodenpm -Dskip.npm`，但 **pom 里从来没有这两个属性**，
+   `frontend-maven-plugin` 也不认，属于无效参数；已改为 pom 真实定义的 `skip.frontend`
+   （2026-11-10 修复，见 review M-1）。不传该属性时默认仍会构建前端；
 3. 删掉临时 `src/main/resources/static`，`md5sum` 记下 jar 指纹；
 4. `scp` jar 到服务器 `/tmp/wab-img/app.jar`，用只含 `FROM eclipse-temurin:17-jre-noble` 的
    Dockerfile（**逐行复刻**原 `runtime` 阶段：WORKDIR /app、两个 LABEL、三个 ENV、

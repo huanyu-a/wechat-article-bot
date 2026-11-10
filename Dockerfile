@@ -17,7 +17,10 @@ COPY pom.xml ./
 COPY src/ ./src/
 COPY --from=frontend /workspace/webui/dist/ ./src/main/resources/static/
 RUN --mount=type=cache,target=/root/.m2 \
-    mvn -B -DskipTests -Dskip.installnodenpm -Dskip.npm package
+    # 前端已由上面的 frontend 阶段构建并从镜像内 COPY 进来，这里只打后端。
+    # 用 -Dskip.frontend=true（pom 里定义的真实属性）——原先写的
+    # -Dskip.installnodenpm -Dskip.npm 在 pom 里根本不存在，是无效参数。
+    mvn -B -DskipTests -Dskip.frontend=true package
 
 FROM ${RUNTIME_IMAGE} AS runtime
 WORKDIR /app
