@@ -231,7 +231,9 @@ class AgentApiIntegrationTests {
         mockMvc.perform(get("/api/llm-profiles").header("Authorization", admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.isDefault==true)].modelName").value("compat-model"))
-                .andExpect(jsonPath("$.data[?(@.isDefault==true)].baseUrl").value("https://llm.compat.test"));
+                // 档案视图不再回传 baseUrl（端点归供应商），改钉「挂到了哪个供应商上」
+                .andExpect(jsonPath("$.data[?(@.isDefault==true)].providerName")
+                        .value(ink.icoding.wechat.article.agent.LlmProviderService.DEFAULT_PROVIDER_NAME));
 
         // 存量 API 读回默认档案值（签名与语义不变）
         mockMvc.perform(get("/api/settings/llm").header("Authorization", admin))
@@ -239,26 +241,47 @@ class AgentApiIntegrationTests {
                 .andExpect(jsonPath("$.data.modelName").value("compat-model"))
                 .andExpect(jsonPath("$.data.hasApiKey").value(true));
 
-        // 新建档案并设为默认
+        // 新建供应商 + 档案：端点与密钥归供应商，档案只声明「用哪个模型」（本轮契约变更）
+        String provider = mockMvc.perform(post("/api/llm-providers")
+                        .header("Authorization", admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"cheap-provider","provider":"OPENAI_RESPONSES",
+                                 "baseUrl":"https://cheap.test","apiKey":"cheap-key","enabled":true}
+                                """))
+                .andExpect(status().isOk())
+                // 9 位 key → 全掩码（长度 < 12 时刻意不露末 4 位）
+                .andExpect(jsonPath("$.data.apiKeyMasked").value("••••••••••••"))
+                .andReturn().getResponse().getContentAsString();
+        Long providerId = Long.valueOf(provider.replaceAll("(?s).*\"id\":(\\d+).*", "$1"));
+
         String created = mockMvc.perform(post("/api/llm-profiles")
                         .header("Authorization", admin)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"name":"廉价调研档案","provider":"OPENAI_RESPONSES",
-                                 "baseUrl":"https://cheap.test","modelName":"cheap-model",
-                                 "apiKey":"cheap-key","enabled":true,"temperature":0.1,"maxTokens":512}
-                                """))
+                                {"name":"廉价调研档案","providerId":%d,"modelName":"cheap-model",
+                                 "enabled":true,"temperature":0.1,"maxTokens":512}
+                                """.formatted(providerId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.isDefault").value(false))
+                .andExpect(jsonPath("$.data.providerId").value(providerId))
+                .andExpect(jsonPath("$.data.providerName").value("cheap-provider"))
                 .andExpect(jsonPath("$.data.apiKeyMasked").value("••••••••••••"))
                 .andReturn().getResponse().getContentAsString();
         Long id = Long.valueOf(created.replaceAll("(?s).*\"id\":(\\d+).*", "$1"));
 
-        // 掩码不得回传完整 key
+        // 掩码不得回传完整 key，也不得回传密文（供应商接口同样）
         String listed = mockMvc.perform(get("/api/llm-profiles").header("Authorization", admin))
                 .andReturn().getResponse().getContentAsString();
         assertThat(listed).doesNotContain("cheap-key\"");
         assertThat(listed).doesNotContain("\"apiKey\"");
+        String storedCiphertext = jdbcTemplate.queryForObject(
+                "SELECT API_KEY_ENCRYPTED FROM LLM_PROVIDER WHERE ID = " + providerId, String.class);
+        assertThat(storedCiphertext).isNotBlank().doesNotContain("cheap-key");
+        assertThat(listed).doesNotContain(storedCiphertext);
+        String providerListed = mockMvc.perform(get("/api/llm-providers").header("Authorization", admin))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(providerListed).doesNotContain("cheap-key").doesNotContain(storedCiphertext);
 
         mockMvc.perform(post("/api/llm-profiles/" + id + "/set-default").header("Authorization", admin))
                 .andExpect(status().isOk())
@@ -604,7 +627,7 @@ class AgentApiIntegrationTests {
      *
      * <p><b>本用例必须自建档案并**清理干净**</b>：测试库启动时 `LLM_PROFILE` 是**空**的
      * （{@code LlmProfileSeeder} 只在存在「有 key 的默认档案」时才补标准档案），
-     * 所以没有现成的「未声明图片模型」档案可读。
+     * 所以没有现成的「未勾选图片模型」档案可读。
      *
      * <p>同时它**必须**清理：本类所有方法共享同一 Spring 上下文与同一个库，
      * 而方法执行顺序由 JUnit 的哈希决定（新增方法会改变顺序）。早先的写法只建不删，
@@ -613,21 +636,36 @@ class AgentApiIntegrationTests {
      * {@code syncDefaultFromConfig → defaultProfile() → findFirst()} 落到**这条多余的档案**上
      * 而不标记 {@code is_default}，于是它的 {@code $.data[?(@.isDefault==true)]} 断言落空。
      * 用 {@code try/finally} 保证无论断言成败都不留残留。
+     *
+     * <p>补充（llm-provider-refactor）：那个「落到第一条多余档案上」的缺陷**已经修掉**了
+     * （{@code syncDefaultFromConfig} 改为找不到默认档案就新建一条，见该方法的 javadoc），
+     * 所以本用例的清理现在是「惯例」而不是「防某个已知假红」。清理依然保留：
+     * 依赖泄漏的用例不该靠别人的宽容活着。
      */
     @Test
     void nullableProfileFieldsArePresentAsNullOverHttp() throws Exception {
         String admin = adminToken();
 
-        // 建一条**不声明图片模型**的档案：imageModelName 落库为 NULL
+        // 本轮起档案不再持有端点与密钥（契约 §5.2），所以先建供应商
+        String provider = mockMvc.perform(post("/api/llm-providers")
+                        .header("Authorization", admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"HTTP 空值契约供应商","provider":"OPENAI_COMPATIBLE",
+                                 "baseUrl":"https://null-contract.test","apiKey":"null-contract-key","enabled":true}
+                                """))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        Long providerId = Long.valueOf(provider.replaceAll("(?s).*\"id\":(\\d+).*", "$1"));
+
+        // 建一条**没勾选图片模型**的档案：imageModelName / isImageModel 都落库为 NULL
         String created = mockMvc.perform(post("/api/llm-profiles")
                         .header("Authorization", admin)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"name":"HTTP 空值契约档案","provider":"OPENAI_COMPATIBLE",
-                                 "baseUrl":"https://null-contract.test","modelName":"null-contract-model",
-                                 "apiKey":"null-contract-key","enabled":true,
-                                 "temperature":0.5,"maxTokens":1024}
-                                """))
+                                {"name":"HTTP 空值契约档案","providerId":%d,"modelName":"null-contract-model",
+                                 "enabled":true,"temperature":0.5,"maxTokens":1024}
+                                """.formatted(providerId)))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
         Long id = Long.valueOf(created.replaceAll("(?s).*\"id\":(\\d+).*", "$1"));
@@ -649,10 +687,106 @@ class AgentApiIntegrationTests {
             assertThat(imageModelNameKeyIsPresentInList(listed, id))
                     .as("列表接口里该档案同样必须是「键在场、值为 null」，实际响应=" + listed).isTrue();
         } finally {
-            // 清理：本类共享上下文，留下多余档案会破坏其它用例（见 javadoc）
+            // 清理：本类共享上下文，留下多余档案会破坏其它用例（见 javadoc）。
+            // 先删档案再删供应商——供应商下有档案时删除会被护栏拒绝，清理会静默失败
             mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                     .delete("/api/llm-profiles/" + id).header("Authorization", admin));
+            mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                    .delete("/api/llm-providers/" + providerId).header("Authorization", admin));
         }
+    }
+
+    /**
+     * 契约 §4.3 定稿：复选框「这是图片模型」必须能**经 HTTP 往返**，且序列化成布尔值。
+     *
+     * <p>为什么要在 HTTP 层再钉一遍（{@code AgentJsonContractTest} 已经钉过裸 Jackson）：
+     * 真正决定响应形状的是 Spring MVC 的 {@code ObjectMapper}，它受
+     * {@code default-property-inclusion} 与任何 {@code @JsonInclude} 影响。有人加上
+     * {@code NON_NULL} 这种「精简响应」优化时，{@code false} 会被整个键吞掉——
+     * 前端 {@code v-model} 拿到 {@code undefined}，复选框显示为未勾选，而库里其实勾着。
+     *
+     * <p>同时钉住**反向**：{@code imageModelName} 尽管已退出界面，仍必须原样回传，
+     * 因为它是 ①b 旧数据兼容段的唯一来源。
+     */
+    @Test
+    void imageModelCheckboxRoundTripsOverHttp() throws Exception {
+        String admin = adminToken();
+        String provider = mockMvc.perform(post("/api/llm-providers")
+                        .header("Authorization", admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"HTTP 图片复选框供应商","provider":"OPENAI_COMPATIBLE",
+                                 "baseUrl":"https://image-checkbox.test","apiKey":"image-checkbox-key","enabled":true}
+                                """))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        Long providerId = Long.valueOf(provider.replaceAll("(?s).*\"id\":(\\d+).*", "$1"));
+
+        // 勾选态：与「写正文的档案」共用同一个供应商，正是契约 §4.3 示例的标准配法
+        String created = mockMvc.perform(post("/api/llm-profiles")
+                        .header("Authorization", admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"HTTP 图片复选框档案","providerId":%d,"modelName":"gpt-image-1",
+                                 "enabled":true,"temperature":0.5,"maxTokens":1024,"isImageModel":true}
+                                """.formatted(providerId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.isImageModel").value(true))
+                .andReturn().getResponse().getContentAsString();
+        Long id = Long.valueOf(created.replaceAll("(?s).*\"id\":(\\d+).*", "$1"));
+
+        try {
+            assertThat(isImageModelOf(profileJson(id, admin)))
+                    .as("勾选态必须原样读回").isTrue();
+
+            // 整行更新（前端点开关走的就是这条路）必须保住勾选
+            mockMvc.perform(put("/api/llm-profiles/" + id)
+                            .header("Authorization", admin)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"name":"HTTP 图片复选框档案","providerId":%d,"modelName":"gpt-image-1",
+                                     "enabled":false,"temperature":0.5,"maxTokens":1024,"isImageModel":true}
+                                    """.formatted(providerId)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.isImageModel").value(true));
+            assertThat(isImageModelOf(profileJson(id, admin)))
+                    .as("停用这条档案不该顺手清掉「这是图片模型」").isTrue();
+
+            // 显式不勾选：false 必须是布尔 false，不能被 NON_NULL 之类的策略吞成「键不存在」
+            mockMvc.perform(put("/api/llm-profiles/" + id)
+                            .header("Authorization", admin)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"name":"HTTP 图片复选框档案","providerId":%d,"modelName":"gpt-image-1",
+                                     "enabled":true,"temperature":0.5,"maxTokens":1024,"isImageModel":false}
+                                    """.formatted(providerId)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.isImageModel").value(false));
+        } finally {
+            mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                    .delete("/api/llm-profiles/" + id).header("Authorization", admin));
+            mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                    .delete("/api/llm-providers/" + providerId).header("Authorization", admin));
+        }
+    }
+
+    private String profileJson(Long id, String token) throws Exception {
+        return mockMvc.perform(get("/api/llm-profiles/" + id).header("Authorization", token))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+    }
+
+    /**
+     * 响应 {@code data.isImageModel} 的实际值。
+     *
+     * <p>键缺失时返回 {@code null}——刻意与 {@code false} 区分：{@code false} 是「明确没勾选」，
+     * 键缺失是「契约被破坏」，两者在复选框上表现相同（都不勾），但只有前者是合法状态。
+     */
+    private static Boolean isImageModelOf(String json) throws Exception {
+        com.fasterxml.jackson.databind.JsonNode node =
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(json)
+                        .path("data").path("isImageModel");
+        return node.isMissingNode() || node.isNull() ? null : node.asBoolean();
     }
 
     /** 列表响应里指定 id 那条的 {@code imageModelName} 是否「键在场、值为 null」。 */

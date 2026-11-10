@@ -1,7 +1,11 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
 
 :root{font-family:'DM Sans','Noto Sans SC',system-ui,sans-serif;color:#17241f;background:#f5f5f0;font-synthesis:none;text-rendering:optimizeLegibility;--ink:#17241f;--muted:#718078;--line:#dde2dc;--paper:#fff;--green:#1f7a5a;--green-dark:#155943;--green-soft:#e5f3ec;--nav:#14261f;--nav-soft:#203a31;--danger:#b94c55;--amber:#be7b24;--shadow:0 16px 50px rgba(20,38,31,.08)}
-*{box-sizing:border-box}html,body,#app{margin:0;min-height:100%;width:100%}body{min-width:320px}button,input,select,textarea{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.55}a{text-decoration:none;color:inherit}h1,h2,h3,p{margin:0}h2{font-size:30px;line-height:1.2;letter-spacing:-.7px}h3{font-size:18px}small{font-size:12px}code{font-family:ui-monospace,monospace;font-size:12px;color:#526159;overflow:hidden;text-overflow:ellipsis}
+*{box-sizing:border-box}html,body,#app{margin:0;min-height:100%;width:100%}body{min-width:320px}button,input,select,textarea{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.55}
+/* F8：护栏按钮用 aria-disabled 保持可聚焦。disabled 元素不派发鼠标事件，标题提示读不到、
+   也进不了 Tab 序列——这正是复查报告说的「键盘不可达、理由读不到」。 */
+button[aria-disabled="true"]{cursor:not-allowed;opacity:.55}
+.secondary-button[aria-disabled="true"]:hover{border-color:var(--line)}a{text-decoration:none;color:inherit}h1,h2,h3,p{margin:0}h2{font-size:30px;line-height:1.2;letter-spacing:-.7px}h3{font-size:18px}small{font-size:12px}code{font-family:ui-monospace,monospace;font-size:12px;color:#526159;overflow:hidden;text-overflow:ellipsis}
 
 .app-shell{min-height:100vh;display:grid;grid-template-columns:244px 1fr}.sidebar{position:fixed;inset:0 auto 0 0;width:244px;background:var(--nav);color:#d7e2dc;padding:24px 16px 16px;display:flex;flex-direction:column;z-index:30;transition:.25s}.brand{height:48px;display:flex;align-items:center;gap:11px;padding:0 8px;margin-bottom:28px}.brand-mark{width:36px;height:36px;border-radius:11px;background:#e1b665;color:var(--nav);display:grid;place-items:center;box-shadow:0 6px 20px rgba(225,182,101,.18)}.brand-copy{display:flex;flex-direction:column;line-height:1.05}.brand-copy strong{font-size:20px;color:white;letter-spacing:1px}.brand-copy small{color:#8da49a;margin-top:6px}.mobile-close{display:none;margin-left:auto;background:none;border:0;color:#fff}.sidebar nav{display:flex;flex-direction:column;gap:5px;flex:1;min-height:0;overflow-y:auto}.sidebar nav a{height:44px;flex:0 0 auto;padding:0 13px;border-radius:10px;display:flex;align-items:center;gap:13px;color:#9db0a8;font-size:14px;transition:.18s}.sidebar nav a:hover{background:rgba(255,255,255,.05);color:#fff}.sidebar nav a.router-link-exact-active{background:var(--nav-soft);color:#fff;box-shadow:inset 3px 0 #e1b665}.sidebar-footer{border-top:1px solid rgba(255,255,255,.09);padding:17px 7px 2px;display:flex;align-items:center;gap:10px}.avatar,.user-cell i{width:34px;height:34px;display:grid;place-items:center;border-radius:50%;background:#dbeae3;color:var(--green-dark);font-weight:700;font-style:normal}.account-copy{min-width:0;display:flex;flex-direction:column;flex:1}.account-copy strong{color:#fff;font-size:13px}.account-copy small{color:#83988f;margin-top:3px}.workspace{grid-column:2;min-width:0}.topbar{height:104px;border-bottom:1px solid var(--line);background:rgba(250,250,247,.92);backdrop-filter:blur(14px);display:flex;align-items:center;padding:0 36px;gap:18px;position:sticky;top:0;z-index:20}.topbar h1{font-size:22px;letter-spacing:-.3px}.topbar p{font-size:13px;color:var(--muted);margin-top:4px}.topbar-actions{margin-left:auto}.search-trigger{width:280px;height:40px;border:1px solid var(--line);border-radius:10px;background:#fff;color:#8a968f;display:flex;align-items:center;gap:10px;padding:0 12px;text-align:left}.search-trigger span{flex:1}.search-trigger kbd{background:#f1f3ef;border:1px solid #e2e5df;border-radius:5px;padding:2px 6px;font-size:11px}.icon-button{width:36px;height:36px;border:1px solid var(--line);background:#fff;border-radius:9px;display:inline-grid;place-items:center;color:#526159}.icon-button:hover{background:#f1f4f1}.icon-button.inverse{background:transparent;border:0;color:#9db0a8}.menu-button{display:none}.floating-menu{display:none}.page-content{padding:32px 36px 48px;max-width:1540px;margin:0 auto}.eyebrow{font-size:11px;letter-spacing:1.7px;font-weight:700;color:var(--green);display:block;margin-bottom:9px}.section-heading{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:26px;gap:20px}.section-heading p{color:var(--muted);font-size:14px;margin-top:9px}.primary-button,.secondary-button,.text-button{border-radius:9px;display:inline-flex;align-items:center;justify-content:center;gap:8px;font-weight:600;font-size:13px;white-space:nowrap}.primary-button{height:40px;padding:0 17px;background:var(--green);border:1px solid var(--green);color:#fff;box-shadow:0 5px 16px rgba(31,122,90,.18)}.primary-button:hover{background:var(--green-dark)}.secondary-button{height:37px;padding:0 13px;background:#fff;border:1px solid var(--line);color:#394b43}.secondary-button:hover{border-color:#a7b3ac}.text-button{border:0;background:none;color:var(--green);padding:7px}.panel{background:var(--paper);border:1px solid var(--line);border-radius:14px;box-shadow:0 3px 18px rgba(20,38,31,.025)}.alert{padding:11px 14px;border-radius:9px;margin:0 0 18px;font-size:13px}.alert.error,.editor-alert{background:#fff0f0;color:#9e3c46;border:1px solid #f0c9cd}
 
@@ -159,12 +163,99 @@
 .profile-item dl div{display:flex;justify-content:space-between;gap:12px;font-size:12px}
 .profile-item dt{color:#5f6b64;flex:0 0 auto}
 .profile-item dd{margin:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace;font-size:11px}
-.profile-item footer{border-top:1px solid #edf0ed;padding-top:12px;margin-top:auto;display:flex;align-items:center;gap:6px}
-.profile-item footer .secondary-button{flex:1}
+.profile-item footer{border-top:1px solid #edf0ed;padding-top:12px;margin-top:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.profile-item footer>*{min-width:0}
+/* 长按钮（设为默认 / 设为兜底）在窄卡片里降级为图标按钮：模板保留 Star/Shield 图标 + title/aria-label，
+   这里只负责把「图标形态」的宽度收紧，避免降级后仍占着 102px 把卡片撑开。
+   不用 overflow:hidden 掩盖——那会把按钮裁掉、点不到。
+   flex-wrap:wrap 是兜底：万一降级阈值判断失误，按钮换行而不是溢出卡片。
+
+   阈值 296px 是算出来的，不是猜的：四个按钮同排一行需要
+   2×102.2（设为默认/设为兜底含文字）+ 2×36（编辑/删除）+ 3×6（gap）≈ 294px。
+   container 查询量的是卡片**内容盒**宽度，所以 296 就是「刚好放得下带文字的一行」。
+   （实测 2124px 视口 5 列网格时内容盒只有 236px——正是用户报的那个超限场景。） */
+.profile-item footer .secondary-button{flex:1 1 auto}
+/* 图标按钮不参与收缩：flex 默认 shrink=1 会把它从 36px 压成 30px（实测 30.2px），
+   点击目标变小且与其它页面的图标按钮不一致。 */
+.profile-item footer .icon-button{flex:0 0 auto}
+/* 图标形态下把编辑/删除推到右端，避免左侧挤在一起、右侧留一大片空白 */
+.profile-item footer .secondary-button+.icon-button{margin-left:auto}
+/* 已是默认/兜底的按钮：视觉上像禁用，但仍是可聚焦按钮（见模板注释） */
+.profile-item footer .secondary-button[aria-disabled="true"]{color:#8a958e;background:#f7f8f6;border-color:#e7ebe6}
+.profile-model-card{container-type:inline-size;container-name:profile-card}
+@container profile-card (max-width:296px){
+  .profile-item footer .secondary-button{flex:0 0 auto;width:36px;padding:0;gap:0}
+  .profile-item footer .secondary-button .btn-label{display:none}
+}
 .profile-add-card{min-height:180px}
 .profile-form-modal{width:min(680px,100%)}
+/* 供应商 → 模型 两级：供应商行沿用 .profile-item 的视觉，展开区是它下挂的模型卡片 */
+.provider-list{display:flex;flex-direction:column;gap:14px}
+.provider-item{padding:16px 17px;gap:12px}
+/* 特异性说明（F10）：`.profile-item>header`（0-1-1）会压掉裸 `.provider-head`（0-1-0）的
+   align-items/gap/flex-wrap，`.profile-item dl div`（0-1-2）压掉 `.provider-meta` 的 gap。
+   这里用 `.provider-item>.provider-head`（0-2-0）与 `.provider-item>.provider-meta`（0-2-0）
+   把作者意图落实到生效层——不要退回裸类名，否则这几行又会「写了不生效」。 */
+.provider-item>.provider-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-start}
+.provider-caret{width:26px;height:26px;padding:0;border:1px solid var(--line);border-radius:8px;background:#fff;color:#527364;display:grid;place-items:center;flex:0 0 auto}
+.provider-caret:hover{border-color:#a7b3ac;color:var(--green-dark)}
+.provider-caret.static{border:0;background:none;color:var(--danger)}
+.provider-protocol{font-size:10px;font-weight:700;color:#527364;background:#edf3ef;border-radius:5px;padding:3px 6px;white-space:nowrap}
+.provider-head .agent-group-count{margin-left:auto}
+.provider-item>.provider-meta{margin:0;display:grid;gap:7px;justify-items:stretch}
+.provider-meta div{display:flex;justify-content:space-between;gap:12px;font-size:12px}
+.provider-meta dt{color:#5f6b64;flex:0 0 auto}
+.provider-meta dd{margin:0;font-weight:600;font-family:ui-monospace,monospace;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.provider-models{display:grid;gap:11px;background:#f7f9f7;border:1px solid #e7ebe6;border-radius:11px;padding:13px}
+.provider-model-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(250px,100%),1fr));gap:11px}
+.provider-hint{font-size:11px;color:#5f6b64;line-height:1.6;display:flex;align-items:flex-start;gap:6px}
+.provider-hint>svg{flex:0 0 auto;margin-top:1px}
+.provider-hint.alert-hint{color:#93404a;font-weight:600}
+.provider-add-model{justify-self:start}
+.provider-item.dangling{border-color:#e3c2c6;background:#fdf7f7}
+.provider-item.dangling .provider-head .profile-titles strong{color:#93404a}
+.provider-item.legacy{border-style:dashed;background:#fdfdfb}
+/* 护栏的 aria-disabled 形态（F8）：按钮保持可聚焦、可点击以播报原因，只是视觉上像禁用 */
+.icon-button[aria-disabled="true"]{cursor:not-allowed;opacity:.55;background:#f7f8f6}
+.icon-button[aria-disabled="true"]:hover{border-color:var(--line);background:#f7f8f6}
+.supplier-readonly{gap:6px;margin-bottom:17px}
+.supplier-readonly .agent-section-title{display:flex;align-items:center;gap:6px}
+.supplier-readonly .warn{color:#9a671f}
+/* 模型发现（§2.2）：按钮 + 探测结果/失败提示共用一行，不把弹窗变成错误态 */
+.llm-discover-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:2px}
+.llm-discover-status{font-size:11px;color:#5f6b64}
+.llm-discover-status.is-error{color:#93404a}
+.llm-discover-status.is-ok{color:#1f7155}
+.profile-hint-inline{font-size:10px;color:#8a958e;flex:0 0 auto;text-align:right;max-width:96px;line-height:1.4}
+/* 图片模型徽标（契约 §4.3）：只在勾选「这是一个图片模型」的卡片上出现。
+   与 status-pill 同尺寸，但用金色调，避免和「已停用 / 供应商未配置密钥」这类告警混淆。 */
+.status-pill.image-model-pill{background:#fbf0dc;color:#9b681f;letter-spacing:.3px}
+/* 上游模型名称的自绘下拉（用户 2026-11-10：「这个下拉跟当前 ui 不匹配」）。
+   原生 <datalist> 的弹出层由浏览器绘制，CSS 完全够不到，会以系统样式浮在设计系统之上；
+   这里换成完全受控的列表，配色/圆角/阴影全部取自 :root 变量，与 .form-grid input 同一套观感。 */
+.model-combobox{position:relative;display:block}
+.model-combobox input{width:100%}
+/* 清空按钮：只在该字段有值时出现，避免空输入框右侧挂一个点不到的减号。 */
+.model-combobox-clear{position:absolute;right:9px;top:50%;transform:translateY(-50%);
+  width:22px;height:22px;display:grid;place-items:center;border:0;border-radius:6px;
+  background:transparent;color:#98a49d;padding:0}
+.model-combobox-clear:hover{background:#eef1ed;color:#5d6b63}
+.model-combobox-list{position:absolute;z-index:40;left:0;right:0;top:calc(100% + 5px);margin:0;
+  padding:5px;list-style:none;max-height:236px;overflow-y:auto;
+  background:var(--paper);border:1px solid var(--line);border-radius:10px;
+  box-shadow:0 12px 32px rgba(20,38,31,.13)}
+.model-combobox-list li{padding:8px 10px;border-radius:7px;font-size:13px;font-weight:500;
+  color:#31423a;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.model-combobox-list li.active{background:var(--green-soft);color:var(--green-dark)}
+/* 选中项用左侧细条提示，和侧栏 current 项同一套视觉语言 */
+.model-combobox-list li.active{box-shadow:inset 2px 0 var(--green)}
+
+/* 模型弹窗里的「这是一个图片模型」复选框：勾选框与文字同一行，说明独占一行（说明较长）。 */
+.form-grid .image-model-check{flex-direction:row;flex-wrap:wrap;align-items:center;gap:7px 9px}
+.form-grid .image-model-check input{width:17px;height:17px}
+.form-grid .image-model-check small{flex:1 0 100%;line-height:1.65}
 @media(max-width:860px){.tool-group-grid{grid-template-columns:1fr}}
-@media(max-width:540px){.skill-grid{grid-template-columns:1fr}.profile-grid{grid-template-columns:1fr}}
+@media(max-width:540px){.skill-grid{grid-template-columns:1fr}.profile-grid{grid-template-columns:1fr}.provider-model-grid{grid-template-columns:1fr}}
 /* 定时任务：执行模式徽标 / 阶段编排 / 运行日志（第③期新增，此前缺样式） */
 .task-mode-row{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin:2px 0 9px}.mode-badge{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.2px;background:#edf3ef;color:#527364;white-space:nowrap}.mode-badge.mode-single{background:#eef0ed;color:#5f6b64}.mode-badge.mode-pipeline{background:#e5f2eb;color:#1f7155}.mode-badge.mode-coordinator{background:#efeafa;color:#6247a3}.run-list strong .mode-badge{margin-left:7px;vertical-align:1px}.task-mode-note{font-size:10px;color:#8a958e;line-height:1.5}
 .exec-mode-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:9px}

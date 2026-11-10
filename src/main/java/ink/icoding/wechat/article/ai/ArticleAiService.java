@@ -259,7 +259,8 @@ public class ArticleAiService {
 
     private void executeWithAgentSession(EditorSession session, String instruction) {
         if (!llmConfigService.runtime().available()) {
-            session.send("error", Map.of("message", "LLM 尚未在系统设置中启用或未配置 API Key"));
+            session.send("error", Map.of("message",
+                    "LLM 尚未配置可用的模型档案（请到「模型档案」页检查默认档案与它的供应商）"));
             finishSession(session);
             return;
         }
@@ -636,7 +637,9 @@ public class ArticleAiService {
                                                   ink.icoding.wechat.article.schedule.TaskWorkspace workspace)
             throws Exception {
         LlmConfigService.RuntimeConfig config = llmConfigService.runtime();
-        if (!config.available()) throw new BusinessException("LLM 尚未在系统设置中启用或未配置 API Key");
+        if (!config.available()) {
+            throw new BusinessException("LLM 尚未配置可用的模型档案（请到「模型档案」页检查默认档案与它的供应商）");
+        }
 
         // 账号级 Skill 与默认风格（skills-agent-plan 5.2）
         WechatAccount account = request.accountId() == null

@@ -134,6 +134,84 @@ class LlmProfileImageModelColumnPersistenceTests {
                 .isEqualTo("step-image-edit-2");
     }
 
+    /**
+     * 契约 §4.3 定稿的复选框列：{@code tinyint(1)} 且**必须可空**。
+     *
+     * <p>「可空」这条不是形式主义：smart-mybatis 只做加法，存量库靠补列升级，而补出来的
+     * {@code tinyint(1) NOT NULL} 在老行上没有默认值会在首次 ALTER 时直接失败——症状不是
+     * 「图片模型标错」，而是**升级当天应用起不来**。老行补出来是 NULL，语义等于「没勾选」，
+     * 因此不需要任何数据迁移脚本。
+     *
+     * <p>类型必须与 {@code is_default} / {@code is_fallback} 同型：三列都是同一种「布尔标记」，
+     * 写法与语义都对齐（{@code Boolean} 包装 + {@code @JsonProperty}），没有理由让第三列长得不一样。
+     */
+    @Test
+    void isImageModelColumnIsMaterializedAsNullableTinyint() {
+        List<String> type = fullColumnType("LLM_PROFILE", "IS_IMAGE_MODEL");
+
+        assertThat(type).as("IS_IMAGE_MODEL 必须由实体声明真实建出来").hasSize(1);
+        assertThat(type.get(0))
+                .as("必须是可空的 tinyint(1)：存量行补列后只能是 NULL（语义 = 不是图片模型），"
+                        + "NOT NULL 会让升级当天的 ALTER 直接失败")
+                .isEqualTo("tinyint(1)|YES");
+        assertThat(type.get(0))
+                .as("与 is_default / is_fallback 同型，三列都是同一种布尔标记")
+                .isEqualTo(fullColumnType("LLM_PROFILE", "IS_DEFAULT").get(0))
+                .isEqualTo(fullColumnType("LLM_PROFILE", "IS_FALLBACK").get(0));
+    }
+
+    /** 复选框列三态往返：{@code true} / {@code false} / NULL 都必须原样读回。 */
+    @Test
+    void isImageModelRoundTripsIncludingNull() {
+        LlmProfile ticked = insert(TEST_PREFIX + "-ticked", null, true);
+        LlmProfile unticked = insert(TEST_PREFIX + "-unticked", null, false);
+        LlmProfile legacy = insert(TEST_PREFIX + "-legacy-null", null, null);
+
+        assertThat(profileMapper.findById(ticked.getId()).getIsImageModel())
+                .as("勾选必须原样读回").isTrue();
+        assertThat(profileMapper.findById(unticked.getId()).getIsImageModel())
+                .as("明确不勾选必须仍是 false").isFalse();
+        assertThat(profileMapper.findById(legacy.getId()).getIsImageModel())
+                .as("NULL 必须仍是 NULL，不能被静默写成 false——升级窗口里「老行」与「新行未勾选」要可区分")
+                .isNull();
+    }
+
+    /**
+     * 整行更新（前端 {@code toggleProfile} 提交完整表单）必须保住复选框。
+     *
+     * <p>漏带 {@code isImageModel} 的后果是静默的：一次点开关就把「这是图片模型」清掉，
+     * 配图于是悄悄退回全局设置或直接不可用，而界面上看不出任何异常。
+     */
+    @Test
+    void isImageModelSurvivesAFullRowUpdate() {
+        LlmProfile profile = insert(TEST_PREFIX + "-toggle-image", null, true);
+
+        profile.setEnabled(false);
+        profile.setUpdatedAt(LocalDateTime.now());
+        profileMapper.updateById(profile);
+
+        LlmProfile reloaded = profileMapper.findById(profile.getId());
+        assertThat(reloaded.getEnabled()).isFalse();
+        assertThat(reloaded.getIsImageModel())
+                .as("整行更新不得丢掉「这是图片模型」").isTrue();
+    }
+
+    /**
+     * {@code COLUMN_TYPE|是否可空}，例如 {@code tinyint(1)|YES}。
+     *
+     * <p>与 {@link #columnType} 的区别：那个返回 {@code DATA_TYPE}（{@code tinyint}，丢掉显示宽度），
+     * 这个返回 {@code COLUMN_TYPE}（{@code tinyint(1)}，保留宽度）。布尔列要钉的正是「宽度 1」
+     * ——{@code tinyint(4)} 也能存 0/1，但它不是本项目 {@code isDefault}/{@code isFallback} 的形状，
+     * 混进来会让三列看起来「都对」却彼此不同型。
+     */
+    private List<String> fullColumnType(String table, String column) {
+        return jdbcTemplate.queryForList(
+                "SELECT CONCAT(COLUMN_TYPE, '|', IS_NULLABLE) FROM information_schema.COLUMNS "
+                        + "WHERE TABLE_SCHEMA = DATABASE() AND UPPER(TABLE_NAME) = ? "
+                        + "AND UPPER(COLUMN_NAME) = ?",
+                String.class, table.toUpperCase(), column.toUpperCase());
+    }
+
     private List<String> columnType(String table, String column) {
         return jdbcTemplate.queryForList(
                 "SELECT CONCAT(DATA_TYPE, '|', IS_NULLABLE) FROM information_schema.COLUMNS "
@@ -143,12 +221,17 @@ class LlmProfileImageModelColumnPersistenceTests {
     }
 
     private LlmProfile insert(String name, String imageModelName) {
+        return insert(name, imageModelName, null);
+    }
+
+    private LlmProfile insert(String name, String imageModelName, Boolean isImageModel) {
         LlmProfile profile = new LlmProfile();
         profile.setName(name);
         profile.setProvider("OPENAI_COMPATIBLE");
         profile.setBaseUrl("https://example.invalid");
         profile.setModelName("test-model");
         profile.setImageModelName(imageModelName);
+        profile.setIsImageModel(isImageModel);
         profile.setApiKeyEncrypted("test-key");
         profile.setTemperature(new BigDecimal("0.70"));
         profile.setMaxTokens(4096);

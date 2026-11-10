@@ -17,6 +17,16 @@ public class CryptoService {
     private final SecretKeySpec key;
 
     public CryptoService(@Value("${app.security.secret-key}") String secret) {
+        // fail-fast：APP_SECRET_KEY 缺失时拒绝启动（2026-11-10 工程复查 C-1）。
+        // 改造前 application.yaml 给它一个众所周知的默认值，而 SHA-256 对空串也能算出密钥，
+        // 于是「忘记注入」表现为**应用正常启动**、库里的密文却被一个可猜的密钥保护着。
+        // 这里必须抛而不是回退：它是主密钥，静默降级等于让全部 API Key 失去保护。
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException(
+                    "APP_SECRET_KEY 未配置：请在环境变量（或 app.security.secret-key）中提供。"
+                            + "它是加密 API Key 与微信 AppSecret 的主密钥，缺失时拒绝启动，"
+                            + "以免已保存的密文被空密钥保护。");
+        }
         try {
             this.key = new SecretKeySpec(MessageDigest.getInstance("SHA-256")
                     .digest(secret.getBytes(StandardCharsets.UTF_8)), "AES");

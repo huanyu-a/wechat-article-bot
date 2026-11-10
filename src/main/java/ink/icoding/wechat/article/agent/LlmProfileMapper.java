@@ -40,4 +40,17 @@ public interface LlmProfileMapper extends SmartMapper<LlmProfile> {
     default LlmProfile findFirst() {
         return selectFirst(Where.where().orderBy(LlmProfile::getId).asc());
     }
+
+    /**
+     * {@code provider_id} 为空的档案（按 id 升序）：启动回填器的输入。
+     *
+     * <p>{@code eq(null)} 生成的是 {@code PROVIDER_ID IS NULL}——smart-mybatis 的方言层对
+     * {@code EQ + null} 专门走 {@code IS NULL}（已从 3.0.1 字节码确认），否则会拼出
+     * {@code = NULL} 这个永远为假的谓词，回填器就永远看不到待处理的行。
+     *
+     * <p>回填的幂等性也由它保证：回填过的行不再满足条件，第二次启动无事可做，不需要额外的标记表。
+     */
+    default List<LlmProfile> findWithoutProvider() {
+        return select(Where.where(LlmProfile::getProviderId).eq(null).orderBy(LlmProfile::getId).asc());
+    }
 }

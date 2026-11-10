@@ -41,8 +41,9 @@ public class ImageGenerationService {
     }
 
     /**
-     * @param profileId 发起配图的智能体所绑定的模型档案（可为 null）：该档案声明了图片模型时
-     *                  以它为准，否则回落全局设置（{@code llm_config} 图片三件套）。
+     * @param profileId 发起配图的智能体所绑定的模型档案（可为 null）：沿故障切换链找第一个
+     *                  勾选了「这是图片模型」的档案，用它所属供应商的端点与密钥；链上没有时
+     *                  回落全局设置（{@code llm_config} 图片三件套）。
      */
     public Asset generate(Long accountId, String prompt, String filename, Long userId, Long profileId) {
         LlmConfigService.ImageRuntime config = requiredConfig(profileId);
@@ -93,7 +94,9 @@ public class ImageGenerationService {
 
     private LlmConfigService.ImageRuntime requiredConfig(Long profileId) {
         LlmConfigService.ImageRuntime config = configService.imageRuntime(profileId);
-        if (!config.available()) throw new BusinessException("尚未在系统设置中配置图片模型");
+        if (!config.available()) {
+            throw new BusinessException("尚未配置图片模型（请在「模型档案」页为某个档案填写图片模型，或配置图片专用供应商）");
+        }
         return config;
     }
 

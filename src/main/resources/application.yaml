@@ -134,9 +134,19 @@ app:
     editor-timeout-seconds: ${EDITOR_TIMEOUT_SECONDS:1800}
   bootstrap:
     admin-username: ${ADMIN_USERNAME:admin}
-    admin-password: ${ADMIN_PASSWORD:Admin@123}
+    # 必须由环境变量注入，**故意不设默认值**（2026-11-10 工程复查 C-1）。
+    # 改造前这里有一个众所周知的默认口令：全新部署若忘记注入，会得到一个用公开口令
+    # 就能登录的管理员，而应用启动、功能一切正常，问题只在被利用时才显形。
+    # 现在留空 ⇒ 见 BootstrapAdminRunner：无管理员时**不创建**账号并 ERROR 提示，
+    # 不会静默产生一个弱口令管理员。
+    admin-password: ${ADMIN_PASSWORD:}
   security:
     token-ttl-hours: ${TOKEN_TTL_HOURS:24}
-    secret-key: ${APP_SECRET_KEY:wechat-article-bot-dev-key-change-in-production}
+    # 必须由环境变量注入，**故意不设默认值**（2026-11-10 工程复查 C-1）。
+    # 改造前这里有一个众所周知的默认值：它是 AES-GCM 的**主密钥**，一旦被猜到，
+    # 库里全部 api_key_encrypted（所有 LLM/图片 API Key）与微信 AppSecret 都能被离线解密，
+    # 拿到库备份的人不需要任何其它东西。而应用照样启动成功，不报错。
+    # 现在留空 ⇒ CryptoService 构造即 fail-fast，忘记注入的部署**起不来**，而不是带着弱密钥起来。
+    secret-key: ${APP_SECRET_KEY:}
   storage:
     path: ${STORAGE_PATH:./data/uploads}

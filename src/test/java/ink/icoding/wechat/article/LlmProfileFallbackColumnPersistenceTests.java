@@ -3,6 +3,7 @@ package ink.icoding.wechat.article;
 import ink.icoding.wechat.article.agent.LlmProfile;
 import ink.icoding.wechat.article.agent.LlmProfileMapper;
 import ink.icoding.wechat.article.agent.LlmProfileSeeder;
+import ink.icoding.wechat.article.common.CryptoService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -56,6 +57,18 @@ class LlmProfileFallbackColumnPersistenceTests {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    /**
+     * 真实密钥服务：本类插入的档案要**真的能被解密**。
+     *
+     * <p>为什么不能像以前那样塞一个 {@code "test-key"} 占位：{@code LlmProfileSeeder.defaultSource()}
+     * 现在走运行时口径 {@code LlmProfileService.hasReachableKey}（复查项 m-8：解不开的密文不算「有 key」）。
+     * 伪密文解密必然失败，于是种子认为「库里没有可用来源」并提前返回，
+     * {@code seederMarksDeclaredFallbackOnlyOnceAndNeverOverridesTheUser} 里
+     * 「{@code hy4-preview} 应已存在」便假红——红的是数据构造，不是产品行为。
+     */
+    @Autowired
+    private CryptoService cryptoService;
 
     /**
      * 兜底标志的快照。
@@ -196,7 +209,8 @@ class LlmProfileFallbackColumnPersistenceTests {
         profile.setProvider("OPENAI_COMPATIBLE");
         profile.setBaseUrl("https://example.invalid");
         profile.setModelName("test-model");
-        profile.setApiKeyEncrypted("test-key");
+        // 必须是真实密文，否则 hasReachableKey 判「无 key」，种子会跳过建档
+        profile.setApiKeyEncrypted(cryptoService.encrypt("test-key"));
         profile.setEnabled(true);
         profile.setIsDefault(false);
         profile.setIsFallback(isFallback);

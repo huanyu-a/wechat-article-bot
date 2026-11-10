@@ -1,7 +1,14 @@
 HELP.md
 target/
 .env
+# 备份/变体命名的 .env 同样含真实凭据：
+# 只 ignore `.env` 本身时，`.env.bak-<timestamp>` 会以未跟踪状态躺在仓库里，
+# 一次 `git add -A` 就入库；而 APP_SECRET_KEY 泄漏意味着库里全部
+# AES-GCM 密文（含所有 API Key）可被离线解密（2026-11-10 独立验证 C-1）。
+.env.*
+!.env.example
 deploy/env/*.env
+deploy/env/*.bak*
 data/
 logs/
 .mvn/wrapper/maven-wrapper.jar
@@ -42,3 +49,10 @@ __pycache__/
 ### Docker 内跑测试的本地 Maven 仓库（2026-09-19 本机无 JDK，测试走 Docker maven 容器）
 .m2repo/
 data/migration/
+
+### AI 工具本地配置（不进仓库）###
+# 这两个目录是本机 AI 编码工具的会话/规则目录，含个人偏好与临时上下文，
+# 与本项目产物无关；留在仓库里会让每次 git status 都多两条未跟踪项。
+.claude/
+.zcode/
+.zcodeignore

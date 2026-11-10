@@ -23,6 +23,17 @@ import static org.mockito.Mockito.when;
  */
 class AgentSeederTest {
 
+    /** 种子替身：真实实现的「运行时拿得到 key」判据在 {@link LlmProfileServiceTest} 与集成用例里钉，这里只复刻它的结论。 */
+    private static LlmProfileService profileService() {
+        LlmProfileService service = mock(LlmProfileService.class);
+        when(service.hasReachableKey(any())).thenAnswer(invocation -> {
+            LlmProfile profile = invocation.getArgument(0);
+            return profile != null && profile.getApiKeyEncrypted() != null
+                    && !profile.getApiKeyEncrypted().isBlank();
+        });
+        return service;
+    }
+
     /**
      * 已有绑定时**不覆盖**：用户的选择优先。
      *
@@ -269,7 +280,7 @@ class AgentSeederTest {
         when(mapper.findByName(any())).thenReturn(null);
         when(mapper.findFallback()).thenReturn(null); // 库里没有兜底
 
-        new LlmProfileSeeder(mapper).run(null);
+        new LlmProfileSeeder(mapper, profileService()).run(null);
 
         // 声明的兜底缺失，于是把默认档案标为兜底
         verify(mapper, atLeastOnce()).updateById(argThat(profile ->
@@ -300,7 +311,7 @@ class AgentSeederTest {
         });
         when(mapper.findFallback()).thenReturn(source);
 
-        new LlmProfileSeeder(mapper).run(null);
+        new LlmProfileSeeder(mapper, profileService()).run(null);
 
         verify(mapper, never()).insert(any(LlmProfile.class));
     }
@@ -323,11 +334,50 @@ class AgentSeederTest {
         when(mapper.findByName(any())).thenReturn(null);
         when(mapper.findFallback()).thenReturn(source);
 
-        new LlmProfileSeeder(mapper).run(null);
+        new LlmProfileSeeder(mapper, profileService()).run(null);
 
         // 每个标准档案各插一次（条数由 LlmProfileSeeder.seeds() 决定，写死数字会在加档时假红）
         verify(mapper, times(LlmProfileSeeder.seeds().size())).insert(any(LlmProfile.class));
         // 兜底档案已存在（默认档案被标为兜底），不再重复标记
         verify(mapper, never()).updateById(any(LlmProfile.class));
+    }
+
+    /**
+     * 来源档案**挂靠供应商**时，种子必须照样补出标准档案，且把 {@code providerId} 一起复制过去。
+     *
+     * <p>这条钉的是本轮最有价值的一个发现：改造后用户改走新 UI 建默认档案时，档案自己的
+     * {@code api_key_encrypted} 不再被写入（有意为之，见 {@code LlmProfileService.apply}）。
+     * 若「来源是否可用」的判据仍只看那一列，种子会认为「库里没有可用来源」而**静默停机**——
+     * 症状是开箱只有一条默认档案、7 个内置智能体全挤在同一个模型上、故障切换链退回一环，
+     * 而且不报任何错。判据必须走 {@code hasReachableKey}（供应商有 key 也算）。
+     */
+    @Test
+    void providerBackedSourceStillSeedsStandardProfilesWithItsProviderId() {
+        LlmProfile source = new LlmProfile();
+        source.setId(1L);
+        source.setName("默认配置");
+        source.setProviderId(42L);
+        source.setModelName("hy4-preview");
+        source.setEnabled(true);
+        source.setIsDefault(true);
+        // 新 UI 建出来的档案：自己的旧列是空的，密钥在供应商行上
+
+        LlmProfileMapper mapper = mock(LlmProfileMapper.class);
+        when(mapper.findDefault()).thenReturn(source);
+        when(mapper.findAll()).thenReturn(List.of(source));
+        when(mapper.findByName(any())).thenReturn(null);
+        when(mapper.findFallback()).thenReturn(source);
+
+        LlmProfileService profileService = profileService();
+        when(profileService.hasReachableKey(source)).thenReturn(true);
+        new LlmProfileSeeder(mapper, profileService).run(null);
+
+        org.mockito.ArgumentCaptor<LlmProfile> inserted =
+                org.mockito.ArgumentCaptor.forClass(LlmProfile.class);
+        verify(mapper, times(LlmProfileSeeder.seeds().size())).insert(inserted.capture());
+        assertThat(inserted.getAllValues()).allSatisfy(profile ->
+                assertThat(profile.getProviderId())
+                        .as("种子档案必须复制来源档案的 providerId，否则它们会一直走回退路径、供应商页面看不见")
+                        .isEqualTo(42L));
     }
 }

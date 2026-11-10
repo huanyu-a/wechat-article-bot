@@ -4,7 +4,7 @@ services:
   app:
     image: ${IMAGE_REPOSITORY:-wechat-article-bot}:${IMAGE_TAG:-local}
     ports:
-      - "${APP_BIND_ADDRESS:-0.0.0.0}:${APP_PORT:-8081}:8081"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8081}:8081"
     environment:
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-docker}
       ENV.MYSQL_URL: ${MYSQL_URL:?MYSQL_URL is required}
@@ -18,6 +18,11 @@ services:
       STORAGE_PATH: /app/data/uploads
       SERVER_PORT: 8081
       JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=75.0 -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai}
+    # 让容器内的 host.docker.internal 指向 WSL 的默认网关（即 Windows 宿主）。
+    # 用途：模型服务跑在宿主侧（例如 SSH 隧道映射到 Windows 回环的 8096），
+    # 容器内的 127.0.0.1 是容器自身回环，永远打不通宿主端口。
+    extra_hosts:
+      - "host.docker.internal:${WSL_HOST_GATEWAY:-172.21.192.1}"
     volumes:
       - uploads_data:/app/data/uploads
     restart: ${RESTART_POLICY:-unless-stopped}

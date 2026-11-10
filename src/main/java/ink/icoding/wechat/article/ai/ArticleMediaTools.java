@@ -47,8 +47,8 @@ public class ArticleMediaTools {
 
     /**
      * @param imageProfileId 发起配图的智能体所绑定的模型档案（可为 null）。生图 / 修图工具把它透传给
-     *                       {@link ImageGenerationService}——该档案声明了图片模型就用它，否则回落
-     *                       全局图片设置。为什么由工具携带而不是让图片服务自己查：图片服务不知道
+     *                       {@link ImageGenerationService}——链上有档案勾选了「这是图片模型」就用它，
+     *                       否则回落全局图片设置。为什么由工具携带而不是让图片服务自己查：图片服务不知道
      *                       「这次配图是谁要的」，而装配点（AgentFactory / 各执行器）恰好知道。
      */
     public List<Tool> create(Long accountId, Long userId, MutationExecutor mutationExecutor,

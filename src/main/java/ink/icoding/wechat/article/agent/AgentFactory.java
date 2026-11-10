@@ -213,7 +213,7 @@ public class AgentFactory {
         List<LlmProfile> chain = llmProfileService.failoverChain(bound);
         List<ModelCandidate> models = new java.util.ArrayList<>(chain.size());
         for (LlmProfile profile : chain) {
-            LlmProfileService.RuntimeProfile runtime = llmProfileService.runtime(profile);
+            LlmProfileService.RuntimeProfile runtime = runtimeOrNull(profile, "候选模型装配");
             if (runtime == null || !runtime.available()) continue;
             models.add(new ModelCandidate(
                     createModel(runtime.provider(), runtime.baseUrl(), runtime.modelName(), runtime.apiKey()),
@@ -290,7 +290,7 @@ public class AgentFactory {
                 log.warn("智能体 {} 绑定的模型档案 {} 已删除，回落默认档案",
                         definition.getCode(), definition.getLlmProfileId());
             } else {
-                LlmProfileService.RuntimeProfile runtime = llmProfileService.runtime(profile);
+                LlmProfileService.RuntimeProfile runtime = runtimeOrNull(profile, "智能体 " + definition.getCode());
                 if (runtime != null && runtime.available()) {
                     warnIfOverridden(definition);
                     return createModel(runtime.provider(), runtime.baseUrl(), runtime.modelName(),
@@ -300,14 +300,41 @@ public class AgentFactory {
             }
         }
         LlmProfile defaultProfile = llmProfileService.defaultProfile();
-        LlmProfileService.RuntimeProfile runtime = llmProfileService.runtime(defaultProfile);
+        LlmProfileService.RuntimeProfile runtime = runtimeOrNull(defaultProfile, "默认档案");
         if (runtime != null && runtime.available()) {
             if (definition != null) warnIfOverridden(definition);
             return createModel(runtime.provider(), runtime.baseUrl(), runtime.modelName(), runtime.apiKey());
         }
-        LlmConfigService.RuntimeConfig config = llmConfigService.runtime();
-        if (!config.available()) throw new BusinessException("LLM 尚未在系统设置中启用或未配置 API Key");
+        LlmConfigService.RuntimeConfig config;
+        try {
+            config = llmConfigService.runtime();
+        } catch (RuntimeException exception) {
+            // 缺陷 B3：llm_config 这一跳同样不许把请求打成 500（坏密钥时它内部也会解密失败）
+            log.warn("llm_config 的运行时解析失败（按未配置处理）", exception);
+            config = null;
+        }
+        if (config == null || !config.available()) {
+            throw new BusinessException("LLM 尚未配置可用的模型档案（请到「模型档案」页检查默认档案与它的供应商）");
+        }
         return createModel(config.provider(), config.baseUrl(), config.modelName(), config.apiKey());
+    }
+
+    /**
+     * 档案运行时解析的容错包装（缺陷 B3）：解析失败按「该档案不可用」处理，绝不把整条请求打挂。
+     *
+     * <p>为什么不只依赖 {@code LlmProfileService.runtime} 内部的解密容错：那条链上还有别的抛点，
+     * 而这里失败的后果是**所有智能体请求 500**（Lead 在坏密钥库上实测的正是这一类）。
+     * 降级之后请求继续往下一跳走，最差也只是回落到 llm_config 或抛出一条可读的业务错误。
+     */
+    private LlmProfileService.RuntimeProfile runtimeOrNull(LlmProfile profile, String scene) {
+        if (profile == null) return null;
+        try {
+            return llmProfileService.runtime(profile);
+        } catch (RuntimeException exception) {
+            log.warn("{}：模型档案 id={} 的运行时解析失败（按不可用处理，继续回落）", scene,
+                    profile.getId(), exception);
+            return null;
+        }
     }
 
     private void warnIfOverridden(AgentDefinition definition) {

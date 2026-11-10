@@ -17,9 +17,11 @@ import java.util.List;
  * （{@link LlmProfileService#failoverChain}）都要求档案**存在且可用**，但开箱只有一条「默认配置」，
  * 于是 7 个内置智能体全挤在同一个模型上，档案链也只有一环——主用一挂就整轮失败。
  *
- * <p>为什么 baseUrl/apiKey 从默认档案**复制**而不是让用户填：这些档案走的是同一个网关
- * （nexus.bx9y.com.cn）、同一个 key，**只有模型名不同**。让用户为每个模型再填一遍 key
- * 既冗余又容易填错；复制默认档案后用户随时可在设置页单独改。
+ * <p>为什么端点与密钥不在这里各写一份（而是**复制来源档案的 {@code providerId}**）：
+ * 这些档案走的是同一个网关（nexus.bx9y.com.cn）、同一个 key，**只有模型名不同**。让用户为每个模型
+ * 再填一遍 key 既冗余又容易填错；改造后端点与密钥归供应商（{@code llm_provider}），档案只保留
+ * 「挂哪个供应商」这一条引用——换一次 key 只改供应商一行，12 条档案同时生效。因此这里复制的是
+ * {@code providerId}（引用），不再是 baseUrl/key（副本）。
  *
  * <p>为什么只补不覆盖：用户可能已经手工调过某个档案的 key 或关掉了它，
  * 种子只负责「让它存在」，不做任何覆盖（与 {@code AgentSeeder} 的 persona 策略一致）。
@@ -86,9 +88,11 @@ public class LlmProfileSeeder implements ApplicationRunner {
     }
 
     private final LlmProfileMapper mapper;
+    private final LlmProfileService profileService;
 
-    public LlmProfileSeeder(LlmProfileMapper mapper) {
+    public LlmProfileSeeder(LlmProfileMapper mapper, LlmProfileService profileService) {
         this.mapper = mapper;
+        this.profileService = profileService;
     }
 
     @Override
@@ -120,26 +124,40 @@ public class LlmProfileSeeder implements ApplicationRunner {
      * <p>不直接用 {@code defaultProfile()} 的回落语义：它会退回「第一条」，
      * 而这里需要的是「一条**有 key** 的档案」——库里若存在无 key 的空档案，
      * 拿它当来源会复制出一个同样不可用的档案。
+     *
+     * <p><b>「有 key」的判据必须走运行时口径</b>（{@link LlmProfileService#hasReachableKey}），
+     * 不能只看档案自己那一列。改造后档案的密钥搬到了供应商上，而新 UI 建的档案
+     * **不再写自己那一列**（{@code LlmProfileService.apply} 有意不写）——若判据仍只看旧列，
+     * 用户改走新 UI 建默认档案之后，种子会认为「库里没有可用来源」而**静默停机**：
+     * 症状是开箱只有一条默认档案、7 个内置智能体全挤在同一个模型上、故障切换链退回一环，
+     * 而且不报任何错（种子本来就只 log.debug 后 return）。
      */
     private LlmProfile defaultSource() {
         LlmProfile preferred = mapper.findDefault();
-        if (hasKey(preferred)) return preferred;
+        if (hasReachableKey(preferred)) return preferred;
         for (LlmProfile profile : mapper.findAll()) {
-            if (hasKey(profile)) return profile;
+            if (hasReachableKey(profile)) return profile;
         }
         return null;
     }
 
-    private static boolean hasKey(LlmProfile profile) {
-        return profile != null && profile.getApiKeyEncrypted() != null
-                && !profile.getApiKeyEncrypted().isBlank();
+    private boolean hasReachableKey(LlmProfile profile) {
+        return profileService.hasReachableKey(profile);
     }
 
-    /** 不存在才创建（按名称判重）；已存在一律不动，保留用户对 key/启用状态的修改。 */
+    /**
+     * 不存在才创建（按名称判重）；已存在一律不动，保留用户对供应商/启用状态的修改。
+     *
+     * <p>复制的是来源档案的 {@code providerId}：种子档案与来源共用同一个供应商，
+     * 于是「换一次 key 改一处」对种子建出来的 12 条档案同样成立。
+     * 来源没有供应商（{@code providerId} 为空，例如回填还没跑）时留空——这些档案走档案自身旧列的
+     * 回退口径，与改造前逐字一致，不会因为「没有供应商」而变得不可用。
+     */
     private void createIfAbsent(Seed seed, LlmProfile source) {
         if (mapper.findByName(seed.name()) != null) return;
         LlmProfile profile = new LlmProfile();
         profile.setName(seed.name());
+        profile.setProviderId(source.getProviderId());
         profile.setProvider(source.getProvider());
         profile.setBaseUrl(source.getBaseUrl());
         profile.setModelName(seed.modelName());

@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { parseSkillIds } from '../utils/skills'
-import { imageCarrier as imageCarrierOf } from '../utils/profiles'
+import { carrierModelName, imageCarrier as imageCarrierOf } from '../utils/profiles'
 import SkillPicker from '../components/SkillPicker.vue'
 import {
   BadgeCheck, Bot, BrainCircuit, CircleAlert, Clock3, Copy, FileText, Image, LoaderCircle,
@@ -12,9 +12,9 @@ import {
 const agents = ref([]), toolGroups = ref([]), profiles = ref([])
 const loading = ref(true), saving = ref(false), error = ref(''), formError = ref(''), notice = ref('')
 const profilesUnavailable = ref(false)
-// 全局图片模型（系统设置里的「图片模型」）：档案没声明图片模型时配图就实际用它。
-// 卡片上要显示的是「实际生效的那个模型」，因此必须拿到它——否则用户看到的仍是
-// 「档案名」而不是「配图用的模型名」，正是这次要修的那个误会。
+// 旧版全局图片模型（llm_config 的 imageModelName）：档案都没声明图片模型时，配图实际回落到它
+// （契约 §4.3 第②跳）。卡片要显示「实际生效的那个模型」，因此必须拿到它——否则用户看到的
+// 仍是「档案名」而不是「配图用的模型名」。需要 ADMIN 权限；非管理员取不到就只显示①档的来源。
 const globalImageModel = ref('')
 const filterStage = ref(''), filterEnabled = ref('')
 const showForm = ref(false)
@@ -68,15 +68,35 @@ const profileNameOf = id => {
  * 逻辑放在 utils/profiles.js：它必须逐跳与后端一致，单独成文件才能被
  * scripts/check-profile-chain-parity.mjs 拿去和后端源码对照（含结构自检）。
  */
-const imageCarrier = id => imageCarrierOf(profiles.value, id)
 /**
- * 配图实际生效的图片模型：档案链上第一个声明了 imageModelName 的档案，都没有则用全局设置。
+ * 配图实际生效的图片模型，与后端 `LlmConfigService.imageRuntime` 同序（契约 §4.3）：
+ *   ① 链上第一个勾选了「这是图片模型」的档案（`isImageModel`）——用它**所属供应商**的
+ *      端点与密钥，图片模型名是它自己的 `modelName`；
+ *   ①b 旧数据兼容：链上没有勾选的档案时，退回声明过 `imageModelName` 的档案（只读不改）；
+ *   ② 两者都没有时，回落旧的全局图片模型（llm_config.imageModelName）。
+ *
+ * 「同一个供应商同时供文本与图片」靠**两条档案**表达（一条写正文、一条勾选图片模型），
+ * 不需要给供应商分「用途」。
  *
  * <p>返回空串表示「哪儿都没配图片模型」，此时后端会在生图时抛出可读的业务异常。
  */
-const imageModelOf = id => (imageCarrier(id) || {}).imageModelName || globalImageModel.value
-/** 图片模型来自档案（true）还是全局设置（false）——卡片上据此区分措辞。 */
-const imageModelFromProfile = id => Boolean(imageCarrier(id))
+const imageCarrier = id => imageCarrierOf(profiles.value, id)
+/**
+ * 两跳里落在哪一跳上——卡片据此标注来源。
+ * 用户得知道该去哪儿改这个模型（模型档案弹窗里的「这是一个图片模型」复选框，还是旧的全局配置），
+ * 所以①/①b 统一记作「来自档案」、② 记作「来自旧版图片配置」。
+ */
+function imageModelSource(id) {
+  const carrier = imageCarrier(id)
+  if (carrier) return { model: carrierModelName(carrier), kind: 'profile' }
+  if (globalImageModel.value) return { model: globalImageModel.value, kind: 'global' }
+  return { model: '', kind: null }
+}
+const imageModelOf = id => imageModelSource(id).model
+const imageModelSourceLabel = kind => ({
+  profile: '（来自档案）',
+  global: '（来自旧版图片配置）',
+}[kind] || '')
 const toolKeysOf = agent => parseToolKeys(agent.toolKeys)
 /** 只有具备 MEDIA 工具组（能生图/修图）的智能体才值得提图片模型，否则是噪音。 */
 const usesImage = agent => toolKeysOf(agent).includes('MEDIA')
@@ -100,7 +120,43 @@ async function loadProfiles() {
     profilesUnavailable.value = true
   }
 }
-/** 全局图片模型（系统设置）：同样仅 ADMIN 可读，取不到就不显示配图模型这一行。 */
+/**
+ * 档案下拉按供应商分组（F1）。三件事：
+ *   1. 组名分开：`旧版档案（未指定供应商）`（providerId 为空）与 `供应商已不存在的档案`
+ *      （providerId 有值但供应商不在列表里）——措辞与模型档案页对齐；
+ *   2. 选项文案按可用性追加后缀，避免把智能体绑到运行时会被跳过的档案上；
+ *   3. 组内保持 id 升序（与后端故障切换链同序）。
+ * 绑定语义不变：选项值仍是档案 id。
+ */
+const profileStatusSuffix = profile => {
+  if (profile.providerEnabled === false && !profile.providerName) return '（供应商已不存在）'
+  if (profile.providerEnabled === false) return '（供应商已停用）'
+  // 旧版档案（providerId 为空）读的是自身旧列，没有「供应商」可指——措辞要对得上（与模型档案页 F6 一致）
+  if (!profile.hasApiKey && profile.providerId == null) return '（该档案未配置密钥）'
+  if (!profile.hasApiKey) return '（供应商未配置密钥）'
+  if (profile.runtimeAvailable === false) return '（运行时不可用）'
+  return ''
+}
+const LEGACY_GROUP = '旧版档案（未指定供应商）'
+const DANGLING_GROUP = '供应商已不存在的档案'
+const profileGroups = computed(() => {
+  const order = [], buckets = new Map()
+  const sortAsc = (a, b) => Number(a.id) - Number(b.id)
+  for (const profile of [...profiles.value].sort(sortAsc)) {
+    let name
+    if (profile.providerId == null) name = LEGACY_GROUP
+    else if (!profile.providerName) name = DANGLING_GROUP
+    else name = profile.providerName
+    if (!buckets.has(name)) { buckets.set(name, []); order.push(name) }
+    buckets.get(name).push(profile)
+  }
+  // 正常供应商排前面，两个「有问题」的组固定拖到最后（问题清单不该挡在最常用的选项前）
+  const rank = name => (name === LEGACY_GROUP ? 2 : name === DANGLING_GROUP ? 3 : 1)
+  order.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+  return order.map(name => ({ name, items: buckets.get(name) }))
+})
+/** 旧版全局图片模型：配图两跳里的最后一跳（契约 §4.3 ②），仅 ADMIN 可读；
+ *  取不到时就是空串——此时前两跳都没产出的话，界面如实显示「未配置」而不是编一个名字。 */
 async function loadGlobalImageModel() {
   try {
     const config = await api('/api/settings/llm')
@@ -267,7 +323,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
             </div>
             <div v-else class="agent-tool-row"><span class="agent-tool-tag empty">未配置工具组</span></div>
             <div class="agent-meta-line"><BrainCircuit :size="13" />{{ profileNameOf(agent.llmProfileId) }}</div>
-            <div v-if="usesImage(agent) && imageModelOf(agent.llmProfileId)" class="agent-meta-line"><Image :size="13" />配图模型：{{ imageModelOf(agent.llmProfileId) }}<span class="agent-meta-hint">{{ imageModelFromProfile(agent.llmProfileId) ? '（来自档案）' : '（来自系统设置）' }}</span></div>
+            <div v-if="usesImage(agent) && imageModelOf(agent.llmProfileId)" class="agent-meta-line"><Image :size="13" />配图模型：{{ imageModelOf(agent.llmProfileId) }}<span class="agent-meta-hint">{{ imageModelSourceLabel(imageModelSource(agent.llmProfileId).kind) }}</span></div>
             <footer>
               <span class="skill-meta">{{ stageLabelOf(agent.stage) }}</span>
               <span class="row-actions">
@@ -305,7 +361,9 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
           <label>模型档案
             <select v-model="form.llmProfileId">
               <option value="">使用默认档案</option>
-              <option v-for="profile in profiles" :key="profile.id" :value="profile.id">{{ profile.name }}{{ profile.isDefault ? '（默认）' : '' }}</option>
+              <optgroup v-for="group in profileGroups" :key="group.name" :label="group.name">
+                <option v-for="profile in group.items" :key="profile.id" :value="profile.id">{{ profile.name }}{{ profile.isDefault ? '（默认）' : '' }}{{ profileStatusSuffix(profile) }}</option>
+              </optgroup>
             </select>
             <small v-if="profilesUnavailable">当前账号无模型档案读取权限，仅能使用默认档案。</small>
             <small v-else>留空即使用系统默认档案。</small>

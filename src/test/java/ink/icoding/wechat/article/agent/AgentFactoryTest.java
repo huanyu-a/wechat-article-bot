@@ -1,6 +1,7 @@
 package ink.icoding.wechat.article.agent;
 
 import ink.icoding.llm.agent.AgentClient;
+import ink.icoding.wechat.article.common.BusinessException;
 import ink.icoding.wechat.article.settings.LlmConfigService;
 import ink.icoding.wechat.article.skill.SkillContext;
 import ink.icoding.wechat.article.skill.SkillPromptAssembler;
@@ -12,6 +13,8 @@ import java.math.BigDecimal;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -125,6 +128,48 @@ class AgentFactoryTest {
 
         assertThat(captured).hasSize(1);
         assertThat(captured.get(0)).containsExactly("DRAFT_READ", "DRAFT_WRITE");
+    }
+
+    /**
+     * 缺陷 B3：模型档案的密钥解不开（``APP_SECRET_KEY`` 轮换过）时，装配必须**降级**到 llm_config。
+     *
+     * <p>这是本轮最要紧的一条回归钉。实测形态：坏密钥的库上 ``GET /api/settings/llm`` 与
+     * ``GET /api/llm-profiles`` 双双 500，管理员连唯一的修复入口都打不开；如果装配路径也抛，
+     * 症状就变成「所有智能体请求 500」，比配置读不出来更糟。
+     */
+    @Test
+    void brokenProfileKeyDegradesToLlmConfigInsteadOfFailing() {
+        AgentDefinition definition = definition("builtin_writer", "WRITING", "人设", null);
+        when(llmProfileService.failoverChain(any())).thenReturn(List.of());
+        when(llmProfileService.defaultProfile()).thenReturn(new LlmProfile());
+        when(llmProfileService.runtime(any()))
+                .thenThrow(new IllegalStateException("敏感信息解密失败，请检查 APP_SECRET_KEY"));
+        when(llmConfigService.runtime()).thenReturn(new LlmConfigService.RuntimeConfig(
+                true, "OPENAI_COMPATIBLE", "https://llm.example.test", "compat-model", "sk-compat",
+                null, null, null, null, null));
+
+        List<AgentFactory.ModelCandidate> candidates = factory.createModelCandidates(definition);
+
+        assertThat(candidates).as("必须降级到 llm_config，而不是把请求打成 500").hasSize(1);
+        assertThat(candidates.get(0).label()).isEqualTo("llm_config 默认配置");
+    }
+
+    /**
+     * 缺陷 B3 的另一半：档案与 llm_config 两跳都解不开时，给一条**可读的业务错误**
+     * （400 + 指向「模型档案」页的新文案），而不是 500 的「服务暂时不可用」。
+     */
+    @Test
+    void brokenProfileAndConfigProduceTheReadableBusinessMessage() {
+        AgentDefinition definition = definition("builtin_writer", "WRITING", "人设", null);
+        when(llmProfileService.failoverChain(any())).thenReturn(List.of());
+        when(llmProfileService.defaultProfile()).thenReturn(null);
+        when(llmConfigService.runtime())
+                .thenThrow(new IllegalStateException("敏感信息解密失败，请检查 APP_SECRET_KEY"));
+
+        assertThatThrownBy(() -> factory.createModelCandidates(definition))
+                .isInstanceOf(BusinessException.class)
+                .as("文案必须把用户指向「模型档案」页（§4.4b），不能被全局兜底吞成 500")
+                .hasMessageContaining("模型档案");
     }
 
     @Test
