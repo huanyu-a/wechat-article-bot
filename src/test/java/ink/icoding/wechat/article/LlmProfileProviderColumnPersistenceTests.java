@@ -301,11 +301,12 @@ class LlmProfileProviderColumnPersistenceTests {
 
         seeder.run(null);
 
-        // 种子清单（LlmProfileSeeder.seeds()）是包级可见的，这里改用两个**按名称绑定**的锚点名来断言
-        // （deepseek-flash 是 AgentSeeder 的 A 档主用、hy4-preview 是声明的兜底）：
-        // 把清单复制进测试会让「加一条档位」变成假红，而这两个名字一旦改名，AgentSeeder 的绑定也会一起坏
-        List<LlmProfile> seeded = List.of(profileMapper.findByName("deepseek-flash"),
-                profileMapper.findByName("hy4-preview"));
+        // 断言用两个锚点：deepseek-flash 是 AgentSeeder 的 A 档主用（按名称绑定，不能改名），
+        // 再加上「跑完种子后实际存在的那条兜底档案」。
+        // 2026-11-10：原来这里写死 hy4-preview，兜底改成 nexus-auto 后 NPE；
+        // 而 seeds()/Seed 是 agent 包的内部细节，本类在包外不该依赖，故改为取实际兜底行。
+        LlmProfile declaredFallback = profileMapper.findFallback();
+        List<LlmProfile> seeded = List.of(profileMapper.findByName("deepseek-flash"), declaredFallback);
         assertThat(seeded).as("种子应把声明的标准档案都建出来").doesNotContainNull();
         assertThat(seeded).allSatisfy(profile -> assertThat(profile.getProviderId())
                 .as("种子档案必须继承来源档案的供应商绑定（否则它们只在回退路径上活着）")

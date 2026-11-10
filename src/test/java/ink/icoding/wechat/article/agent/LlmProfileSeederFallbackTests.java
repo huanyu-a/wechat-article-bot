@@ -87,6 +87,24 @@ class LlmProfileSeederFallbackTests {
         seeder(store.mapper()).run(mock(ApplicationArguments.class));
     }
 
+    /**
+     * 种子清单里的 modelName 必须是**网关真实标识**（带渠道前缀），不能是裸名。
+     *
+     * <p>为什么钉这条：2026-11-10 生产升级实测发现，旧清单里 {@code hy4-preview} 这类裸名在网关上
+     * 根本不存在（网关 {@code /v1/models} 的 21 个标识全部带前缀）。裸名档案会被判成「可用」
+     * ——运行时判定只看供应商有没有 key，不看模型标识存不存在——真正发请求时才 404，
+     * 症状是「故障切换链上白绕几跳」。这条断言把「名字」与「网关标识」的绑定关系写进测试，
+     * 以后再加种子就得先确认网关确实有那个标识。
+     */
+    @Test
+    void everySeedModelNameCarriesAChannelPrefix() {
+        assertThat(LlmProfileSeeder.seeds())
+                .as("种子 modelName 必须是带渠道前缀的网关真实标识")
+                .allSatisfy(seed -> assertThat(seed.modelName())
+                        .as("%s 的 modelName「%s」缺少渠道前缀", seed.name(), seed.modelName())
+                        .contains("/"));
+    }
+
     @Test
     void existingFallbackIsNeverDuplicatedBySeeding() {
         MemoryStore store = new MemoryStore();
@@ -109,7 +127,7 @@ class LlmProfileSeederFallbackTests {
 
         assertThat(store.fallbackNames())
                 .as("库里没有兜底时，种子应当把声明的那条设为兜底")
-                .containsExactly("hy4-preview");
+                .containsExactly("nexus-auto");
     }
 
     @Test

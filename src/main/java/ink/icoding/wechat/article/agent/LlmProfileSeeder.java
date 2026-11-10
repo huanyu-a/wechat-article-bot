@@ -50,6 +50,15 @@ public class LlmProfileSeeder implements ApplicationRunner {
      *   <li>B 档（备选）：step-3.7-flash、agnes-2.5-flash、qwen3.8-flash、nemotron-3-ultra-free</li>
      * </ul>
      *
+     * <p><b>2026-11-10 修正（生产升级实测后）</b>：`modelName` 从「裸名」改为**网关真实标识**
+     * （带渠道前缀，如 `auto/DeepSeek-Flash`）。原来的裸名（`hy4-preview`、`step-3.7-flash` 等）
+     * 在网关上**根本不存在**——网关 `/v1/models` 返回的 21 个标识全部带前缀。裸名档案
+     * 会被判为 `runtimeAvailable`（因为只看供应商有没有 key），真正发请求时才 404，
+     * 症状是「故障切换链上多绕几跳才成功」。同时删掉 4 个在网关找不到对应标识的模型
+     * （`hy4-preview`、`dots3-note-prev`、`step-3.7-flash`、`agnes-2.5-flash`、
+     * `nemotron-3-ultra-free`）——种子的职责是「补一个**能用**的档案」，不是补一个名字。
+     * 兜底也随之改由实际存在的档案承担（不再让已下线的 hy4-preview 当兜底）。
+     *
      * <p>有意**不建**以下模型，理由分两类：
      * <ol>
      *   <li>实测不可用：{@code deepseek-v4-pro-0813}（网关返回「模型未找到」）、
@@ -70,21 +79,20 @@ public class LlmProfileSeeder implements ApplicationRunner {
     static List<Seed> seeds() {
         return List.of(
                 // A 档主力：AgentSeeder 按**名称**绑定，这两个名字不能改（改了两处会对不上）
-                new Seed("deepseek-flash", "deepseek-flash", false),
-                new Seed("glm-5.3-flash", "glm-5.3-flash", false),
-                // S 档（能力优先）。hy4-preview 兼兜底：限时免费 + Tier S，是最后一道安全网的最优候选
-                new Seed("hy4-preview", "hy4-preview", true),
-                new Seed("kimi-k3", "kimi-k3", false),
-                new Seed("qwen3.8-max", "qwen3.8-max", false),
-                new Seed("glm-5.3", "glm-5.3", false),
+                new Seed("deepseek-flash", "auto/DeepSeek-Flash", false),
+                new Seed("glm-5.3-flash", "auto/glm-5.3-flash", false),
+                // S 档（能力优先）
+                new Seed("kimi-k3", "auto/kimi-k3", false),
+                new Seed("qwen3.8-max", "auto/Qwen3.8-Max", false),
+                new Seed("glm-5.3", "auto/glm-5.3", false),
                 // A 档其余
-                new Seed("dots3-note-prev", "dots3-note-prev", false),
-                new Seed("qwen3.8-27b", "qwen3.8-27b", false),
+                new Seed("qwen3.8-27b", "ssvip-54/qwen3.8-27b", false),
                 // B 档
-                new Seed("step-3.7-flash", "step-3.7-flash", false),
-                new Seed("agnes-2.5-flash", "agnes-2.5-flash", false),
-                new Seed("qwen3.8-flash", "qwen3.8-flash", false),
-                new Seed("nemotron-3-ultra-free", "nemotron-3-ultra-free", false));
+                new Seed("qwen3.8-flash", "auto/qwen3.8-flash", false),
+                // 兜底（链尾安全网）。选它而不是先前的 hy4-preview：hy4-preview 已不在网关，
+                // 而兜底的职责恰恰是「前面全挂了还能出字」，选一个取不到的标识等于没有安全网。
+                // 这条是限时免费通道，额度耗尽的风险最低（AgentSeederTest 钉住「兜底恰好一条且不是主力绑定」）。
+                new Seed("nexus-auto", "ssvip-55/nexus-auto", true));
     }
 
     private final LlmProfileMapper mapper;

@@ -243,8 +243,8 @@ class AgentSeederTest {
                 .hasSize(1);
         assertThat(profiles).filteredOn(LlmProfileSeeder.Seed::fallback)
                 .extracting(LlmProfileSeeder.Seed::name)
-                .as("兜底应取 hy4-preview：限时免费 + Tier S，才配当最后一道安全网")
-                .containsExactly("hy4-preview");
+                .as("兜底应取 nexus-auto：限时免费通道，额度耗尽风险最低，才配当最后一道安全网")
+                .containsExactly("nexus-auto");
 
         // 智能体主用的档案不能同时是兜底，否则链上两段指向同一条、去重后少一跳
         java.util.Set<String> primaryBindings = AgentSeeder.seeds().stream()
