@@ -825,6 +825,38 @@ curl -s -H "Authorization: Bearer $S" \
 | 接口 | 本机 `/api/health` 200、`/login` 200；公网 `https://mozhou.bx9y.com.cn/login` 401 是 aaPanel basic auth（`WWW-Authenticate: Basic realm="Restricted"`），非应用故障 |
 | 前置备份 | `/www/dk_project/dk_app/backups/wechat-article-bot-pre-20261110/`（SQL 3.6MB + dev.env 原件） |
 
+### A.2.3 2026-11-11 记录：种子种子清单按网关真实标识修正
+
+**问题**：11-10 升级后种子补建的 6 条档案，其 `modelName` 是**裸名**（`hy4-preview`），
+而网关 `/v1/models` 返回的 21 个标识**全部带渠道前缀**（`auto/...`、`ssvip-54/...`）。
+裸名在网关上取不到，这些档案在故障切换链上只能白绕一跳。
+
+**为什么当时没暴露**：档案的 `runtimeAvailable` 只看「供应商有没有 key」，
+不看模型标识存不存在——裸名档案照样显示「可用」，真正发请求时才 404。
+**判断「档案能不能用」不能只信 `runtimeAvailable`**，要拿 `modelName` 去
+`GET /api/llm-providers/{id}/models` 的返回里核对。
+
+**改法**（commit `fdd3f24` + `0540498`）：种子 `modelName` 全部对齐网关原样标识，
+删掉网关里根本不存在的 4 个模型，兜底从 `hy4-preview` 改为 `nexus-xxx/nexus-auto`
+（网关唯一的免费通道，链尾安全网必须指向取得到的模型）。同时新增断言：
+种子 `modelName` 必须含 `/`，防止再退化成裸名。
+
+**顺带修的测试脆弱点**：`AgentSeederTest` / `LlmProfileFallbackTests` 里写死了
+`hy4-preview`；另两个持久化测试写死了档案名。后两个在 `agent` 包**之外**，
+而 `seeds()`/`Seed` 是包级可见——**没有为过测试去放宽生产代码可见性**，
+改为断言「跑完种子后恰好有一条兜底且不是默认档案」这种行为。
+
+**当前线上状态**：供应商 1 / 档案 19 / 启用 13 / 文章 24；默认 `deepseek-flash`、
+兜底 `nexus-auto`；6 条取不到的档案已 `enabled=0` **保留**（将来网关恢复可直接启用，
+不做删除）。
+
+**遗留风险（未证伪，故未改动）**：线上另有 4 条**升级前就存在**的档案，
+其 `modelName` 与网关大小写不一致（`auto/DeepSeek-Flash` vs 网关 `auto/deepseek-flash`；
+`auto/Qwen3.8-Max`、`LongCat-2.5` 同类），`step-5-preview` 在网关上完全不存在。
+已用 `pre-20261110` 备份逐条比对确认这些是历史数据，不是本次引入。
+**大小写差异是否真的导致请求失败，当前无法用无密钥探测证明**——网关鉴权在模型校验之前，
+无论 model 写什么都只返回 401。要证实必须发真实推理请求。在证实之前不动这些配置。
+
 ## A.3 ⚠️ 升级前必须对比列长（schema 漂移会直接搞挂生产）
 
 生产库是旧版本代码建的，列长可能和当前实体声明不一致。2026-09-21 替换时实际撞到一次：
