@@ -3,6 +3,31 @@
 > 面向「下一个接手的人」：照着本文可以从零把应用跑起来、看清数据在哪、以及出问题时怎么退回旧形态。
 > 生成时间：2026-09-20（容器化改造当天，全部命令均已在本机实测通过）。
 > **2026-09-21 更新**：新增本轮运维加固与两项定案（§10、§8.1），并把易过期的数字改成「现查为准」（§1.1）。
+>
+> **2026-11-12 更新（重要）**：本机已从 Podman 换成 **Docker + compose**（`docker compose` v5.6.0，
+> Podman 已卸载）。本文 §1 起所有 `podman` 命令**不再适用**，但网络/卷/数据位置的思路不变。
+> 当前实际部署命令（2026-11-12 实测通过）：
+>
+> ```bash
+> cd /home/win11/projects/wwwroot/wechat-article-bot
+> # 部署前给旧镜像留回滚点
+> docker tag wechat-article-bot:local wechat-article-bot:rollback-<说明>
+> # 构建新镜像（Dockerfile 会先跑 webui 构建再打后端，agent4j 从 Maven Central 拉取）
+> docker build -t wechat-article-bot:local --build-arg APP_VERSION=<commit> --build-arg VCS_REF=<commit> .
+> # 部署。MYSQL_* 三个变量必须显式传入：.env 里的 ENV.MYSQL_* 是宿主机跑 jar 用的
+> # （URL 指向 localhost），容器内必须是 http://mysql:3306/...，不能直接复用
+> export MYSQL_URL='jdbc:mysql://mysql:3306/wechat-article?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true'
+> export MYSQL_USERNAME=$(grep '^ENV\.MYSQL_USERNAME=' .env | cut -d= -f2-)
+> export MYSQL_PASSWORD=$(grep '^ENV\.MYSQL_PASSWORD=' .env | cut -d= -f2-)
+> docker compose up -d --force-recreate app
+> # 回滚：docker tag wechat-article-bot:rollback-<说明> wechat-article-bot:local && docker compose up -d --force-recreate app
+> ```
+>
+> 另两条 2026-11-12 实测经验：
+> 1. 部署后新增表（如助手三张 `ASSISTANT_*`）由 smart-mybatis 自动建出，无需手工 DDL；
+> 2. 模型配置从库间复制时，供应商 baseUrl 里指向**宿主 SSH 隧道**的 `127.0.0.1:3425`
+>    必须改写成 `host.docker.internal:3425`（隧道监听 0.0.0.0，容器可达），
+>    否则容器里的模型请求全部打在容器自身回环上（Connection refused）。
 > 本文所有 IP / 行数 / 状态都是**时点值**，重建容器或跑一轮任务就会变 —— 以 §1.1 的现查命令为准。
 
 ---
