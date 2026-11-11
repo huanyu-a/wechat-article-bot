@@ -908,6 +908,56 @@ curl -s -H "Authorization: Bearer $S" \
 意味着网关全面不可用时最坏要串行试 22 次。这是「模型全都要」的代价；
 若嫌失败路径太长，把不常用的档案置 `enabled=0` 即可缩短，无需改代码。
 
+### A.2.5 2026-11-11：生图能力的真实通路是 magpie 的 MCP，不是 OpenAI 图片协议
+
+**实测结论**：`neohorse-1-9b` **不能**经本项目的 `ImageGenerationService` 生图，原因不在模型，
+而在**协议不对**。项目走的是 OpenAI `POST {baseUrl}/v1/images/generations`，而 Hermes 网关
+（`baseUrl = http://172.17.0.1:8096/hermes/default`）的路由表末尾是：
+
+```js
+app.post("/*", (c) => handleChatCompletions(c, config));   // MemoryProxy/src/server.ts:421
+```
+
+于是图片请求被 catch-all 当 chat 处理。实测对照：
+
+| 请求 | 结果 |
+| --- | --- |
+| `POST /v1/images/generations` + 图片格式（`prompt`/`size`/`n`） | **400 `messages 类型错误`** |
+| `POST /v1/images/generations` + **chat 格式**（`messages`） | **200**，`object: "chat.completion"`（返回文字，不是图） |
+
+网关的白名单辅助端点只有 `count_tokens` / `embeddings` / `completions` / `moderations`，
+**没有 images**。magpie 自己的启动日志也只声明 `OpenAI chat/responses` 与 `Anthropic messages`。
+
+**真正可用的生图通路是 MCP（Streamable HTTP）**：
+
+```
+POST http://127.0.0.1:3425/mcp/magpie/image
+Authorization: Bearer <magpie gateway key>      # caller-keys.json 里的 key
+Content-Type: application/json
+Accept: application/json, text/event-stream
+```
+
+- `initialize` → 返回 `Mcp-Session-Id`（后续请求必须带上）
+- `tools/list` → **`generate_image`** / **`generate_video`** / **`generation_result`**
+- `generate_image` 是**异步**的：先回 `_meta.usemagpie.ai/pending = img_xxx`，再用
+  `generation_result {id}` 轮询（本次约 3 分钟出图）
+
+**本次实测产物**：`nexus/sensenova-u1.5-lite` 生成的 **1024×768 真 PNG，958,299 字节**，
+`mime=image/png`，内容以 `image` 类型内联返回，同时给出 1 小时有效的下载 URL。
+所以「magpie 里没有图片模型」这个初判是**错的**——模型配在 magpie 的
+`Settings → Models → Images → Image generation`，不在 `providers.json` 的 providers 列表里。
+
+> ⚠️ **gateway key 与 web key 不是同一个东西**：magpie web 启动链接里的
+> `?k=magpie-local-...` 是**网页登录 key**，用它打 MCP 会得到
+> `the API key ending in xxxx is not an enabled magpie gateway key`。
+> 真正的 gateway key 在 `/opt/magpie/data/.config/magpie/caller-keys.json`
+> 的 `secret` 字段（本次线上有两个：`clients`、`dsh`）。
+>
+> **连接本项目与 MCP 是一个新功能**（需要在 Java 侧实现 MCP 客户端并把
+> `ArticleMediaTools.generate_image` 从 OpenAI 协议切到 MCP 工具调用），
+> 不是配置调整。当前代码仍是 OpenAI 图片协议，因此**线上生图功能仍是坏的**，
+> 直到有人做这次改造。
+
 ## A.3 ⚠️ 升级前必须对比列长（schema 漂移会直接搞挂生产）
 
 生产库是旧版本代码建的，列长可能和当前实体声明不一致。2026-09-21 替换时实际撞到一次：
