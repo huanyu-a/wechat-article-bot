@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
+import GlobalAssistant from './components/GlobalAssistant.vue'
 import {
   LayoutDashboard, Radio, FileText, Bot, BrainCircuit, Shapes, Users, UserCog, Images, ShieldCheck,
   LogOut, Menu, Search, Sparkles, X, Settings,
@@ -63,5 +64,8 @@ async function logout() { await auth.logout(); router.push('/login') }
       <RouterView />
     </main>
     <button v-if="collapsed" class="floating-menu" @click="collapsed = false"><Menu :size="20" /></button>
+    <!-- 全局助手：非公开、非编辑器页面才挂。编辑器页有它自己的文章级助手，
+         两者同时能写同一篇就是丢更新（见 docs/dev/global-assistant-plan.md §3.2）。-->
+    <GlobalAssistant v-if="!isPublic && !isEditor" />
   </div>
 </template>

@@ -132,6 +132,14 @@ app:
     # 且编辑器单轮可含多次浏览器工具等待（每次最长 90 秒）。停滞的编辑器会话此前无任何护栏，会永久占住
     # 一个并发名额且 TASK_RUN 无记录（现场线程栈实测 79 分钟），超时后释放名额并向浏览器发 error 事件。
     editor-timeout-seconds: ${EDITOR_TIMEOUT_SECONDS:1800}
+  assistant:
+    # 全局助手（docs/dev/global-assistant-plan.md）交互式会话的硬超时（秒）。
+    # 与 llm.editor-timeout-seconds 同量级但独立配置：两条链路的「正常一轮多久」不同
+    # （编辑器一轮通常只改一段文字，助手一轮可能建任务 + 配模型），共用一个旋钮会误伤对方。
+    timeout-seconds: ${ASSISTANT_TIMEOUT_SECONDS:900}
+    # 单轮工具调用上限：一次对话里允许模型发起的工具调用次数。助手要跨域操作（先列文章、
+    # 再读正文、再改几块），比编辑器单篇编辑需要更多次；仍设上限，避免一次对话无限循环。
+    max-tool-calls: ${ASSISTANT_MAX_TOOL_CALLS:30}
   bootstrap:
     admin-username: ${ADMIN_USERNAME:admin}
     # 必须由环境变量注入，**故意不设默认值**（2026-11-10 工程复查 C-1）。

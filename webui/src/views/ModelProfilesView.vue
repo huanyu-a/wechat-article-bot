@@ -3,8 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { api } from '../api'
 import { useAuthStore } from '../stores/auth'
 import {
-  BrainCircuit, ChevronDown, ChevronRight, ImageIcon, Info, Layers, LoaderCircle, Pencil, Plus, RefreshCw,
-  Server, Shield, ShieldCheck, Sparkles, Star, Trash2, TriangleAlert, X,
+  BrainCircuit, ChevronDown, ChevronRight, ImageIcon, Info, Layers, ListChecks, LoaderCircle, Pencil, Plus,
+  RefreshCw, Server, Shield, ShieldCheck, Sparkles, Star, Trash2, TriangleAlert, X,
 } from 'lucide-vue-next'
 
 const auth = useAuthStore()
@@ -381,6 +381,132 @@ function discoverFromProfileModal(){
   discoverModels(providerId, profileModal)
 }
 
+// ── 批量添加（多选）──────────────────────────────────────────────────────────
+// 用户 2026-11-11：加 34 个模型就得重复 34 遍「新增档案 → 获取可用模型 → 选一个」，缺一个批量入口。
+// 后端 POST /api/llm-profiles/batch 逐条建、逐条记账，所以这里的重点不是省请求，而是把两种
+// 结果分开摊给用户：skipped 是幂等（已存在，不算出错），failed 必须逐条带名字与原话，
+// 否则用户只看到「新增 0 个」，还得回去一条条点开核对是哪个模型、卡在哪。
+const batchModal = reactive({
+  open: false, providerId: '', discovering: false, discovered: null, discoverError: '',
+  selected: [], submitting: false, formError: '',
+})
+const batchDialogRef = ref(null)
+
+/**
+ * 该供应商下已有档案的模型名。与单条弹窗的 `profileModelOptions` 用同一份 `modelsOf` 口径，
+ * 不另算一套：这里没有「正在编辑的那条」要豁免，所以只做「取 modelName 去空白」。
+ */
+const batchTaken = computed(() => {
+  const taken = new Set()
+  for (const profile of modelsOf(batchModal.providerId)) {
+    const name = (profile.modelName || '').trim()
+    if (name) taken.add(name)
+  }
+  return taken
+})
+/** 探测结果 + 是否已添加：已添加的要标出来，不能让用户勾了才发现提交只得到 skipped。 */
+const batchOptions = computed(() =>
+  (batchModal.discovered || []).map(name => ({ name, taken: batchTaken.value.has(name) })))
+/** 可勾选项：「全选」与提交都只认这一批，已添加的不再计入。 */
+const batchSelectable = computed(() => batchOptions.value.filter(option => !option.taken))
+
+/**
+ * 打开批量添加。只有一个供应商时直接预选它（绝大多数部署就一个网关），有多个时留空——
+ * 猜错供应商等于把模型建到另一套端点与密钥下，之后得逐条改回来。
+ */
+async function openBatch(){
+  batchModal.providerId = providers.value.length === 1 ? providers.value[0].id : ''
+  batchModal.discovering = false
+  batchModal.discovered = null
+  batchModal.discoverError = ''
+  batchModal.selected = []
+  batchModal.submitting = false
+  batchModal.formError = ''
+  batchModal.open = true
+  captureFocus()
+  await nextTick()
+  // 焦点落在 dialog 自身（tabindex="-1"）：读屏会先播报对话框名称与用途，
+  // 也不像聚焦 select 那样把供应商列表直接弹开。
+  batchDialogRef.value?.focus()
+}
+async function closeBatch(){
+  batchModal.open = false
+  batchModal.formError = ''
+  await restoreFocus()
+}
+/** 换供应商＝换一整套端点与密钥：旧的探测结果与勾选全部作废，免得把 A 家的模型名提交到 B 家。 */
+function onBatchProviderChange(){
+  batchModal.discovered = null
+  batchModal.discoverError = ''
+  batchModal.selected = []
+  batchModal.formError = ''
+}
+async function discoverForBatch(){
+  if (!batchModal.providerId) { batchModal.discoverError = '请先选择供应商'; return }
+  await discoverModels(batchModal.providerId, batchModal)
+  // 探测结果换了：把勾选收紧到「此刻仍可选」的范围——期间被别的管理员建过的模型不能继续挂着，
+  // 否则提交上去只是凑一个 skipped。
+  const selectable = new Set(batchSelectable.value.map(option => option.name))
+  batchModal.selected = batchModal.selected.filter(name => selectable.has(name))
+}
+function toggleBatchModel(name){
+  batchModal.selected = batchModal.selected.includes(name)
+    ? batchModal.selected.filter(item => item !== name)
+    : [...batchModal.selected, name]
+}
+/** 全选只勾「还能加的」：已添加的勾上再提交只会得到 skipped，是个假动作。 */
+function selectAllBatch(){ batchModal.selected = batchSelectable.value.map(option => option.name) }
+function clearBatchSelection(){ batchModal.selected = [] }
+
+/** 提交按钮文案带选中数量：用户不用回头数勾了几个。 */
+const batchSubmitLabel = computed(() => batchModal.submitting
+  ? `提交中…（${batchModal.selected.length}）`
+  : `添加选中（${batchModal.selected.length}）`)
+
+/**
+ * 提交批量添加。只要请求本身成功（哪怕有逐条失败）就关弹窗并刷新列表：后端的
+ * created/skipped/failed 是一份完整账，播报到页面上比留在弹窗里更有用——用户接着就能在
+ * 列表里看到新增的档案。失败项写进 `error`，与 summary 同时可见，不会被「新增 N 个」盖掉。
+ */
+async function submitBatch(){
+  batchModal.formError = ''
+  if (!batchModal.providerId) { batchModal.formError = '请先选择供应商'; return }
+  const modelNames = [...batchModal.selected]
+  if (!modelNames.length) { batchModal.formError = '请至少勾选一个模型'; return }
+  // 后端单次上限 200（超出整批被拒）：提前拦住并说清办法，别让用户对着一条 400 猜。
+  if (modelNames.length > 200) {
+    batchModal.formError = `一次最多提交 200 个模型（当前已选 ${modelNames.length} 个），请分批添加`
+    return
+  }
+  const providerId = batchModal.providerId
+  batchModal.submitting = true
+  error.value = ''; message.value = ''
+  try {
+    const data = await api('/api/llm-profiles/batch', {
+      method: 'POST', body: JSON.stringify({ providerId: Number(providerId), modelNames }),
+    })
+    // createdCount 是后端口径；字段缺失时退回 created 长度，不把「拿到了名单却说 0 个」渲染给用户
+    const created = Number(data?.createdCount ?? (Array.isArray(data?.created) ? data.created.length : 0))
+    const skipped = Array.isArray(data?.skipped) ? data.skipped : []
+    const failed = Array.isArray(data?.failed) ? data.failed : []
+    await closeBatch()
+    await load()
+    // 刚加的模型挂在刚选的供应商下：顺手展开它，用户能立刻核对，不用自己再点一次折叠箭头。
+    expandedKey.value = `provider-${providerId}`
+    const summary = [`新增 ${created} 个`]
+    if (skipped.length) summary.push(`已存在 ${skipped.length} 个`)
+    message.value = `批量添加完成：${summary.join('，')}`
+    // 失败要逐条给名字与原话：一句「部分失败」会把排查成本全推回给用户
+    if (failed.length) {
+      error.value = `${failed.length} 个模型未能创建：${failed.map(item => `${item.modelName}（${item.message}）`).join('；')}`
+    }
+  } catch (e) {
+    batchModal.formError = e.message
+  } finally {
+    batchModal.submitting = false
+  }
+}
+
 // ── 供应商 ───────────────────────────────────────────────────────────────────
 function openProvider(provider){
   providerFormError.value = ''
@@ -560,13 +686,14 @@ function onKeydown(event){
   if (modelSuggest.open) { closeModelSuggest(); return }
   if (profileModal.open) closeProfile()
   else if (providerModal.open) closeProvider()
+  else if (batchModal.open) closeBatch()
 }
 /**
  * F5：弹窗打开时把背景设为 `inert`——遮罩是 `position:fixed` 的全屏层，但 DOM 上排在列表之后，
  * 不 inert 的话 Tab 会继续走进被遮住的控件（焦点不可见）。
- * 只 inert 弹窗之外的兄弟节点，弹窗自身留在可交互区；两个弹窗不会同时打开。
+ * 只 inert 弹窗之外的兄弟节点，弹窗自身留在可交互区；三个弹窗（供应商 / 模型档案 / 批量添加）不会同时打开。
  */
-const anyModalOpen = computed(() => providerModal.open || profileModal.open)
+const anyModalOpen = computed(() => providerModal.open || profileModal.open || batchModal.open)
 function setBackgroundInert(active){
   const shell = document.querySelector('.page-content')
   if (!shell) return
@@ -589,7 +716,13 @@ onBeforeUnmount(()=>{document.removeEventListener('keydown',onKeydown);setBackgr
         <h2>模型档案</h2>
         <p>端点与密钥按供应商填写，一个供应商下挂多个模型。切换顺序：智能体绑定档案 → 默认档案 → 兜底档案 → 其余已启用档案。</p>
       </div>
-      <button v-if="isAdmin" class="primary-button" @click="openProvider()"><Plus :size="16"/>新增供应商</button>
+      <!-- 批量添加与「新增供应商」并列。.section-heading 是 space-between，直接塞两个按钮会被
+           分到标题两侧，所以套一层现成的 flex 行 .llm-discover-row（gap 8）；本页没有 <style> 块，
+           按约定不新增样式。用户 2026-11-11：一次只能加一个模型，34 个模型点了 34 遍。 -->
+      <div v-if="isAdmin" class="llm-discover-row">
+        <button class="secondary-button" @click="openBatch()"><ListChecks :size="16"/>批量添加</button>
+        <button class="primary-button" @click="openProvider()"><Plus :size="16"/>新增供应商</button>
+      </div>
     </div>
 
     <div v-if="error" class="alert error" role="alert">{{error}}</div>
@@ -846,6 +979,76 @@ onBeforeUnmount(()=>{document.removeEventListener('keydown',onKeydown);setBackgr
         <div class="form-actions">
           <button type="button" class="secondary-button" @click="closeProfile">取消</button>
           <button class="primary-button" :disabled="profileSaving"><LoaderCircle v-if="profileSaving" class="spin" :size="15"/>{{ profileSaving?'保存中…':'保存档案' }}</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- 批量添加（多选）：选供应商 → 获取可用模型 → 勾选 → 一次提交。
+         后端逐条建、逐条记账，所以「已存在」与「失败」是两种结果，界面必须分开呈现。
+         只沿用本页已有的弹窗/表单类，不新增样式（本文件没有 <style> 块）。 -->
+    <div v-if="batchModal.open" class="modal-backdrop" @click.self="closeBatch">
+      <form ref="batchDialogRef" class="modal-card wide" role="dialog" aria-modal="true" aria-label="批量添加模型档案" tabindex="-1" @submit.prevent="submitBatch">
+        <header>
+          <div><span class="eyebrow">BULK ADD</span><h3>批量添加模型档案</h3></div>
+          <button type="button" class="icon-button" title="关闭" aria-label="关闭批量添加" :disabled="batchModal.submitting" @click="closeBatch"><X :size="19"/></button>
+        </header>
+        <p class="agent-section-hint">一次为同一个供应商勾选多个模型名：提交后每个模型各建一条档案（档案名称就是模型名）。</p>
+        <div v-if="batchModal.formError" class="alert error" role="alert">{{ batchModal.formError }}</div>
+        <div v-if="!providers.length" class="alert error" role="status">
+          还没有供应商。模型必须挂在供应商下——请先关闭本窗口，点「新增供应商」填好 Base URL 与 API Key，再回来批量添加。
+        </div>
+        <div class="form-grid">
+          <label class="full">供应商
+            <select v-model="batchModal.providerId" :disabled="!providers.length || batchModal.submitting" @change="onBatchProviderChange">
+              <option value="">请选择供应商</option>
+              <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}{{ provider.enabled === true ? '' : '（已停用）' }}</option>
+            </select>
+            <small>与单条新增共用同一份供应商列表；停用的供应商也能添加模型，但它的模型不会进入故障切换链。</small>
+          </label>
+          <!-- 探测按钮不放进 <label>：label 内嵌按钮是无效嵌套，点按钮会被 label 转成「聚焦输入框」。 -->
+          <div class="full llm-discover-row">
+            <button type="button" class="secondary-button" :disabled="!batchModal.providerId || batchModal.discovering || batchModal.submitting"
+              :title="batchModal.providerId ? '用该供应商的端点与密钥拉取模型列表' : '请先选择供应商'" @click="discoverForBatch">
+              <LoaderCircle v-if="batchModal.discovering" class="spin" :size="15"/><RefreshCw v-else :size="15"/>获取可用模型
+            </button>
+            <span v-if="batchModal.discoverError" class="llm-discover-status is-error">{{ batchModal.discoverError }}</span>
+            <span v-else-if="batchModal.discovered" class="llm-discover-status is-ok">
+              <template v-if="batchSelectable.length">已获取 {{ batchModal.discovered.length }} 个模型，{{ batchModal.discovered.length - batchSelectable.length }} 个已添加，还有 {{ batchSelectable.length }} 个可选</template>
+              <template v-else>已获取 {{ batchModal.discovered.length }} 个模型，但它们都添加过了</template>
+            </span>
+            <span v-else class="llm-discover-status">用供应商已保存的端点与密钥拉取；失败不影响已经勾好的内容</span>
+          </div>
+          <!-- 按 AgentsView 的多选卡片写法复用 .agent-section + .tool-group-grid/.tool-group-option，
+               不新增样式；已添加的照样列出来，只是标「已添加」并禁用——眼不见为净会让用户以为
+               供应商那边漏了模型，实际上是自己建过档案了。 -->
+          <div class="full agent-section">
+            <span class="agent-section-title">选择要添加的模型</span>
+            <p class="agent-section-hint">该供应商下已有的模型会标成「已添加」且不可勾选——同一供应商下一个模型只能有一条档案，再提交只会被后端跳过。</p>
+            <div v-if="batchOptions.length" class="tool-group-grid" role="group" aria-label="可批量添加的模型">
+              <label v-for="option in batchOptions" :key="option.name" class="tool-group-option"
+                :class="{ active: !option.taken && batchModal.selected.includes(option.name) }">
+                <input type="checkbox" :checked="batchModal.selected.includes(option.name)"
+                  :disabled="option.taken || batchModal.submitting"
+                  :aria-label="`模型 ${option.name}${option.taken ? '（已添加，不可重复添加）' : ''}`"
+                  @change="toggleBatchModel(option.name)">
+                <span class="tool-group-copy"><strong>{{ option.name }}<span v-if="option.taken" class="status-pill">已添加</span></strong></span>
+              </label>
+            </div>
+            <p v-else-if="batchModal.discovered" class="agent-section-hint">该供应商返回的模型都已经建过档案了，没有可以批量添加的。</p>
+            <p v-else-if="batchModal.discoverError" class="agent-section-hint">没有拿到可勾选的模型列表：{{ batchModal.discoverError }}（可以重试，或直接关闭窗口）</p>
+            <p v-else class="agent-section-hint">还没有探测结果：先选供应商，再点上面的「获取可用模型」。</p>
+          </div>
+          <div class="full llm-discover-row">
+            <button type="button" class="secondary-button" :disabled="!batchSelectable.length || batchModal.submitting" @click="selectAllBatch">全选</button>
+            <button type="button" class="secondary-button" :disabled="!batchModal.selected.length || batchModal.submitting" @click="clearBatchSelection">取消全选</button>
+            <span class="llm-discover-status">已选 {{ batchModal.selected.length }} 个；全选只作用于还没添加过的模型</span>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="secondary-button" :disabled="batchModal.submitting" @click="closeBatch">取消</button>
+          <button class="primary-button" :disabled="batchModal.submitting || !batchModal.selected.length">
+            <LoaderCircle v-if="batchModal.submitting" class="spin" :size="15"/>{{ batchSubmitLabel }}
+          </button>
         </div>
       </form>
     </div>

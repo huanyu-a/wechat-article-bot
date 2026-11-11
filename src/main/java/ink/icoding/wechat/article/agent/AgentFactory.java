@@ -37,6 +37,8 @@ public class AgentFactory {
     public static final String CODE_ILLUSTRATOR = "builtin_illustrator";
     public static final String CODE_REVIEWER = "builtin_reviewer";
     public static final String CODE_CHIEF = "builtin_chief";
+    /** 全局助手（任意页面可用、服务端工具、按角色裁剪）。 */
+    public static final String CODE_ASSISTANT = "builtin_assistant";
 
     private final AgentDefinitionMapper definitionMapper;
     private final LlmProfileService llmProfileService;
@@ -123,6 +125,13 @@ public class AgentFactory {
      */
     public List<LabeledAgent> buildLabeledCandidates(AgentDefinition definition, SkillContext skillContext,
                                                      SkillPromptResult preAssembled, ToolResolver resolver) {
+        return buildLabeledCandidates(definition, skillContext, preAssembled, resolver, null);
+    }
+
+    /** 同上，链首可指定为用户选中的档案（{@code null} 表示按定义绑定）。 */
+    public List<LabeledAgent> buildLabeledCandidates(AgentDefinition definition, SkillContext skillContext,
+                                                     SkillPromptResult preAssembled, ToolResolver resolver,
+                                                     Long preferredProfileId) {
         if (definition == null) throw new BusinessException("智能体定义不存在");
         if (!Boolean.TRUE.equals(definition.getEnabled())) {
             throw new BusinessException("智能体「" + definition.getName() + "」已停用");
@@ -133,7 +142,7 @@ public class AgentFactory {
         String description = assembleDescription(definition, skillContext, preAssembled);
         List<Tool> tools = resolveTools(definition, resolver);
         List<LabeledAgent> candidates = new java.util.ArrayList<>();
-        for (ModelCandidate candidate : createModelCandidates(definition)) {
+        for (ModelCandidate candidate : createModelCandidates(definition, preferredProfileId)) {
             candidates.add(new LabeledAgent(
                     assemble(definition, description, tools, candidate.model()), candidate.label()));
         }
@@ -156,9 +165,23 @@ public class AgentFactory {
                                                            SkillContext skillContext,
                                                            SkillPromptResult preAssembled,
                                                            ToolResolver resolver) {
+        return buildLabeledCandidatesByCode(code, fallbackStage, skillContext, preAssembled, resolver, null);
+    }
+
+    /**
+     * 同上，但可用 {@code preferredProfileId} **指定链首档案**（全局助手的「模型选择」）。
+     *
+     * <p>语义是「把这条档案当作绑定档案」，而不是「只用这条档案」：后续仍是
+     * 默认 → 兜底 → 其余已启用的故障切换链。用户选了一个模型，不该因此失去「它挂了自动换一个」
+     * 的能力——那正是这条链存在的理由。真正的「只用这一个」在链的语义里没有意义。
+     */
+    public List<LabeledAgent> buildLabeledCandidatesByCode(String code, String fallbackStage,
+                                                           SkillContext skillContext,
+                                                           SkillPromptResult preAssembled,
+                                                           ToolResolver resolver, Long preferredProfileId) {
         AgentDefinition definition = definitionMapper.findByCode(code);
         if (definition != null && Boolean.TRUE.equals(definition.getEnabled())) {
-            return buildLabeledCandidates(definition, skillContext, preAssembled, resolver);
+            return buildLabeledCandidates(definition, skillContext, preAssembled, resolver, preferredProfileId);
         }
         log.warn("智能体定义 {} 不存在或已停用，故障切换候选退化为内置默认装配（stage={}）", code, fallbackStage);
         SkillPromptResult skillPrompt = preAssembled == null
@@ -167,7 +190,7 @@ public class AgentFactory {
         List<Tool> resolved = resolver == null ? List.of() : resolver.resolve(defaultGroupsFor(fallbackStage));
         List<Tool> tools = resolved == null ? List.of() : resolved;
         List<LabeledAgent> candidates = new java.util.ArrayList<>();
-        for (ModelCandidate candidate : createModelCandidates(null)) {
+        for (ModelCandidate candidate : createModelCandidates(null, preferredProfileId)) {
             candidates.add(new LabeledAgent(assemble("墨舟智能体", description, tools, candidate.model()),
                     candidate.label()));
         }
@@ -202,8 +225,23 @@ public class AgentFactory {
      * 链为空时退回 {@link #createModel} 的「默认档案 → llm_config」路径，保证存量行为不变。
      */
     public List<ModelCandidate> createModelCandidates(AgentDefinition definition) {
+        return createModelCandidates(definition, null);
+    }
+
+    /**
+     * 故障切换候选模型；{@code preferredProfileId} 非空时**取代**定义里的绑定。
+     *
+     * <p>指定了却不存在的档案会抛错，而不是静默回落到默认档案：用户明确选了「A」，
+     * 系统却悄悄用「B」跑完并给出正确答案，是最难排查的一类不一致（他以为改的是 A 的配置）。
+     */
+    public List<ModelCandidate> createModelCandidates(AgentDefinition definition, Long preferredProfileId) {
         LlmProfile bound = null;
-        if (definition != null && definition.getLlmProfileId() != null) {
+        if (preferredProfileId != null) {
+            bound = llmProfileService.findById(preferredProfileId);
+            if (bound == null) {
+                throw new BusinessException("所选模型档案不存在或已被删除，请在助手面板重新选择");
+            }
+        } else if (definition != null && definition.getLlmProfileId() != null) {
             bound = llmProfileService.findById(definition.getLlmProfileId());
             if (bound == null) {
                 log.warn("智能体 {} 绑定的模型档案 {} 已删除，按未绑定处理",
@@ -257,6 +295,11 @@ public class AgentFactory {
                     ToolRegistry.DRAFT_WRITE);
             case "REVIEW" -> List.of(ToolRegistry.DRAFT_READ, ToolRegistry.MEDIA, ToolRegistry.REVIEW);
             case "COORDINATE" -> List.of(ToolRegistry.DELEGATE, ToolRegistry.DRAFT_READ);
+            // 全局助手兜底：声明全部四组。**这里只是兜底默认，不是授权**——
+            // 实际暴露给模型的是「这四组 ∩ 角色允许组」（AssistantRolePolicy.intersect），
+            // 定义缺失时也不能因为兜底就把管理员专属组发给编辑/只读角色。
+            case "ASSISTANT" -> List.of(ToolRegistry.ASSISTANT_READ, ToolRegistry.ASSISTANT_ARTICLE_WRITE,
+                    ToolRegistry.ASSISTANT_TASK, ToolRegistry.ASSISTANT_MODEL);
             default -> List.of(ToolRegistry.DRAFT_READ, ToolRegistry.DRAFT_WRITE, ToolRegistry.MEDIA);
         };
     }

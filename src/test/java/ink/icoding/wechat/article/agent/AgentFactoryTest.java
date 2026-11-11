@@ -172,6 +172,86 @@ class AgentFactoryTest {
                 .hasMessageContaining("模型档案");
     }
 
+    // ---------------------------------------------------------------- 指定链首档案（助手模型选择）
+
+    /**
+     * 指定档案要**取代**定义里的绑定，成为链首。
+     *
+     * <p>这条是「助手面板选模型」能不能成立的核心：面板把用户选的档案 id 传进来，
+     * 最终 {@code AgentClient} 拿到的手必须出自那条档案。只验接口回显是不够的——
+     * 回显对、装配没换，用户会以为换成功了。
+     */
+    @Test
+    void preferredProfileBecomesTheFirstCandidate() {
+        LlmProfile chosen = storedProfile(7L, "用户选的档案", "chosen-model");
+        AgentDefinition definition = definition("builtin_assistant", "ASSISTANT", "人设", null);
+        // 定义原本绑定 99L：给出偏好后必须完全忽略它
+        definition.setLlmProfileId(99L);
+
+        when(llmProfileService.findById(7L)).thenReturn(chosen);
+        when(llmProfileService.failoverChain(chosen)).thenReturn(List.of(chosen));
+        when(llmProfileService.runtime(chosen)).thenReturn(runtime("OPENAI_COMPATIBLE",
+                "https://chosen.example.test", "chosen-model", "sk-chosen"));
+
+        List<AgentFactory.ModelCandidate> candidates = factory.createModelCandidates(definition, 7L);
+
+        assertThat(candidates).hasSize(1);
+        assertThat(candidates.get(0).label()).isEqualTo("用户选的档案/chosen-model");
+        // 定义为助手绑定的 99L 完全没有被使用（否则会去 findById(99)）
+        org.mockito.Mockito.verify(llmProfileService, org.mockito.Mockito.never()).findById(99L);
+    }
+
+    /**
+     * 指定了却不存在：必须抛业务错误，**不能**静默回落到默认档案。
+     *
+     * <p>用户明确点了 A，系统悄悄用 B 跑完并给出正确答案，是最难排查的一类不一致。
+     */
+    @Test
+    void preferredProfileThatNoLongerExistsIsRejected() {
+        AgentDefinition definition = definition("builtin_assistant", "ASSISTANT", "人设", null);
+        when(llmProfileService.findById(12345L)).thenReturn(null);
+
+        assertThatThrownBy(() -> factory.createModelCandidates(definition, 12345L))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("重新选择");
+    }
+
+    /**
+     * 指定链首不等于「只用它」：链上其余档案仍在候选里（故障切换能力不能因为选了模型而丢失）。
+     */
+    @Test
+    void preferredProfileKeepsTheFailoverChainBehindIt() {
+        LlmProfile chosen = storedProfile(7L, "用户选的档案", "chosen-model");
+        LlmProfile backup = storedProfile(8L, "兜底档案", "backup-model");
+        AgentDefinition definition = definition("builtin_assistant", "ASSISTANT", "人设", null);
+
+        when(llmProfileService.findById(7L)).thenReturn(chosen);
+        when(llmProfileService.failoverChain(chosen)).thenReturn(List.of(chosen, backup));
+        when(llmProfileService.runtime(chosen)).thenReturn(runtime("OPENAI_COMPATIBLE",
+                "https://chosen.example.test", "chosen-model", "sk-chosen"));
+        when(llmProfileService.runtime(backup)).thenReturn(runtime("OPENAI_COMPATIBLE",
+                "https://backup.example.test", "backup-model", "sk-backup"));
+
+        List<AgentFactory.ModelCandidate> candidates = factory.createModelCandidates(definition, 7L);
+
+        assertThat(candidates).extracting(AgentFactory.ModelCandidate::label).containsExactly(
+                "用户选的档案/chosen-model", "兜底档案/backup-model");
+    }
+
+    private static LlmProfile storedProfile(Long id, String name, String modelName) {
+        LlmProfile profile = new LlmProfile();
+        profile.setId(id);
+        profile.setName(name);
+        profile.setModelName(modelName);
+        return profile;
+    }
+
+    private static LlmProfileService.RuntimeProfile runtime(String provider, String baseUrl,
+                                                           String modelName, String apiKey) {
+        return new LlmProfileService.RuntimeProfile(true, provider, baseUrl, modelName, apiKey,
+                null, null, false, null);
+    }
+
     @Test
     void llmConfigFallbackWhenNoProfilesExist() {
         when(definitionMapper.findByCode("builtin_writer"))

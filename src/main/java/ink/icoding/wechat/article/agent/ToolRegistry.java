@@ -27,6 +27,27 @@ public class ToolRegistry {
     public static final String DELEGATE = "DELEGATE";
     public static final String RENDER = "RENDER";
 
+    /**
+     * 全局助手工具组（docs/dev/global-assistant-plan.md §4.3）。
+     *
+     * <p>与上面各组的根本区别：这些组里的工具**全部在服务端执行**，作用于数据库而不作用于浏览器文档，
+     * 因此不需要「编辑器页面开着」这个前提，可以在任意页面被调用。
+     *
+     * <p>为什么不复用 DRAFT_READ / DRAFT_WRITE：那两组绑定 {@code TaskWorkspace}（定时任务某一次运行
+     * 专属的草稿对象）；全局助手面向的是**已落库的文章**，要的是 {@code ArticleService} 的乐观锁与版本快照。
+     * 共用组键会让两套完全不同的写路径互相冒充。
+     *
+     * <p>授权不在这里：本表只声明「组内有哪些工具」，**按角色裁剪在 AssistantRolePolicy 里**。
+     */
+    public static final String ASSISTANT_READ = "ASSISTANT_READ";
+    public static final String ASSISTANT_ARTICLE_WRITE = "ASSISTANT_ARTICLE_WRITE";
+    public static final String ASSISTANT_TASK = "ASSISTANT_TASK";
+    public static final String ASSISTANT_MODEL = "ASSISTANT_MODEL";
+
+    /** 全局助手四组的组键（角色策略与装配点共用的唯一枚举源）。 */
+    public static final java.util.List<String> ASSISTANT_GROUPS = java.util.List.of(
+            ASSISTANT_READ, ASSISTANT_ARTICLE_WRITE, ASSISTANT_TASK, ASSISTANT_MODEL);
+
     private static final Map<String, Group> GROUPS = buildGroups();
 
     private static Map<String, Group> buildGroups() {
@@ -53,6 +74,32 @@ public class ToolRegistry {
                 List.of("delegate_research", "delegate_writing", "delegate_illustration", "delegate_review")));
         groups.put(RENDER, new Group(RENDER, "渲染式排版", false, "MarkFlow 渲染（编辑器链路）",
                 List.of("render_markflow")));
+        // 全局助手四组（docs/dev/global-assistant-plan.md）。**按角色裁剪在代码里**（AssistantRolePolicy），
+        // 本表只声明「组内有哪些工具」，不承担授权职责——把两者混在一处会让「加了工具」等于「给了权限」。
+        groups.put(ASSISTANT_READ, new Group(ASSISTANT_READ, "助手·只读", false,
+                "列出与读取文章、公众号、技能、智能体",
+                List.of("list_articles", "read_article", "read_article_blocks", "list_article_revisions",
+                        "list_accounts", "list_skills", "list_agents", "read_agent", "read_skill")));
+        groups.put(ASSISTANT_ARTICLE_WRITE, new Group(ASSISTANT_ARTICLE_WRITE, "助手·文章编辑", false,
+                "新建文章，按内容块改写正文与元信息（服务端写库，带乐观锁与版本快照）",
+                List.of("create_article", "update_article_meta", "insert_article_blocks",
+                        "replace_article_blocks", "delete_article_blocks",
+                        "rollback_article_revision", "rerender_article", "delete_article")));
+        groups.put(ASSISTANT_TASK, new Group(ASSISTANT_TASK, "助手·定时任务", false,
+                "查询、新建、修改定时任务与运行记录（不含删除）",
+                List.of("list_schedule_tasks", "list_task_runs", "create_schedule_task",
+                        "update_schedule_task", "set_schedule_task_enabled", "run_schedule_task_now",
+                        "delete_schedule_task")));
+        // 组键沿用 ASSISTANT_MODEL：它已经写在内置助手定义的 tool_keys 里，改名会让库里的授权失配。
+        // 扩的是这个组「管什么」——模型档案与智能体/技能配置同属系统配置，且都只给 ADMIN。
+        groups.put(ASSISTANT_MODEL, new Group(ASSISTANT_MODEL, "助手·系统配置", false,
+                "模型供应商与档案、智能体增删改与模型绑定、技能维护（**不含密钥参数**）",
+                List.of("list_llm_providers", "list_llm_profiles", "discover_llm_models",
+                        "create_llm_provider", "update_llm_provider", "delete_llm_provider",
+                        "create_llm_profile", "update_llm_profile", "delete_llm_profile",
+                        "set_default_llm_profile", "set_fallback_llm_profile", "set_agent_model",
+                        "create_agent", "update_agent", "duplicate_agent", "delete_agent",
+                        "create_skill", "update_skill", "duplicate_skill", "delete_skill")));
         return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(groups));
     }
 

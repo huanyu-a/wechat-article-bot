@@ -46,6 +46,18 @@ public class LlmProfileController {
         return ApiResponse.ok(service.create(request, currentUserService.required().id()));
     }
 
+    /**
+     * 批量建档案：一次把某个供应商探测到的模型全加进来。
+     *
+     * <p>逐条建、逐条记账（见 {@link LlmProfileService#batchCreate}）：34 个模型里有一条撞名，
+     * 不该让另外 33 条一起失败。
+     */
+    @PostMapping("/batch")
+    public ApiResponse<LlmProfileService.BatchResult> batchCreate(
+            @Valid @RequestBody LlmProfileService.BatchRequest request) {
+        return ApiResponse.ok(service.batchCreate(request, currentUserService.required().id()));
+    }
+
     @PutMapping("/{id}")
     public ApiResponse<LlmProfileService.ProfileView> update(
             @PathVariable Long id, @Valid @RequestBody LlmProfileService.ProfileRequest request) {

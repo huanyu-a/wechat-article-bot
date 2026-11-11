@@ -24,6 +24,12 @@ import java.util.Locale;
 
 /**
  * 回放守卫的<b>网线级兜底</b>：在请求真正发出之前，直接修正 JSON 报文里缺失的工具调用 id。
+
+<p><b>2026-11-11 在 agent4j 2.4.0 上复验</b>：把本类关掉跑工具轮次（单条与一轮两条工具调用
+各一次），抓到的出站报文里 {@code tool_calls[].id} 与 {@code tool_call_id} 均齐全且逐一对齐，
+报文长度与开启时完全一致——说明 2.4.0 已不再产生本类要修的那两类违规。
+保留而不是删除：它在无违规时<b>原样放行</b>（{@code intercept} 里 {@code normalized.equals(original)}
+直接 {@code proceed}），代价只是一次 JSON 解析；而一旦某个模型又回放出缺 id 的历史，没有它就会整轮 400。
  *
  * <h2>为什么轮内钩子不够（本类存在的全部理由）</h2>
  * {@link ToolCallArgumentGuard} 包装 {@code ToolExecutor}，在每次工具执行<b>前</b>归一化

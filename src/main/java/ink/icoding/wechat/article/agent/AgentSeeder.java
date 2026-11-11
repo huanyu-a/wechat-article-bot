@@ -171,7 +171,16 @@ public class AgentSeeder implements ApplicationRunner {
                         List.of(ToolRegistry.DRAFT_READ, ToolRegistry.MEDIA, ToolRegistry.REVIEW),
                         List.of("fact_check_default"), "glm-5.3-flash"),
                 new Seed("builtin_chief", "builtin_chief", "主编（协调者）", "COORDINATE", CHIEF_PERSONA,
-                        List.of(ToolRegistry.DELEGATE, ToolRegistry.DRAFT_READ), List.of(), "glm-5.3-flash"));
+                        List.of(ToolRegistry.DELEGATE, ToolRegistry.DRAFT_READ), List.of(), "glm-5.3-flash"),
+                // 全局助手（docs/dev/global-assistant-plan.md）：声明全部四组，**按角色裁剪在
+                // AssistantRolePolicy**——用户只是编辑器角色时，装配点取「声明 ∩ 允许」，写组根本不会实例化。
+                // 这里声明四组的理由是「定义是能力的上界，角色是下界」；若声明处就按某个角色裁剪，
+                // 以后授权收紧/放开都得改内置种子的数据，而数据改动是不可回滚的历史。
+                new Seed("builtin_assistant", "builtin_assistant", "墨舟全局助手", "ASSISTANT",
+                        ASSISTANT_PERSONA,
+                        List.of(ToolRegistry.ASSISTANT_READ, ToolRegistry.ASSISTANT_ARTICLE_WRITE,
+                                ToolRegistry.ASSISTANT_TASK, ToolRegistry.ASSISTANT_MODEL),
+                        List.of(), "deepseek-flash"));
     }
 
     static final String EDITOR_PERSONA = """
@@ -263,5 +272,28 @@ public class AgentSeeder implements ApplicationRunner {
             - 委托时给出完整上下文：任务要求、已知信息、期望产出，不要只说「去调研一下」。
             - 审核意见要回到撰稿人手里，返工后再复审；确认无误才收工。
             - 全程关注预算：能不委托就不委托，能用一次调研解决的不要拆成三次。
+            """;
+
+    static final String ASSISTANT_PERSONA = """
+            你是墨舟的项目助手，服务于一位内容运营者。你可以在任意页面被打开，处理跨文章、定时任务与模型档案的项目级请求。
+
+            工作定位：你是这位运营者唯一常驻的助手，熟悉这个项目的对象与规则，替他把「零散的调整」落到服务端数据上。
+            你既能读（找文章、看任务、查模型档案），也能写（改标题摘要、按块改正文、建/改定时任务），但只在被要求时动手。
+
+            工作方式：
+            - 先确认对象与范围再动手：哪一篇文章、哪个任务、改哪一部分；含糊时先问一句，不要自行扩大范围。
+            - 改动取最小必要：只改用户点名的地方，不顺手重排全文、不改没提到的字段。
+            - 不确定时先读再问：读最新的内容与版本号，读不到或判断不了就说明情况，不要猜着写。
+            - 写操作前先读取目标对象拿最新版本；写完只在收到成功结果后才说「已改好」。
+
+            沟通风格：
+            - 简洁中文，先说结论再列改动点（改了哪个对象、哪个字段、改成了什么）。
+            - 不复述工具调用过程，不贴大段原始 JSON。
+            - 做不到的事直接说做不到，并告诉用户去哪个页面做。
+
+            边界：
+            - 不代替用户做发布决定：不发布、不同步微信、不删除任何对象。
+            - 不臆造数据：不编造文章内容、统计数字或模型名；需要事实时先读或先问。
+            - 密钥不进对话：不接收也不回显任何 API Key。
             """;
 }

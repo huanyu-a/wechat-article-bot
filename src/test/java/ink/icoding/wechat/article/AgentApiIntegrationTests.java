@@ -90,7 +90,7 @@ class AgentApiIntegrationTests {
                 .andExpect(jsonPath("$.success").value(true));
         mockMvc.perform(get("/api/agents/tool-groups").header("Authorization", viewer))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(8));
+                .andExpect(jsonPath("$.data.length()").value(12));
         mockMvc.perform(get("/api/tasks/execution-modes").header("Authorization", admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(3));
@@ -127,11 +127,12 @@ class AgentApiIntegrationTests {
                 .andExpect(jsonPath("$.data[?(@.code=='builtin_writer')]").exists())
                 .andExpect(jsonPath("$.data[?(@.code=='builtin_illustrator')]").exists())
                 .andExpect(jsonPath("$.data[?(@.code=='builtin_reviewer')]").exists())
-                .andExpect(jsonPath("$.data[?(@.code=='builtin_chief')]").exists());
+                .andExpect(jsonPath("$.data[?(@.code=='builtin_chief')]").exists())
+                .andExpect(jsonPath("$.data[?(@.code=='builtin_assistant')]").exists());
 
         Long count = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM AGENT_DEFINITION WHERE IS_BUILTIN = 1", Long.class);
-        assertThat(count).isEqualTo(7L);
+        assertThat(count).isEqualTo(8L);
     }
 
     @Test

@@ -29,11 +29,14 @@ class ToolRegistryTest {
     }
 
     @Test
-    void groupsCoverAllEightKeys() {
+    void groupsCoverEveryDeclaredKey() {
+        // 显式列全：新增工具组必须同步到这里，否则「组名写错 = 工具静默消失」没人发现
         assertThat(registry.groupKeys()).containsExactlyInAnyOrder(
                 ToolRegistry.BROWSER_EDITOR, ToolRegistry.MEDIA, ToolRegistry.DRAFT_READ,
                 ToolRegistry.DRAFT_WRITE, ToolRegistry.RESEARCH, ToolRegistry.REVIEW,
-                ToolRegistry.DELEGATE, ToolRegistry.RENDER);
+                ToolRegistry.DELEGATE, ToolRegistry.RENDER,
+                ToolRegistry.ASSISTANT_READ, ToolRegistry.ASSISTANT_ARTICLE_WRITE,
+                ToolRegistry.ASSISTANT_TASK, ToolRegistry.ASSISTANT_MODEL);
     }
 
     @Test
@@ -136,7 +139,7 @@ class ToolRegistryTest {
     @Test
     void protocolByStageCoversAllStages() {
         for (String stage : List.of("EDITOR", "SCHEDULED_SINGLE", "RESEARCH", "WRITING",
-                "ILLUSTRATION", "REVIEW", "COORDINATE")) {
+                "ILLUSTRATION", "REVIEW", "COORDINATE", "ASSISTANT")) {
             assertThat(AgentProtocols.byStage(stage)).isNotBlank();
         }
         // 未知 stage 回落 SCHEDULED_SINGLE，保证自定义 stage 可用

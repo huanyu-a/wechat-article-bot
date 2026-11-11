@@ -61,6 +61,28 @@ public class ScheduleTaskService {
         return required(id);
     }
 
+    /**
+     * 只切换启用状态（启动 / 停止调度），不碰其它字段。
+     *
+     * <p><b>为什么不能让前端复用 {@link #update}</b>：它要求整份 {@link TaskRequest}
+     * （name、cron、aiPrompt 都是 {@code @NotBlank}）。让「点一下开关」去提交整张表单，
+     * 少一个字段就被拒；更糟的是前端得先读再整体回写，一旦读漏一个字段就会把它静默清空。
+     * 启停是一个字段的操作，就应该只有一个字段的接口。
+     *
+     * <p>启用前要重新校验「还有没有未来触发时间」：一个 2025 年的 cron 停用后再启用，
+     * 若直接注册进 Quartz，它永远不会触发，用户却以为已经跑起来了。
+     */
+    @Transactional
+    public ScheduleTask setEnabled(Long id, boolean enabled) {
+        ScheduleTask task = required(id);
+        if (enabled) requireFutureFire(task);
+        task.setEnabled(enabled);
+        mapper.update(task);
+        // 停用时 quartz.schedule 会删掉 Job 并把 nextRunAt 置空——「下次执行」不能留着一个不再兑现的时间
+        quartz.schedule(task);
+        return required(id);
+    }
+
     public TaskRun run(Long id) {
         required(id);
         return executionService.start(id, "MANUAL");
@@ -78,6 +100,26 @@ public class ScheduleTaskService {
         mapper.delete(id);
     }
 
+    /**
+     * 校验「这个计划还能算出未来触发时间」。
+     *
+     * <p>创建/编辑启用时与「停用后重新启用」两处共用：同一个判断只写一遍，
+     * 免得两条路径的结论不一致（一条放行、一条拒绝）。
+     */
+    private void requireFutureFire(ScheduleTask task) {
+        try {
+            CronExpression cron = new CronExpression(task.getCronExpression());
+            cron.setTimeZone(java.util.TimeZone.getTimeZone(task.getTimezone()));
+            if (cron.getNextValidTimeAfter(new Date()) == null) {
+                throw new BusinessException("该执行计划已经没有未来触发时间，请重新选择时间");
+            }
+        } catch (BusinessException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new BusinessException("Cron 表达式无效：" + error.getMessage());
+        }
+    }
+
     private ScheduleTask apply(ScheduleTask task, TaskRequest request) {
         if (!CronExpression.isValidExpression(request.cronExpression())) throw new BusinessException("Cron 表达式无效");
         task.setName(request.name());
@@ -90,18 +132,7 @@ public class ScheduleTaskService {
         } catch (Exception error) {
             throw new BusinessException("时区无效：" + task.getTimezone());
         }
-        try {
-            CronExpression cron = new CronExpression(task.getCronExpression());
-            cron.setTimeZone(java.util.TimeZone.getTimeZone(task.getTimezone()));
-            if ((request.enabled() == null || request.enabled())
-                    && cron.getNextValidTimeAfter(new Date()) == null) {
-                throw new BusinessException("该执行计划已经没有未来触发时间，请重新选择时间");
-            }
-        } catch (BusinessException error) {
-            throw error;
-        } catch (Exception error) {
-            throw new BusinessException("Cron 表达式无效：" + error.getMessage());
-        }
+        if (request.enabled() == null || request.enabled()) requireFutureFire(task);
         task.setAiPrompt(request.aiPrompt().trim());
         task.setOutputMode(request.outputMode() == null ? "LOCAL_DRAFT" : request.outputMode());
         skillBindingValidator.validate(request.skillIds());

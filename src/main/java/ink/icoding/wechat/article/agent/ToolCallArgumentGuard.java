@@ -17,6 +17,11 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 回放守卫：把 agent4j 原样回放、但会被上游网关拒收的历史消息归一到合法形状。目前修三类：
+
+<p><b>2026-11-11 在 agent4j 2.4.0 上复验前两类仍然必需</b>：假网关返回
+{@code arguments: "{\"limit\": 5,,,}"}，关掉本类后该字符串<b>原样发到了网关</b>
+（报文检查 {@code arguments合法=False}），而严格网关对非法 JSON 会整轮 400；
+开着时被归一化为 {@code {}} 并正常完成。
  *
  * <ol>
  *   <li><b>空 / 非法 JSON 的 {@code tool_call.arguments}</b> → 归一化为 {@code {}}。<br>

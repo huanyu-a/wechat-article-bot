@@ -15,6 +15,10 @@ import java.util.stream.Collectors;
 
 /**
  * agent4j 未知工具 NPE 的兜底（known-issues-handoff.md D56）。
+
+<p><b>2026-11-11 在 agent4j 2.4.0 上复验：仍然必需</b>。假网关故意返回不存在的工具名
+{@code no_such_tool_xyz}：关掉本类 → 整轮失败，面板报
+{@code java.lang.NullPointerException: Cannot invoke "ink.icoding..."}；开着 → 正常走完并给出代答。
  *
  * <p>症状（run#35）：模型返回了一个本项目没有广告过的工具名，agent4j 的
  * {@code handleToolCallsAndContinue} 对 {@code toolMap.get(name)} 的返回值不判空，

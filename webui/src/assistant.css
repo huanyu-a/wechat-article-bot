@@ -1,0 +1,403 @@
+/* 全局助手（GlobalAssistant.vue）的专属样式。
+ *
+ * 边界（2026-11-11）：本文件随组件被 App.vue 静态引入，会打进**每个页面**的主 CSS 块
+ * （index-*.css），文章编辑器页也在内。所以除面板自身的外框，其余规则一律收在
+ * `.global-assistant` 之下——裸类名会顺手改掉编辑器自己的 `.tool-card` / `.message-markdown`。
+ *
+ * 复用清单（style.css 全局可用，此处不重复定义）：
+ *   .ai-panel / .ai-context / .ai-avatar / .ai-welcome / .chat-messages /
+ *   .chat-message / .message-avatar / .chat-composer / .open-chat / .icon-button / .spin
+ *
+ * 必须自备的：.tool-card / .tool-state / .message-markdown / .typing-caret 原本只存在于
+ * article-agent.css，而那是编辑器路由的**懒加载 CSS 块**——文章列表、定时任务等页面根本没加载
+ * 过它。直接套用类名会得到一个没有边框、没有排版的裸块，所以在下面按同一观感补齐。
+ */
+
+/* ── 入口按钮与面板外框 ───────────────────────────────────────────────────── */
+/* .open-chat 已给出 position:fixed / right:18px / bottom:22px / 绿色胶囊；
+   这里只抬高 z-index，让它不被 .workspace 的 sticky 顶栏（z-index:20）压住。
+   写成 .open-chat.global-assistant-fab 而不是单类名：本文件被 Vite 排在 style.css **之前**
+   （组件 CSS 先于 main.js 的 import 落盘），同权重的 .open-chat 后出现，会把这里的
+   right/bottom 覆盖掉——实测移动端规则曾因此整条失效。复合选择器让它不依赖顺序。 */
+.open-chat.global-assistant-fab {
+  z-index: 55;
+}
+
+/* .ai-panel 的 position:fixed 只在 style.css 的 ≤860px 媒体查询里，桌面端它是编辑器
+   grid 的一列。面板要在所有宽度都浮起来，所以这里（且只在这里）补固定定位。
+   写成复合选择器而不是单类名：与媒体查询里的 `.ai-panel{position:fixed;...;z-index:50}`
+   同为 0-1-0 时会打成平手、由加载顺序决定，复合选择器让结果确定。 */
+.ai-panel.global-assistant-panel {
+  position: fixed;
+  inset: 0 0 0 auto;
+  width: min(380px, 100%);
+  z-index: 60;
+  box-shadow: -15px 0 50px rgba(20, 38, 31, .16);
+}
+
+/* 右进右出的滑出：150ms 与编辑器侧栏的开合手感接近，不做弹性动画（面板很大，回弹会晃眼） */
+.global-assistant-enter-active,
+.global-assistant-leave-active {
+  transition: transform .18s ease, opacity .18s ease;
+}
+
+.global-assistant-enter-from,
+.global-assistant-leave-to {
+  opacity: 0;
+  transform: translateX(18px);
+}
+
+/* 头部右侧两枚按钮。外层布局（display:flex / align-items / gap:9px）来自 style.css 的
+   `.ai-panel>header>div`，此处不再重写——同权重下它会赢，写了也是死代码。 */
+.global-assistant-actions .icon-button {
+  width: 31px;
+  height: 31px;
+  border-radius: 8px;
+}
+
+/* ── 模型选择行 ───────────────────────────────────────────────────────────── */
+/* 紧贴 .ai-context 下面一行：面板里最该「一眼看到」的两件事就是「当前在哪一页」和「在用哪个
+   模型」，排在一起便于对照。下面所有规则都以 .global-assistant-model 前缀命名，与文件里的
+   .global-assistant-error / .global-assistant-write-hint 同一套隔离方式：类名只存在于本面板，
+   不会落到编辑器或其它页面上（本文件会打进每个页面的主 CSS 块，见文件顶部）。
+   flex-wrap 是窄屏兜底：面板 ≤640px 时满宽，320px 视口下「模型」标签 + 下拉框可能挤不进一行，
+   必须换行而不是横向溢出。 */
+.global-assistant-model {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 8px 12px 0;
+  padding: 6px 9px;
+  border: 1px solid #e4ebe6;
+  border-radius: 10px;
+  background: #fafcf9;
+  color: #55675e;
+  font-size: 11px;
+}
+
+/* label 带 for，点文字也会把焦点交给下拉框；原生 select 的键盘操作因此不用额外接线 */
+.global-assistant-model-label {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #7b8a82;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  cursor: pointer;
+}
+
+.global-assistant-model-label svg {
+  color: #4d8a6e;
+}
+
+/* min-width 必须显式给：<select> 的固有宽度由最长的选项撑出，flex 项默认不肯缩到内容宽度
+   以下，长档案名会直接把这一行顶破。白底让它从浅绿背景上浮出来，与 .icon-button 同层观感。 */
+.global-assistant-model-select {
+  flex: 1 1 160px;
+  min-width: 130px;
+  max-width: 100%;
+  height: 27px;
+  padding: 0 7px;
+  border: 1px solid #d8e2dc;
+  border-radius: 8px;
+  background: #fff;
+  color: #33443c;
+  font-size: 11px;
+  outline: none;
+  transition: .16s;
+}
+
+.global-assistant-model-select:focus-visible {
+  border-color: #67a58c;
+  box-shadow: 0 0 0 3px rgba(31, 122, 90, .1);
+}
+
+/* 禁用有三种来由（没有可用档案 / 正在保存 / 会话进行中），观感统一走灰底灰字 */
+.global-assistant-model-select:disabled {
+  background: #f2f5f2;
+  color: #8a958e;
+  cursor: not-allowed;
+}
+
+/* 说明行统一占满整行：模型名可能很长（`nexus-auto/ssvip-55` 这种），和下拉框挤在同一行
+   只会被压成两行碎字。三种状态共用这条：本次实际使用 / 当前生效 / 未配置可用模型。 */
+.global-assistant-model-note {
+  flex: 1 1 100%;
+  min-width: 0;
+  color: #5c6f65;
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* 本轮真的在跑的那个模型：兜底链可能把用户的选择整条绕过去，它比「选中的」更接近事实，
+   所以用深绿点出来，而不是和灰色说明混在一起。 */
+.global-assistant-model-running {
+  color: #277658;
+}
+
+/* 选中了却没生效（档案本身不可用）：不是错误，别用红色；暖棕小字只负责「提醒一声」 */
+.global-assistant-model-stale {
+  color: #9a7a3c;
+}
+
+/* 没有可用档案时的指引：可执行的一句话，不要笼统地说「暂无数据」 */
+.global-assistant-model-empty {
+  color: #8a958e;
+}
+
+/* 父级是 .ai-panel 的 flex 列：不给 min-height:0，flex 项最小高度是 auto，
+   消息一多就把 composer 顶出可视区，连滚动条都不出现。 */
+.global-assistant-messages {
+  min-height: 0;
+}
+
+.global-assistant-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 26px 0;
+  color: #85908a;
+  font-size: 11px;
+}
+
+/* 流式中途失败 / 被限流时的错误条：贴在 composer 上方，不把整段对话换成错误页 */
+.global-assistant-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  border: 1px solid #ecd5d1;
+  border-radius: 9px;
+  background: #fff7f5;
+  color: #9c4a40;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.global-assistant-error > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.global-assistant-error > button {
+  flex: 0 0 auto;
+  display: grid;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+}
+
+/* composer 左下角的状态字：.chat-composer span 已给 9px 灰字，这里只补对齐与省略 */
+.global-assistant-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+
+.global-assistant-status em {
+  min-width: 0;
+  overflow: hidden;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-assistant-status .spin {
+  flex: 0 0 auto;
+}
+
+/* 写操作完成后的刷新提示。刻意做得很轻（灰底小字、无按钮）：它只是提醒，
+   刷新与否由用户决定——自动刷新会冲掉用户正在填的表单。 */
+.global-assistant-write-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 12px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: #f4f8f5;
+  color: #7b8a82;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.global-assistant-write-hint svg {
+  flex: 0 0 auto;
+  color: #4d8a6e;
+}
+
+/* ── 工具卡（article-agent.css 的范围内等价物） ──────────────────────────── */
+.global-assistant .tool-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0 12px;
+  padding: 8px 9px;
+  border: 1px solid #dfe8e3;
+  border-radius: 9px;
+  background: #f8faf8;
+  color: #52645b;
+}
+
+.global-assistant .tool-card.calling,
+.global-assistant .tool-card.preparing {
+  border-color: #cfe1d8;
+  background: #f2f8f5;
+}
+
+.global-assistant .tool-card.completed {
+  border-color: #d8e8df;
+  background: #f4f9f6;
+}
+
+.global-assistant .tool-card.failed {
+  border-color: #ecd5d1;
+  background: #fff7f5;
+  color: #a24b3f;
+}
+
+.global-assistant .tool-state {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  color: #277658;
+  background: #e2f0e9;
+}
+
+.global-assistant .tool-card.failed .tool-state {
+  color: #b54e42;
+  background: #f8e4e1;
+}
+
+.global-assistant .tool-card > div {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.global-assistant .tool-card strong {
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.global-assistant .tool-card small {
+  overflow: hidden;
+  color: #7b8a82;
+  font-size: 10px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── markdown 正文（article-agent.css 的范围内等价物） ───────────────────── */
+/* .chat-message>div 是 white-space:pre-wrap，这条把空白控制权交回块级元素：
+   否则 marked 产出的换行会被当成可见空行，段落间距翻倍。 */
+.global-assistant .message-markdown {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.global-assistant .message-markdown > :first-child { margin-top: 0 }
+.global-assistant .message-markdown > :last-child { margin-bottom: 0 }
+.global-assistant .message-markdown p { margin: 0 0 .65em }
+.global-assistant .message-markdown ul,
+.global-assistant .message-markdown ol { margin: .45em 0 .7em; padding-left: 1.5em }
+.global-assistant .message-markdown li + li { margin-top: .25em }
+.global-assistant .message-markdown h1,
+.global-assistant .message-markdown h2,
+.global-assistant .message-markdown h3 { margin: .85em 0 .4em; line-height: 1.4 }
+.global-assistant .message-markdown h1 { font-size: 1.3em }
+.global-assistant .message-markdown h2 { font-size: 1.18em }
+.global-assistant .message-markdown h3 { font-size: 1.08em }
+.global-assistant .message-markdown blockquote {
+  margin: .6em 0;
+  padding: .35em .7em;
+  border-left: 3px solid #9bbbad;
+  background: rgba(255, 255, 255, .45);
+}
+.global-assistant .message-markdown code {
+  padding: .12em .32em;
+  border-radius: 4px;
+  background: rgba(26, 55, 43, .08);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .92em;
+}
+.global-assistant .message-markdown pre {
+  max-width: 100%;
+  overflow: auto;
+  margin: .65em 0;
+  padding: .7em;
+  border-radius: 7px;
+  background: #24332d;
+  color: #e9f1ed;
+  white-space: pre;
+}
+.global-assistant .message-markdown pre code {
+  padding: 0;
+  background: none;
+  color: inherit;
+}
+.global-assistant .message-markdown a {
+  color: #217455;
+  text-decoration: underline;
+}
+.global-assistant .message-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+.global-assistant .chat-message.user .message-markdown a {
+  color: #d9fff0;
+}
+
+/* ── 流式光标 ─────────────────────────────────────────────────────────────── */
+/* 动画名带 global-assistant- 前缀：article-agent.css 里也有个 typing-blink，同名同内容虽无害，
+   但两个 CSS 块先后加载时后到者覆盖前者，将来改一处就会出现「编辑器闪、助手不闪」。 */
+.global-assistant .typing-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -.12em;
+  border-radius: 2px;
+  background: #43856a;
+  animation: global-assistant-blink .75s steps(1) infinite;
+}
+
+@keyframes global-assistant-blink {
+  50% { opacity: 0 }
+}
+
+/* 流式失败的那一轮保留半截回答，用红边标出「这段可能不完整」 */
+.global-assistant .chat-message.failed > div {
+  border: 1px solid #ecd5d1;
+  background: #fff7f5;
+}
+
+@media (max-width: 860px) {
+  /* 与左侧 .floating-menu（left:15px;bottom:15px）对称摆，两者不重叠。
+     同样必须用复合选择器压过 .open-chat 的 18px/22px（见文件顶部说明）。 */
+  .open-chat.global-assistant-fab {
+    right: 15px;
+    bottom: 15px;
+  }
+}

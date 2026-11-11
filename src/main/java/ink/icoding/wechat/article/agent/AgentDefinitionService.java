@@ -13,8 +13,17 @@ import java.util.Set;
  */
 @Service
 public class AgentDefinitionService {
+    /**
+     * 允许的智能体阶段。
+     *
+     * <p>{@code ASSISTANT} 是面向用户的**服务端工具**阶段：它由用户在任意页面手动发起，
+     * 从不无人值守运行，也从不使用浏览器工具（全部工具直接作用于服务端数据库）。
+     * 这与定时/编辑器各阶段的装配前提不同，但定义校验共享这一张表——缺了它，
+     * 内置助手定义的 create/update 会被判「不支持的智能体阶段：ASSISTANT」而整体不可用。
+     */
     private static final Set<String> STAGES = Set.of(
-            "EDITOR", "SCHEDULED_SINGLE", "RESEARCH", "WRITING", "ILLUSTRATION", "REVIEW", "COORDINATE");
+            "EDITOR", "SCHEDULED_SINGLE", "RESEARCH", "WRITING", "ILLUSTRATION", "REVIEW", "COORDINATE",
+            "ASSISTANT");
     private static final String DUPLICATE_SUFFIX = "副本";
 
     private final AgentDefinitionMapper mapper;
@@ -69,6 +78,25 @@ public class AgentDefinitionService {
         AgentDefinition agent = required(id);
         apply(agent, request, Boolean.TRUE.equals(agent.getIsBuiltin()));
         validateNameUnique(agent.getName(), id);
+        agent.setUpdatedAt(java.time.LocalDateTime.now());
+        mapper.updateById(agent);
+        return required(id);
+    }
+
+    /**
+     * 只改模型档案绑定，不碰其它字段。
+     *
+     * <p><b>为什么不复用 {@link #update}</b>：它要求整份 {@link AgentRequest}
+     * （code、name、persona 都是必填），而「给这个智能体换个模型」只该是一个字段的操作。
+     * 让调用方读全量再整体回写，读漏一个字段就会把它清空——人格、工具组、技能都可能被顺手抹掉。
+     *
+     * @param profileId 目标档案 id；传 {@code null} 表示解除绑定、跟随默认档案
+     */
+    @Transactional
+    public AgentDefinition setLlmProfile(Long id, Long profileId) {
+        AgentDefinition agent = required(id);
+        if (profileId != null) llmProfileService.required(profileId);
+        agent.setLlmProfileId(profileId);
         agent.setUpdatedAt(java.time.LocalDateTime.now());
         mapper.updateById(agent);
         return required(id);

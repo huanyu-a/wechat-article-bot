@@ -156,9 +156,9 @@ class AgentSeederTest {
     }
 
     /**
-     * 内置映射覆盖全部 7 个智能体，且只使用两个主力档案名。
+     * 内置映射覆盖全部 8 个智能体，且只使用两个主力档案名。
      *
-     * <p>这条断言管的是**智能体绑定策略**，不是「模型可不可用」：7 个内置智能体只按
+     * <p>这条断言管的是**智能体绑定策略**，不是「模型可不可用」：8 个内置智能体只按
      * 「速度优先 / 能力优先」两类负载分流，所以绑定集合恰好是 deepseek-flash 与 glm-5.3-flash。
      *
      * <p>修正记录（2026-09-18）：本条注释原文写的是「实测不可用的模型（glm-5.3 返回 503、
@@ -172,7 +172,7 @@ class AgentSeederTest {
     void everyBuiltinAgentHasAUsableDefaultProfile() {
         List<AgentSeeder.Seed> seeds = AgentSeeder.seeds();
 
-        assertThat(seeds).hasSize(7);
+        assertThat(seeds).hasSize(8);
         assertThat(seeds).allSatisfy(seed ->
                 assertThat(seed.profileSeedName()).as("%s 应有默认绑定", seed.code()).isNotBlank());
         assertThat(seeds).extracting(AgentSeeder.Seed::profileSeedName)

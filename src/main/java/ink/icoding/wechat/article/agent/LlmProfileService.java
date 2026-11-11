@@ -218,6 +218,85 @@ public class LlmProfileService {
         return view(required(profile.getId()));
     }
 
+    /**
+     * 批量建档案（一次把某个供应商的模型全部加进来）。
+     *
+     * <p><b>为什么逐条建、而不是拼一条大 INSERT</b>：34 个模型里只要有一个名字撞车
+     * （全局唯一）或供应商被停用，整批就会回滚，用户拿到一句「失败」却不知道是哪一条——
+     * 然后只能回到「一条一条点」的老路。这里逐条尝试、逐条记账，成功的留下、失败的说明原因。
+     *
+     * <p><b>为什么「已存在」不算失败</b>：批量操作天然会被重复执行（探测两次、点两下按钮）。
+     * 把「已经加过」报成错误，会让用户以为库里脏了，实际只是幂等。两者分开统计，界面才能说
+     * 「新增 30，已存在 4」。
+     *
+     * <p><b>为什么名字用模型名</b>：现有档案的命名就是模型名（同供应商一个模型一条）。
+     * 另造一套「供应商-模型」命名只会让两处不一致。名称冲突时如实报错，不做自动改名——
+     * 自动加后缀会产出用户没要求过的名字，之后更难对上号。
+     */
+    /** 单次批量上限：再大就不再是「一次拉取全部」，而该走脚本/接口分批。 */
+    private static final int MAX_BATCH_MODELS = 200;
+
+    @Transactional
+    public BatchResult batchCreate(BatchRequest request, Long userId) {
+        if (request == null || request.providerId() == null) {
+            throw new BusinessException("请选择所属供应商");
+        }
+        LlmProvider provider = providerService.required(request.providerId());
+        List<String> requested = request.modelNames() == null ? List.of() : request.modelNames();
+        // 去重 + 去空白：前端全选时经常把同一个模型名带两遍（多选状态不同步）
+        java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+        for (String name : requested) {
+            if (name == null || name.isBlank()) continue;
+            names.add(name.strip());
+        }
+        if (names.isEmpty()) throw new BusinessException("请至少选择一个模型");
+        if (names.size() > MAX_BATCH_MODELS) {
+            throw new BusinessException("一次最多添加 " + MAX_BATCH_MODELS + " 个模型，请分批提交");
+        }
+        java.util.Set<String> existing = new java.util.HashSet<>();
+        for (LlmProfile profile : mapper.findAll()) {
+            if (!provider.getId().equals(profile.getProviderId())) continue;
+            if (profile.getModelName() != null) existing.add(profile.getModelName().strip());
+        }
+        List<String> created = new java.util.ArrayList<>();
+        List<Skipped> skipped = new java.util.ArrayList<>();
+        List<Failed> failed = new java.util.ArrayList<>();
+        for (String name : names) {
+            if (existing.contains(name)) {
+                skipped.add(new Skipped(name, "该供应商下已存在同名模型档案"));
+                continue;
+            }
+            try {
+                create(new ProfileRequest(name, provider.getId(), name, null, null, null, null, null), userId);
+                created.add(name);
+            } catch (RuntimeException exception) {
+                // 单条失败不影响整批：把原因带回前端逐条显示，用户才知道要改哪一条
+                String message = exception.getMessage() == null
+                        ? exception.getClass().getSimpleName() : exception.getMessage();
+                failed.add(new Failed(name, message));
+            }
+        }
+        log.info("批量添加模型档案：供应商 {}（{}），请求 {}，新增 {}，已存在 {}，失败 {}",
+                provider.getName(), provider.getId(), names.size(), created.size(),
+                skipped.size(), failed.size());
+        return new BatchResult(created.size(), created, skipped, failed);
+    }
+
+    /** 批量建档案请求；{@code modelNames} 允许重复与空白，服务端负责归一化。 */
+    public record BatchRequest(@NotNull Long providerId, List<String> modelNames) {
+    }
+
+    /** 批量结果：成功的名单 + 因已存在而跳过的 + 因其它原因失败的（各自带原因）。 */
+    public record BatchResult(int createdCount, List<String> created, List<Skipped> skipped,
+                              List<Failed> failed) {
+    }
+
+    public record Skipped(String modelName, String reason) {
+    }
+
+    public record Failed(String modelName, String message) {
+    }
+
     @Transactional
     public ProfileView update(Long id, ProfileRequest request) {
         LlmProfile profile = required(id);

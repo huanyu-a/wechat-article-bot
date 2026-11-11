@@ -109,6 +109,27 @@ async function save(){
     showForm.value=false;notice.value='定时创作任务已保存';await load()
   }catch(e){error.value=e.message}
 }
+/** 正在切换启停的任务 id：按任务维度禁用按钮，避免连点发出两次相反的请求 */
+const toggling=ref(null)
+
+/**
+ * 启动 / 停止调度。
+ *
+ * <p>不做乐观更新：切换的是**调度是否生效**，一旦本地先翻转、服务端却拒绝（比如 cron 已过期），
+ * 界面就会短暂显示「已启用」而实际不会跑。这类状态宁可多等一次请求，也不能对用户撒谎。
+ */
+async function toggle(task){
+  if(toggling.value)return
+  toggling.value=task.id;error.value='';notice.value=''
+  try{
+    const next=!task.enabled
+    const saved=await api(`/api/tasks/${task.id}/enabled`,{method:'PUT',body:JSON.stringify({enabled:next})})
+    notice.value=next?`「${saved.name}」已启动调度，下次执行：${saved.nextRunAt?fmt(saved.nextRunAt):'暂无'}`
+                        :`「${saved.name}」已停止调度，不会再自动运行`
+    await load()
+  }catch(e){error.value=e.message}finally{toggling.value=null}
+}
+
 async function run(task){if(running.value)return;running.value=task.id;error.value='';notice.value='';try{const result=await api(`/api/tasks/${task.id}/run`,{method:'POST'});notice.value=`任务已在后台启动，运行记录 #${result.id}`;await load()}catch(e){error.value=e.message}finally{running.value=null}}
 
 /** 执行日志按「【前缀】」逐行着色 */
@@ -181,7 +202,9 @@ onBeforeUnmount(stopRunPolling)
     <div v-if="error" class="alert error">{{error}}</div><div v-if="notice" class="alert task-notice">{{notice}}</div>
     <div class="task-grid">
       <article v-for="task in tasks" :key="task.id" class="task-card">
-        <header><span class="task-icon"><Bot :size="20" /></span><div class="task-toggle" :class="{on:task.enabled}"><i></i>{{task.enabled?'运行中':'已停用'}}</div></header>
+        <header><span class="task-icon"><Bot :size="20" /></span><button type="button" class="task-toggle" :class="{on:task.enabled,busy:toggling===task.id}"
+                :disabled="toggling===task.id" :aria-pressed="task.enabled"
+                :title="task.enabled?'点击停止调度':'点击启动调度'" @click="toggle(task)"><i></i>{{toggling===task.id?'切换中…':(task.enabled?'已启用':'已停止')}}</button></header>
         <h3>{{task.name}}</h3>
         <div class="task-mode-row">
           <span class="mode-badge" :class="`mode-${(task.executionMode||'SINGLE').toLowerCase()}`"><component :is="modeIcon(task.executionMode||'SINGLE')" :size="11" />{{modeLabel(task.executionMode||'SINGLE')}}</span>
