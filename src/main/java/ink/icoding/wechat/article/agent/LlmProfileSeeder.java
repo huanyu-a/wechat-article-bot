@@ -79,11 +79,11 @@ public class LlmProfileSeeder implements ApplicationRunner {
     static List<Seed> seeds() {
         return List.of(
                 // A 档主力：AgentSeeder 按**名称**绑定，这两个名字不能改（改了两处会对不上）
-                new Seed("deepseek-flash", "auto/DeepSeek-Flash", false),
+                new Seed("deepseek-flash", "auto/deepseek-flash", false),
                 new Seed("glm-5.3-flash", "auto/glm-5.3-flash", false),
                 // S 档（能力优先）
                 new Seed("kimi-k3", "auto/kimi-k3", false),
-                new Seed("qwen3.8-max", "auto/Qwen3.8-Max", false),
+                new Seed("qwen3.8-max", "auto/qwen3.8-max", false),
                 new Seed("glm-5.3", "auto/glm-5.3", false),
                 // A 档其余
                 new Seed("qwen3.8-27b", "ssvip-54/qwen3.8-27b", false),
