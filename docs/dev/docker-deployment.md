@@ -850,12 +850,27 @@ curl -s -H "Authorization: Bearer $S" \
 兜底 `nexus-auto`；6 条取不到的档案已 `enabled=0` **保留**（将来网关恢复可直接启用，
 不做删除）。
 
-**遗留风险（未证伪，故未改动）**：线上另有 4 条**升级前就存在**的档案，
-其 `modelName` 与网关大小写不一致（`auto/DeepSeek-Flash` vs 网关 `auto/deepseek-flash`；
-`auto/Qwen3.8-Max`、`LongCat-2.5` 同类），`step-5-preview` 在网关上完全不存在。
-已用 `pre-20261110` 备份逐条比对确认这些是历史数据，不是本次引入。
-**大小写差异是否真的导致请求失败，当前无法用无密钥探测证明**——网关鉴权在模型校验之前，
-无论 model 写什么都只返回 401。要证实必须发真实推理请求。在证实之前不动这些配置。
+**遗留 4 条可疑档案的最终结论（2026-11-11，已由源码证实）**：
+网关是 `tdai-proxy`（`agentmemory/memory-proxy`），源码在 152 那台的
+`/www/dk_project/dk_app/tencentdb-agent-memory/MemoryProxy/src`。模型关卡在
+`pipeline/stages/model-gate.ts` → `isModelInPricing()` → `normalizePublicModelName()`，
+最后一步是 **`modelName?.trim().toLowerCase()`**，且客户端值与价目表值**两侧都归一化**。
+所以：
+
+| 档案 | 结论 |
+| --- | --- |
+| `deepseek-flash`（`auto/DeepSeek-Flash`） | **无害**。归一化后与 `auto/deepseek-flash` 相同 |
+| `qwen3.8-max`（`auto/Qwen3.8-Max`） | **无害**，同上 |
+| `LongCat-2.5`（`nexus-xxx/LongCat-2.5`） | **真故障**：渠道前缀本身不同（网关是 `auto/longcat-2.5`），归一化救不了 → 已改为 `auto/longcat-2.5` |
+| `step-5-preview`（`auto/step-5-preview`） | **真故障**：网关里完全没有这个模型 → 已置 `enabled=0` 保留 |
+
+> **教训（值得单独记）**：判断「档案 modelName 能不能解析」，正确判据是
+> 「**先 `trim().toLowerCase()` 再比对** `/v1/models`」，不是逐字相等。
+> 逐字比对会把 `auto/DeepSeek-Flash` 误判成坏的（它其实好得很），
+> 也会把 `LongCat-2.5` 的真问题混在假问题里一起放过。
+
+**当前线上终态**：启用 12 条档案，**全部 12 条 modelName 归一化后都能在 `/v1/models` 找到**
+（不可解析数量 = 0）。停用 7 条（6 条种子裸名 + `step-5-preview`），均保留可随时启用。
 
 ## A.3 ⚠️ 升级前必须对比列长（schema 漂移会直接搞挂生产）
 
