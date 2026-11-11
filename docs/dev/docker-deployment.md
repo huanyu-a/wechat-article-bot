@@ -872,6 +872,42 @@ curl -s -H "Authorization: Bearer $S" \
 **当前线上终态**：启用 12 条档案，**全部 12 条 modelName 归一化后都能在 `/v1/models` 找到**
 （不可解析数量 = 0）。停用 7 条（6 条种子裸名 + `step-5-preview`），均保留可随时启用。
 
+### A.2.4 2026-11-11：模型档案刷成网关当前模型（22 → 22 全对齐）
+
+**做了什么**：把线上档案从「19 条、12 条启用、含 7 条失效」刷成与网关
+`GET /v1/models` **一一对应的 22 条、全部启用**。
+
+| 动作 | 明细 |
+| --- | --- |
+| 修正 modelName | id=25 `hy4-preview` → 改名 `hy4`、模型 `ssvip-17/hy4`；id=27 `qwen3.8-27b` 模型改 `ssvip-54/qwen3.8-27b` |
+| 新增 8 条 | `deepseek-v4.1-flash`、`kimi-k3.1-pro`、`spark-x2.6`、`DeepSeek-V4.1-Flash-Event`、`kimi-k2.8-preview`、`egg-alpha`、`neohorse-1-9b`、`tierflow_pro` |
+| 删除 5 条失效 | `step-5-preview`、`dots3-note-prev`、`step-3.7-flash`、`agnes-2.5-flash`、`nemotron-3-ultra-free`（网关已无对应模型） |
+
+**校验口径**（可复现）：档案 `modelName` 归一化（`trim().toLowerCase()`）后必须能在
+网关 `/v1/models` 找到；反向也要查「网关有但无启用档案」= 0。当前两项均为 0。
+
+**全部通过 API 操作**（`POST/PUT/DELETE /api/llm-profiles`），不直接改表——
+这样供应商继承、密钥可达性、图片标记等约束都由服务层保证。
+改动前单独备份了 `LLM_PROFILE` + `LLM_PROVIDER` 两张表到
+`backups/wechat-article-bot-pre-modelrefresh-20261111/`。
+
+> ⚠️ **这次差点犯的错，必须记下来**：删 `step-5-preview`（id=13）前我用
+> `SELECT ... FROM AGENT A LEFT JOIN LLM_PROFILE P ...` 查「有没有智能体绑定」，
+> 输出为空，被判成「无绑定，可安全删除」。**实际是表名错了**——本项目的智能体表叫
+> `AGENT_DEFINITION`，`AGENT` 根本不存在；`ERROR 1146` 打到 stderr 后被
+> `2>/dev/null`（或 `grep -v Warning`）吞掉，空 stdout 就被误读成「没有绑定」。
+> 而 id=13 恰好**正被 `builtin_researcher` 绑定**。
+>
+> **判据修正**：查「有无引用」不能用「输出为空」，必须**显式断言表存在 + 断言计数为 0**，
+> 且不要吞 stderr。正确姿势是先 `information_schema.TABLES` 确认表名，再查引用；
+> 本次最终把 `builtin_researcher` 从已失效的 id=13 改绑到 id=1（`deepseek-flash`，
+> 正是 `AgentSeeder` 对工具密集型智能体的种子默认值），然后才删除。
+
+**串行切换的取舍（如实记录）**：`AgentFactory` 的注释写明「切换是串行的」，
+候选链 = 绑定 → 默认 → 兜底 → **其余全部启用档案**。启用从 12 条增到 22 条，
+意味着网关全面不可用时最坏要串行试 22 次。这是「模型全都要」的代价；
+若嫌失败路径太长，把不常用的档案置 `enabled=0` 即可缩短，无需改代码。
+
 ## A.3 ⚠️ 升级前必须对比列长（schema 漂移会直接搞挂生产）
 
 生产库是旧版本代码建的，列长可能和当前实体声明不一致。2026-09-21 替换时实际撞到一次：
